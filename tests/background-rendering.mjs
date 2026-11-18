@@ -1068,7 +1068,7 @@ try {
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
     assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 19);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 20);
     const activeGeneration = await evaluate('window.__antigravityUiRenderer.generation');
     const installInHost = payload => evaluate(`(${installWallpaper.toString()})(${JSON.stringify(payload)})`);
     await evaluate("window.oldLayer = document.querySelector('#antigravity-ui-background'); delete window.__antigravityUiRenderer.revision");
@@ -1076,7 +1076,7 @@ try {
     assert.equal(await installInHost({ enabled: true, css: 'color:red', imageHash: expectedImageHash, generation: activeGeneration + 1 }), 'NEED_IMAGE');
     assert.equal(await evaluate("window.oldLayer === document.querySelector('#antigravity-ui-background') && window.titlebarOptions.color === '#00000000'"), true);
     await runtime.update(true, false);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 19);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 20);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{
@@ -1193,6 +1193,259 @@ try {
     assert.equal(cleanedHole.sideClip, 'none');
     assert.equal(cleanedHole.mainClip, 'none');
     assert.equal(cleanedHole.splitClip, 'none');
+
+    // Regression: interactive overlays, navigators, scrollbars, peek sidebar, drawer, split fork & terminal handle must remain clickable
+    const stackingChecks = await evaluate(`(()=>{
+        const shell = document.querySelector('.agy-inset-shell');
+        const sheet = document.querySelector('.agy-sheet');
+        const outline = sheet.querySelector('.outline-none');
+        const mainBody = document.querySelector('[data-main-content-body]');
+        const sideBody = document.querySelector('[data-side-panel-body]');
+        const rightPane = outline.querySelector('.pane');
+        const sideTabs = document.querySelector('#tabs');
+        sideTabs.setAttribute('data-side-panel-strip', 'true');
+        const cleanup = [];
+        const hit = el => {
+            const r = el.getBoundingClientRect();
+            const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return target === el || el.contains(target);
+        };
+        try {
+            // 1. Conversation view: navigator dots, overlay scrollbar, scroll-to-bottom button, find bar
+            const convo = document.createElement('div');
+            convo.setAttribute('data-testid', 'conversation-view');
+            convo.style.cssText = 'position:absolute;left:0;top:40px;width:360px;height:165px;display:flex;flex-direction:column;';
+            convo.innerHTML =
+                '<div class="sticky top-0 z-20" style="position:sticky;top:0;z-index:20;height:26px;pointer-events:none"><div class="agy-pill" style="pointer-events:auto;height:24px"><span data-testid="find-bar-match-count">1 of 1</span></div></div>' +
+                '<div class="pointer-events-none absolute inset-y-0 left-0 z-10 w-7" style="pointer-events:none;position:absolute;inset:0 auto 0 0;z-index:10;width:28px"><nav data-testid="conversation-navigator" class="pointer-events-none absolute inset-y-0 left-0 z-10 flex w-7" style="pointer-events:none;position:absolute;inset:0;z-index:10;width:28px"><ol style="pointer-events:auto;margin:40px 0 0;padding:0;list-style:none"><li style="height:16px"><button type="button" data-testid="conversation-navigator-turn" style="width:28px;height:16px;display:block"></button></li></ol></nav></div>' +
+                '<div class="relative flex-grow min-h-0" style="position:relative;flex:1;min-height:0">' +
+                '  <div class="relative flex flex-col h-full w-full" style="position:relative;height:100%;width:100%">' +
+                '    <div data-testid="autoscroll-viewport" style="height:100%;width:100%"></div>' +
+                '    <div data-testid="overlay-scrollbar" style="position:absolute;top:2px;bottom:2px;right:2px;width:12px;z-index:30;pointer-events:auto"></div>' +
+                '    <button type="button" class="agy-scroll-bottom" style="position:absolute;bottom:16px;left:50%;width:32px;height:32px;z-index:20;pointer-events:auto"></button>' +
+                '  </div>' +
+                '</div>';
+            mainBody.appendChild(convo);
+            cleanup.push(() => convo.remove());
+
+            // 2. Bottom terminal resize handle overlapping bottom of conversation / composer
+            const term = document.createElement('div');
+            term.id = 'bottom-terminal-panel';
+            term.setAttribute('data-testid', 'bottom-terminal-panel');
+            term.style.cssText = 'position:absolute;left:0;top:205px;width:360px;height:60px;';
+            term.innerHTML = '<div data-testid="bottom-terminal-panel-resize-handle" style="position:absolute;top:-4px;left:0;right:0;height:8px;z-index:10"></div>';
+            mainBody.appendChild(term);
+            cleanup.push(() => term.remove());
+
+            // 3. Forked split view close button & right [data-split-sized]
+            const forkWrap = document.createElement('div');
+            forkWrap.style.cssText = 'position:absolute;left:400px;top:40px;width:260px;height:165px;';
+            forkWrap.innerHTML =
+                '<div class="absolute top-4 right-4 z-50" style="position:absolute;top:8px;right:8px;width:24px;height:24px;z-index:50"><button type="button" id="fork-close" aria-label="Close" style="width:24px;height:24px"></button></div>' +
+                '<div data-split-root="true" style="position:relative;display:flex;width:100%;height:100%">' +
+                '  <div style="flex:1;position:relative"><div data-testid="autoscroll-viewport" id="fork-left-vp" style="height:100%"></div></div>' +
+                '  <div style="flex:1;position:relative"><div data-split-sized="fork" style="position:absolute;inset:0;z-index:10"><div data-testid="autoscroll-viewport" id="fork-right-vp" style="height:100%"></div></div></div>' +
+                '</div>';
+            mainBody.appendChild(forkWrap);
+            cleanup.push(() => forkWrap.remove());
+
+            // 4. Peek sidebar hot-zone, peek surface, left-0 header cluster, narrow modal drawer
+            const sidebarSplit = document.createElement('div');
+            sidebarSplit.setAttribute('data-testid', 'sidebar-split');
+            sidebarSplit.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
+            sidebarSplit.innerHTML =
+                '<div style="position:relative;height:100%">' +
+                '  <div data-split-sized="peek" style="position:absolute;top:0;left:0;width:180px;height:100%;z-index:10;pointer-events:none">' +
+                '    <div data-peek-surface="closed" style="position:relative;width:100%;height:100%;pointer-events:none"><button type="button" id="peek-btn" style="position:absolute;left:24px;top:110px;width:100px;height:28px;pointer-events:auto">Peek</button></div>' +
+                '  </div>' +
+                '</div>';
+            shell.insertBefore(sidebarSplit, shell.firstChild);
+            cleanup.push(() => sidebarSplit.remove());
+
+            const hotZone = document.createElement('div');
+            hotZone.setAttribute('data-testid', 'sidebar-peek-hot-zone');
+            hotZone.className = 'absolute left-0 bottom-4 w-2 z-40';
+            hotZone.style.cssText = 'position:absolute;left:0;top:40px;bottom:16px;width:8px;z-index:40;';
+            shell.appendChild(hotZone);
+            cleanup.push(() => hotZone.remove());
+
+            const leftHeader = document.createElement('div');
+            leftHeader.className = 'absolute left-0 top-0 flex items-center shrink-0 z-50';
+            leftHeader.style.cssText = 'position:absolute;left:0;top:0;height:40px;width:140px;z-index:50;';
+            leftHeader.innerHTML = '<button type="button" id="left-header-btn" style="width:28px;height:28px"></button>';
+            shell.appendChild(leftHeader);
+            cleanup.push(() => leftHeader.remove());
+
+            const backdrop = document.createElement('div');
+            backdrop.setAttribute('data-testid', 'sidebar-popover-backdrop');
+            backdrop.className = 'absolute inset-0 z-40';
+            backdrop.style.cssText = 'position:absolute;inset:0;z-index:40;';
+            const drawer = document.createElement('div');
+            drawer.setAttribute('role', 'dialog');
+            drawer.className = 'surface-opaque absolute inset-y-0 left-0 z-50';
+            drawer.style.cssText = 'position:absolute;top:0;bottom:0;left:0;width:180px;z-index:50;';
+            drawer.innerHTML = '<button type="button" id="modal-drawer-btn" style="position:absolute;left:40px;top:150px;width:80px;height:28px"></button>';
+            shell.insertBefore(backdrop, leftHeader);
+            shell.insertBefore(drawer, leftHeader);
+            cleanup.push(() => { backdrop.remove(); drawer.remove(); });
+
+            // 5. Floating voice pill, selection/comment popovers, floating scrollbar
+            const voicePill = document.createElement('div');
+            voicePill.className = 'fixed z-40 flex flex-col items-start gap-1.5 select-none';
+            voicePill.style.cssText = 'position:fixed;right:20px;bottom:20px;width:100px;height:36px;z-index:40;';
+            voicePill.innerHTML = '<div data-testid="voice-dock-composer"></div><button type="button" id="voice-btn" style="width:100%;height:100%"></button>';
+            document.body.appendChild(voicePill);
+            cleanup.push(() => voicePill.remove());
+
+            const selPopup = document.createElement('div');
+            selPopup.className = 'selection-popup z-50';
+            selPopup.style.cssText = 'position:fixed;left:420px;top:260px;width:80px;height:28px;z-index:50;';
+            const commentPop = document.createElement('div');
+            commentPop.setAttribute('data-comment-bubble-popover', 'true');
+            commentPop.className = 'z-50';
+            commentPop.style.cssText = 'position:fixed;left:510px;top:260px;width:80px;height:28px;z-index:50;';
+            const pdfPop = document.createElement('div');
+            pdfPop.setAttribute('data-testid', 'pdf-selected-annotation-popover');
+            pdfPop.className = 'z-50';
+            pdfPop.style.cssText = 'position:fixed;left:600px;top:260px;width:80px;height:28px;z-index:50;';
+            const commentFloat = document.createElement('div');
+            commentFloat.setAttribute('data-testid', 'comment-box');
+            commentFloat.className = 'absolute z-50';
+            commentFloat.style.cssText = 'position:absolute;left:600px;top:300px;width:80px;height:28px;z-index:50;';
+            const commentInline = document.createElement('div');
+            commentInline.setAttribute('data-testid', 'comment-box');
+            commentInline.className = 'w-full';
+            const floatSbLow = document.createElement('div');
+            floatSbLow.setAttribute('data-overlay-scrollbar-track', '');
+            floatSbLow.style.cssText = 'position:fixed;right:4px;top:80px;width:8px;height:120px;z-index:51;';
+            const floatSbModal = document.createElement('div');
+            floatSbModal.setAttribute('data-overlay-scrollbar-track', '');
+            floatSbModal.style.cssText = 'position:fixed;right:16px;top:80px;width:8px;height:120px;z-index:5001;';
+            document.body.append(selPopup, commentPop, pdfPop, commentFloat, commentInline, floatSbLow, floatSbModal);
+            cleanup.push(() => { selPopup.remove(); commentPop.remove(); pdfPop.remove(); commentFloat.remove(); commentInline.remove(); floatSbLow.remove(); floatSbModal.remove(); });
+
+            const dotBtn = convo.querySelector('[data-testid="conversation-navigator-turn"]');
+            const ovSb = convo.querySelector('[data-testid="overlay-scrollbar"]');
+            const scrollBtn = convo.querySelector('.agy-scroll-bottom');
+            const findPill = convo.querySelector('.agy-pill');
+            const findWrapper = convo.querySelector('.sticky.top-0');
+            const termHandle = term.querySelector('[data-testid="bottom-terminal-panel-resize-handle"]');
+            const forkClose = forkWrap.querySelector('#fork-close');
+            const forkRightSized = forkWrap.querySelector('[data-split-sized="fork"]');
+            const peekSized = sidebarSplit.querySelector('[data-split-sized="peek"]');
+            const peekSurf = sidebarSplit.querySelector('[data-peek-surface]');
+            const peekBtn = sidebarSplit.querySelector('#peek-btn');
+            const leftHdrBtn = leftHeader.querySelector('#left-header-btn');
+            const modalBtn = drawer.querySelector('#modal-drawer-btn');
+            const voiceBtn = voicePill.querySelector('#voice-btn');
+
+            const dockedTabZ = getComputedStyle(sideTabs).zIndex;
+            sheet.setAttribute('data-side-panel-maximized', 'true');
+            const maxTabZ = getComputedStyle(sideTabs).zIndex;
+            const maxBodyZ = getComputedStyle(sideBody).zIndex;
+            sheet.removeAttribute('data-side-panel-maximized');
+            const splitEdge = outline.querySelector('[data-split-fill-edge]');
+            splitEdge.setAttribute('data-split-overlaid', 'true');
+            const overlaidTabZ = getComputedStyle(sideTabs).zIndex;
+            splitEdge.removeAttribute('data-split-overlaid');
+
+            // State A: collapsed sidebar (hotZone visible, peek closed, modal hidden)
+            backdrop.style.display = 'none';
+            drawer.style.display = 'none';
+            sidebarSplit.style.display = 'none';
+            const peekClosedZ = getComputedStyle(peekSized).zIndex;
+            // Temporarily hide hotZone when testing dotBtn at x=14 (dots span w-7=28px, center x=14 > hotZone 8px anyway!)
+            const convoHits = {
+                dot: hit(dotBtn),
+                scrollbar: hit(ovSb),
+                scrollBottom: hit(scrollBtn),
+                findBar: hit(findPill),
+                findZ: getComputedStyle(findWrapper).zIndex,
+                termHandle: hit(termHandle),
+                termZ: getComputedStyle(term).zIndex,
+                forkClose: hit(forkClose),
+                forkRightSizedZ: getComputedStyle(forkRightSized).zIndex,
+                peekHotZone: hit(hotZone),
+                peekClosedZ,
+                leftHeaderBtn: hit(leftHdrBtn),
+                leftHeaderZ: getComputedStyle(leftHeader).zIndex,
+            };
+
+            // State B: peek open over conversation (hotZone hidden just like native)
+            hotZone.style.display = 'none';
+            sidebarSplit.style.display = '';
+            peekSurf.setAttribute('data-peek-surface', 'open');
+            peekSurf.style.pointerEvents = 'auto';
+            const peekOpenZ = getComputedStyle(peekSized).zIndex;
+            const peekBtnHit = hit(peekBtn);
+            const leftHeaderOverPeekHit = hit(leftHdrBtn);
+
+            // State C: narrow-window modal drawer open
+            sidebarSplit.style.display = 'none';
+            backdrop.style.display = '';
+            drawer.style.display = '';
+            const modalDrawerHit = hit(modalBtn);
+            const modalHeaderHit = hit(leftHdrBtn);
+
+            return {
+                ...convoHits,
+                peekOpenZ,
+                peekBtn: peekBtnHit,
+                leftHeaderOverPeekHit,
+                modalDrawerHit,
+                modalHeaderHit,
+                voiceBtnHit: hit(voiceBtn),
+                voiceZ: getComputedStyle(voicePill).zIndex,
+                selPopupZ: getComputedStyle(selPopup).zIndex,
+                commentPopZ: getComputedStyle(commentPop).zIndex,
+                pdfPopZ: getComputedStyle(pdfPop).zIndex,
+                commentFloatZ: getComputedStyle(commentFloat).zIndex,
+                commentInlineZ: getComputedStyle(commentInline).zIndex,
+                floatSbLowZ: getComputedStyle(floatSbLow).zIndex,
+                floatSbModalZ: getComputedStyle(floatSbModal).zIndex,
+                dockedTabZ,
+                maxTabZ,
+                maxBodyZ,
+                overlaidTabZ,
+            };
+        } finally {
+            while (cleanup.length) cleanup.pop()();
+            sideTabs.removeAttribute('data-side-panel-strip');
+            sheet.removeAttribute('data-side-panel-maximized');
+            outline.querySelector('[data-split-fill-edge]')?.removeAttribute('data-split-overlaid');
+        }
+    })()`);
+    assert.equal(stackingChecks.dot, true, 'Conversation navigator dot must be directly clickable above autoscroll-viewport');
+    assert.equal(stackingChecks.scrollbar, true, 'Overlay scrollbar must be directly clickable/draggable above autoscroll-viewport');
+    assert.equal(stackingChecks.scrollBottom, true, 'Scroll-to-bottom button must be directly clickable above autoscroll-viewport');
+    assert.equal(stackingChecks.findBar, true, 'Find-in-conversation bar must be interactive');
+    assert.equal(stackingChecks.findZ, '1002');
+    assert.equal(stackingChecks.termHandle, true, 'Bottom terminal resize handle must be interactive above conversation/composer');
+    assert.equal(stackingChecks.termZ, 'auto', 'Bottom terminal body must preserve existing wallpaper overlay treatment');
+    assert.equal(stackingChecks.forkClose, true, 'Forked split view close button must be clickable above autoscroll-viewport');
+    assert.equal(stackingChecks.forkRightSizedZ, 'auto', 'Forked split view right [data-split-sized] must not trap pane at z-index 10');
+    assert.equal(stackingChecks.peekHotZone, true, 'Collapsed sidebar peek hot-zone must be hoverable above z-index 1001');
+    assert.equal(stackingChecks.peekBtn, true, 'Peeked left sidebar must be interactive above chat/wallpaper');
+    assert.equal(stackingChecks.peekOpenZ, '1003');
+    assert.equal(stackingChecks.peekClosedZ, '10');
+    assert.equal(stackingChecks.leftHeaderBtn, true, 'Top-left floating header buttons must remain clickable above peek/wallpaper');
+    assert.equal(stackingChecks.leftHeaderOverPeekHit, true, 'Top-left floating header buttons must stay above open peek surface');
+    assert.equal(stackingChecks.leftHeaderZ, '1003');
+    assert.equal(stackingChecks.modalDrawerHit, true, 'Narrow-window modal sidebar drawer must be interactive above chat/overview');
+    assert.equal(stackingChecks.modalHeaderHit, true, 'Top-left header button must sit above modal drawer');
+    assert.equal(stackingChecks.voiceBtnHit, true, 'Floating voice pill must be interactive above wallpaper/chat/overview');
+    assert.equal(stackingChecks.voiceZ, '1003');
+    assert.equal(stackingChecks.selPopupZ, '1002');
+    assert.equal(stackingChecks.commentPopZ, '1002');
+    assert.equal(stackingChecks.pdfPopZ, '1002');
+    assert.equal(stackingChecks.commentFloatZ, '1002');
+    assert.equal(stackingChecks.commentInlineZ, 'auto');
+    assert.equal(stackingChecks.floatSbLowZ, '1001');
+    assert.equal(stackingChecks.floatSbModalZ, '5001');
+    assert.equal(stackingChecks.dockedTabZ, 'auto');
+    assert.equal(stackingChecks.maxTabZ, '1002');
+    assert.equal(stackingChecks.maxBodyZ, '1002');
+    assert.equal(stackingChecks.overlaidTabZ, '1002');
 
     // Regression: host theme recompute or direct setTitleBarOverlay overwrite must restore transparent titlebar
     await evaluate(`(()=>{

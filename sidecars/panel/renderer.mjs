@@ -6,7 +6,7 @@ export async function installWallpaper(payload = {}) {
     const key = '__antigravityUiRenderer';
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 19;
+    const revision = 20;
     const active = window[key];
     if (active && (
         active.version > version || (active.version === version && active.revision > revision) ||
@@ -180,11 +180,12 @@ export async function installWallpaper(payload = {}) {
                         // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
                         '.agy-sheet > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"]) { position:relative; z-index:1001;' +
                         surfaceBg(sidebarCover, '', sidebarOpacity, sidebarBlur, 'var(--background,#131313)') + ' }' +
+                        '.agy-sheet[data-side-panel-maximized] > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"]),.agy-sheet:is([data-side-panel-maximized],:has(> [data-split-root] > [data-split-overlaid="true"])) [data-side-panel-strip] { position:relative; z-index:1002 !important; }' +
                         '[data-side-panel-body][data-has-browser-hole="true"] { background:transparent !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) .browser-hole-ancestor { background:transparent !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip { z-index:1002 !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip > div:has(iframe[data-testid="sidecar-iframe"]) { background:transparent !important; }' +
-                        '.agy-inset-shell > .absolute.right-0 { z-index:1003 !important; }' +
+                        '.agy-inset-shell > .absolute.left-0.top-0,.agy-inset-shell > .absolute.right-0,[data-testid="sidebar-peek-hot-zone"],[data-testid="sidebar-split"] [data-split-sized]:has([data-peek-surface="open"]),.agy-inset-shell > [data-testid="sidebar-popover-backdrop"],.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"],.fixed.z-40:has([data-testid="voice-dock-composer"]) { z-index:1003 !important; }' +
                         '.agy-inset-shell > .absolute.right-0 > div { background:transparent !important; }' +
                         '.agy-inset-shell > .absolute.right-0 > div > .right-full { background:none !important; }' +
                         '.relative.z-10:has([data-testid="agent-input-box"]),.z-\\[1\\]:has([data-testid="agent-input-box"]) { z-index:1001 !important; }' +
@@ -194,6 +195,9 @@ export async function installWallpaper(payload = {}) {
                         baseComposer + ' .surface-composer-card {' + composerFill + 'box-shadow:none !important; }' +
                         '[data-testid="autoscroll-viewport"] { isolation:auto !important;position:relative;z-index:1001 !important;' +
                         (bubbleCover && bubbleBlur > 0 ? 'mask-image:none !important;-webkit-mask-image:none !important;' : '') + ' }' +
+                        '[data-testid="autoscroll-viewport"] ~ [data-testid="overlay-scrollbar"],[data-testid="autoscroll-viewport"] ~ .agy-scroll-bottom,[data-testid="bottom-terminal-panel-resize-handle"],body > [data-overlay-scrollbar-track][style*="z-index: 51"] { z-index:1001 !important; }' +
+                        '[data-testid="conversation-view"] > .pointer-events-none.inset-y-0.left-0:has([data-testid="conversation-navigator"]),[data-testid="conversation-navigator"],.sticky.top-0:has([data-testid="find-bar-match-count"]),[data-main-content-body] .absolute.top-4.right-4:has(> button[aria-label="Close"]),.selection-popup,[data-comment-bubble-popover="true"],[data-testid="pdf-selected-annotation-popover"],[data-testid="comment-box"].absolute { z-index:1002 !important; }' +
+                        '[data-main-content-body] [data-split-sized]:not(:has([data-peek-surface])) { z-index:auto !important; }' +
                         '.agy-user-bubble-frame { background:transparent !important;box-shadow:inset 0 0 0 1px ' + bubbleOuter + ' !important; }' +
                         '.agy-user-bubble {' + bubbleFill + 'box-shadow:none !important; }' +
                         '[data-testid="overview-panel-overlay-backdrop"] { z-index:1002 !important; }' +
