@@ -26,6 +26,7 @@
     let revision = 0;
     let actionRevision = 0;
     let hostTheme;
+    let hostThemeColor;
     let previewImage;
     let serverImage;
     let serverImageHash;
@@ -66,7 +67,7 @@
         return result;
     }
 
-    function syncServerImage(snapshot, result) {
+    function syncServerImage(result) {
         serverImage = result.settings.image;
         serverImageHash = result.imageHash;
     }
@@ -113,7 +114,7 @@
             submitted = revision;
             const snapshot = { ...settings };
             const result = await postSettings('/api/preview', snapshot);
-            syncServerImage(snapshot, result);
+            syncServerImage(result);
             if (submitted !== revision || saving) return;
             hasDraft = result.hasDraft;
             render();
@@ -203,23 +204,30 @@
         void applyBroadcast(msg);
     });
 
+    function parseRgb(resolved) {
+        const rgb = resolved.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+        if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3]), rgb[4] === undefined ? 1 : Number(rgb[4])];
+        const srgb = resolved.match(/^color\(\s*srgb\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*([\d.eE+-]+%?))?\s*\)$/i);
+        if (!srgb) return null;
+        const alpha = srgb[4] === undefined ? 1 : (srgb[4].endsWith('%') ? Number(srgb[4].slice(0, -1)) / 100 : Number(srgb[4]));
+        return [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255, alpha];
+    }
+
     function updateHostTheme(vars) {
         const style = getComputedStyle(document.documentElement);
         const color = vars?.['--color-background'] || vars?.['--background'] ||
             style.getPropertyValue('--color-background').trim() || style.getPropertyValue('--background').trim();
-        if (!color) return;
+        if (!color || color === hostThemeColor) return;
         const probe = document.createElement('span');
         probe.style.color = color;
         if (!probe.style.color) return;
         document.body.append(probe);
         const resolved = getComputedStyle(probe).color;
         probe.remove();
-        const canvas = document.createElement('canvas');
-        canvas.width = canvas.height = 1;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = resolved;
-        ctx.fillRect(0, 0, 1, 1);
-        const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+        const channels = parseRgb(resolved);
+        if (!channels) return;
+        hostThemeColor = color;
+        const [r, g, b, a] = channels;
         if (a > 0) hostTheme = (r * .2126 + g * .7152 + b * .0722) > 150 ? 'light' : 'dark';
     }
 
@@ -512,7 +520,7 @@
         try {
             const result = await enqueue(() => postSettings('/api/settings', snapshot));
             saving = false;
-            syncServerImage(snapshot, result);
+            syncServerImage(result);
             if (submitted === revision) {
                 settings = normalize(result.settings);
                 hasDraft = result.hasDraft;

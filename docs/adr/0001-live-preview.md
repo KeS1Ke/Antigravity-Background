@@ -61,3 +61,9 @@
 
 - 将对话滚动区 `[data-testid="autoscroll-viewport"]` 与右侧栏内容区 `[data-side-panel-body]` 抬升至 `z-index: 1001`（及 Sidecar 容器 `1002`）后，原生 `z-index: 30` 的 `[data-split-sash]`（含左侧边栏与右侧边栏 8px 宽拖拽手柄 `[data-sash-handle]`）以及 `z-index: 46` 的分栏条 `[data-testid="tiling-splitter"]` 与左边缘高亮指示线会被遮挡，导致无法通过鼠标拖拽调整侧边栏宽度。
 - `renderer` `version = 16` 将 `[data-split-sash]` 与 `[data-testid="tiling-splitter"]` 抬升至 `z-index: 1003 !important`，并将 `[data-main-content-body]::before` 等左边缘悬停跟踪高亮提升至 `z-index: 1002 !important`，在不影响两侧面板显示的前提下恢复左右侧边栏与分栏拖拽交互。
+
+## 9. 颜色标准化、浏览器孔洞透明化与主题变更监听过滤（`renderer` `version = 17`）
+
+- **标题栏控制区颜色标准化**：`normalizeColor` / `shellColors` 将 `color(srgb ...)` 转换为标准 `rgb(...)`（`0..255` 整数）后再传给 `setTitleBarOverlay`，保证关闭壁纸（`!hasCss`）或卸载（`dispose()`）时在强对比度等 `color-mix` 主题下正确还原不透明底色。
+- **浏览器孔洞与分隔条背景透明**：为侧栏表面规则补充 `:not([data-has-browser-hole="true"])` 并显式声明 `[data-side-panel-body][data-has-browser-hole="true"]` 透明且无 `backdrop-filter`，同时置空 `z-index: 1003` 的 `[data-split-sash]`/`[data-testid="tiling-splitter"]` 背景，避免内置浏览器降级或开启孔洞时被底色、模糊或实心分割线遮挡。
+- **主题签名过滤与冗余校验精简**：`MutationObserver` 同时监听 `documentElement` 与 `body`（含 `data-agy-theme`），仅在 `themeSignature()` 实际变化时调用 `syncTitlebar(true)` 过滤 `style.transition` 等过渡噪音；`main.mjs` 移除 `resolveImage` 中针对 `SidecarApp` 必然保证为对象的冗余非对象守卫；`app.js` 缓存 `hostThemeColor` 并直接解析 `rgb`/`color(srgb ...)` 替代每次新建 `<canvas>`。

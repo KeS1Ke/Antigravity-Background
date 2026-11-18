@@ -47,6 +47,7 @@ assert.deepEqual(
     })(),
     [false, 42, false, 75, 12, '#445566', '#778899']
 );
+assert.throws(() => appearance.normalize(null), /背景设置无效/);
 assert.throws(() => appearance.normalize({ composerOuterColor: 'red; background:url(test)' }), /颜色/);
 assert.throws(() => appearance.normalize({ composerInnerColor: 123 }), /颜色/);
 assert.throws(() => appearance.normalize({ bubbleOuterColor: 'red' }), /颜色/);
@@ -54,7 +55,7 @@ assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜�
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
 await writeFile(join(data, 'settings.json'), JSON.stringify(settings));
 
-const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-inset-shell{position:absolute;inset:35px 0 0}.agy-sheet{height:100%;position:relative;z-index:0}.outline-none{display:flex;height:100%}.main{flex:1;position:relative;display:flex;flex-direction:column}.pane{width:300px;height:100%;background:#121315}.closed .pane{width:0;overflow:hidden}.surface-composer-card{backdrop-filter:none!important}.z-\\[1\\]{z-index:1}[data-testid="autoscroll-viewport"]{width:100%;height:160px;overflow:auto;isolation:isolate;mask-image:linear-gradient(to bottom,transparent,black 24px);-webkit-mask-image:linear-gradient(to bottom,transparent,black 24px)}[data-testid="overview-panel-overlay-backdrop"]{position:absolute;top:8px;right:8px;width:230px;height:100px;z-index:40}[data-testid="overview-panel-host-overlay"]{position:absolute;top:8px;right:8px;width:220px;height:90px;background:white;border:1px solid rgba(128,128,128,0.22);z-index:50}body[data-has-browser-hole="true"] .agy-sheet[data-sheet-inset] :is([data-main-content-body], [data-side-panel-body]){box-shadow:0 0 0 20px #121315;clip-path:inset(0 0 -8px 0)}body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"]){clip-path:inset(0%)}</style>' +
+const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-inset-shell{position:absolute;inset:35px 0 0}.agy-sheet{height:100%;position:relative;z-index:0}.outline-none{display:flex;height:100%}.main{flex:1;position:relative;display:flex;flex-direction:column}.pane{width:300px;height:100%;background:#121315}.closed .pane{width:0;overflow:hidden}.surface-composer-card{backdrop-filter:none!important}.z-\\[1\\]{z-index:1}[data-testid="autoscroll-viewport"]{width:100%;height:160px;overflow:auto;isolation:isolate;mask-image:linear-gradient(to bottom,transparent,black 24px);-webkit-mask-image:linear-gradient(to bottom,transparent,black 24px)}[data-testid="overview-panel-overlay-backdrop"]{position:absolute;top:8px;right:8px;width:230px;height:100px;z-index:40}[data-testid="overview-panel-host-overlay"]{position:absolute;top:8px;right:8px;width:220px;height:90px;background:white;border:1px solid rgba(128,128,128,0.22);z-index:50}body[data-has-browser-hole="true"] .agy-sheet[data-sheet-inset] :is([data-main-content-body], [data-side-panel-body]){box-shadow:0 0 0 20px #121315;clip-path:inset(0 0 -8px 0)}body[data-has-browser-hole="true"] [data-split-sash]{background:#444343;background-image:linear-gradient(#ffffff,#ffffff)}body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"]){clip-path:inset(0%)}</style>' +
     '<script>window.electronNative={setTitleBarOverlay:async options=>{window.titlebarOptions=options;}};window.__installLog=[];Object.defineProperty(window,"nativeStorage",{configurable:true,get(){window.__installLog.push({hasRenderer:Boolean(window.__antigravityUiRenderer),hasLayer:Boolean(document.querySelector("#antigravity-ui-background"))});return {};}});window.testRoots=new WeakMap();const original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(o){const r=original.call(this,o);window.testRoots.set(this,r);return r;};</script>' +
     '<div class="agy-inset-shell"><div class="agy-sheet" data-sheet-inset="true"><div class="outline-none" data-split-root="true" data-split-three-layer-slide="true"><div data-split-fill-edge="right" style="flex:1;display:flex;min-width:0"><div class="main" data-main-content-body="true">' +
     '<div data-testid="autoscroll-viewport"><div style="height:260px;padding:12px">' +
@@ -853,12 +854,13 @@ try {
     await Promise.all(exits);
 
     const evaluated = [];
+    let hideWallpaper = false;
     const runtime = new WallpaperRuntime(profile, () => ({
         enabled: true,
-        css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'),
+        css: hideWallpaper ? '' : appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'),
         image: settings.image,
         imageHash: expectedImageHash,
-        surfaces: { sidebarCover: true, sidebarOpacity: 100, sidebarBlur: 0, composerCover: true, composerOpacity: 100, composerBlur: 0, composerOuterColor: '', composerInnerColor: '' },
+        surfaces: { sidebarCover: true, sidebarOpacity: 100, sidebarBlur: 8, composerCover: true, composerOpacity: 100, composerBlur: 0, composerOuterColor: '', composerInnerColor: '' },
     }), async () => true, String(server.address().port));
     runtime.generation = Date.now() + 60000;
     const originalEvaluate = runtime.evaluate.bind(runtime);
@@ -886,7 +888,7 @@ try {
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '1');
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
-    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 16);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 17);
     const sashHits = await evaluate(`(()=>{
         const h=document.querySelector('[data-testid="side-panel-sash"]');
         const b=h.getBoundingClientRect();
@@ -918,9 +920,11 @@ try {
         await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
         const mainBody=document.querySelector('[data-main-content-body]');
         const splitEdge=document.querySelector('[data-split-fill-edge="right"]');
+        const sash=document.querySelector('[data-split-sash]');
         const mainStyle=getComputedStyle(mainBody);
         const splitStyle=getComputedStyle(splitEdge);
         const sideStyle=getComputedStyle(sideBody);
+        const sashStyle=getComputedStyle(sash);
         const hit=sel=>{const el=document.querySelector(sel),b=el.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===el};
         const rect=mainBody.getBoundingClientRect();
         return{
@@ -928,6 +932,10 @@ try {
             mainShadow:mainStyle.boxShadow,
             splitClip:splitStyle.clipPath,
             sideClip:sideStyle.clipPath,
+            sideBg:sideStyle.backgroundColor,
+            sideBlur:sideStyle.backdropFilter,
+            sashBg:sashStyle.backgroundColor,
+            sashBgImage:sashStyle.backgroundImage,
             mainHasHoleAttr:mainBody.hasAttribute('data-has-browser-hole'),
             splitHasHoleAttr:splitEdge.hasAttribute('data-has-browser-hole'),
             splitMatchedHostRule:splitEdge.matches('body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"])'),
@@ -938,6 +946,10 @@ try {
     assert.equal(holeState.mainHasHoleAttr, false);
     assert.equal(holeState.splitHasHoleAttr, false);
     assert.notEqual(holeState.sideClip, 'none', 'Host browser-hole rule must activate on [data-side-panel-body]');
+    assert.equal(holeState.sideBg, 'rgba(0, 0, 0, 0)', 'Browser hole side panel body must stay transparent');
+    assert.equal(holeState.sideBlur, 'none', 'Browser hole side panel body must not apply backdrop blur');
+    assert.equal(holeState.sashBg, 'rgba(0, 0, 0, 0)', 'Split sash must stay transparent when browser hole is active');
+    assert.equal(holeState.sashBgImage, 'none', 'Split sash background image must stay none when browser hole is active');
     assert.equal(holeState.splitMatchedHostRule, true, 'Host three-layer split rule must match [data-split-fill-edge="right"]');
     assert.equal(holeState.mainClip, 'none');
     assert.equal(holeState.mainShadow, 'none');
@@ -998,13 +1010,38 @@ try {
         void window.electronNative.setTitleBarOverlay({ color: '#444343', symbolColor: '#ffffff' });
     })()`);
     await until(async () => (await evaluate('window.titlebarOptions?.color')) === '#00000000', 'MutationObserver did not immediately restore transparent titlebar overlay');
-    await evaluate(`document.documentElement.style.removeProperty('--sidebar')`);
+    await evaluate(`(()=>{
+        document.documentElement.style.removeProperty('--sidebar');
+    })()`);
+    await delay(50);
+    await evaluate(`(()=>{
+        void window.electronNative.setTitleBarOverlay({ color: '#444343', symbolColor: '#ffffff' });
+        document.documentElement.style.transition = 'background-color 150ms ease';
+    })()`);
+    await delay(50);
+    assert.equal(await evaluate('window.titlebarOptions.color'), '#444343', 'Unrelated style.transition mutation must not trigger setTitleBarOverlay');
+    await evaluate(`document.body.dataset.agyTheme = 'light'`);
+    await until(async () => (await evaluate('window.titlebarOptions?.color')) === '#00000000', 'MutationObserver on body[data-agy-theme] did not restore transparent titlebar overlay');
+    await evaluate(`(()=>{
+        document.documentElement.style.removeProperty('transition');
+        delete document.body.dataset.agyTheme;
+    })()`);
     await delay(1050);
     await evaluate(`void window.electronNative.setTitleBarOverlay({ color: '#444343', symbolColor: '#ffffff' })`);
     assert.equal(await evaluate('window.titlebarOptions.color'), '#444343');
     runtime.start();
     await until(async () => (await evaluate('window.titlebarOptions?.color')) === '#00000000', 'Periodic heartbeat did not restore transparent titlebar overlay');
+    await evaluate(`document.body.style.background = 'color-mix(in srgb, #ffffff 10%, #3c3b3b)'`);
+    assert.equal(await evaluate(`getComputedStyle(document.body).backgroundColor.startsWith('color(srgb')`), true);
+    hideWallpaper = true;
+    await runtime.update(true, true);
+    assert.match(await evaluate('window.titlebarOptions?.color'), /^rgb\(\d+, \d+, \d+\)$/, '!hasCss must normalize color(srgb ...) shell background to rgb(...)');
+    hideWallpaper = false;
+    await runtime.update(true, true);
+    assert.equal(await evaluate('window.titlebarOptions?.color'), '#00000000');
     await runtime.stop();
+    assert.match(await evaluate('window.titlebarOptions?.color'), /^rgb\(\d+, \d+, \d+\)$/, 'dispose() must normalize color(srgb ...) shell background to rgb(...)');
+    await evaluate(`document.body.style.removeProperty('background')`);
 
     const storeTestDir = join(directory, 'store-reload-check');
     const store = new SettingsStore(storeTestDir, profile);

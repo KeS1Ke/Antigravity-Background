@@ -4,7 +4,7 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
-    const version = 16;
+    const version = 17;
     const active = window[key];
     if (active?.version === version && (
         active.generation > generation ||
@@ -16,7 +16,34 @@ export async function installWallpaper(payload = {}) {
         delete window.__antigravityUiWallpaper;
     }
     clearTimeout(window.__antigravityUiExpiry);
-    const shellStyle = () => getComputedStyle(document.querySelector('.agy-shell') || document.body);
+    const normalizeColor = value => {
+        const match = typeof value === 'string' && value.match(/^color\(\s*srgb\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)(?:\s*\/\s*([\d.eE+-]+%?))?\s*\)$/i);
+        if (!match) return value;
+        const toByte = n => Math.min(255, Math.max(0, Math.round(Number(n) * 255)));
+        const rgb = `${toByte(match[1])}, ${toByte(match[2])}, ${toByte(match[3])}`;
+        if (match[4] === undefined) return `rgb(${rgb})`;
+        const alpha = match[4].endsWith('%') ? Number(match[4].slice(0, -1)) / 100 : Number(match[4]);
+        return alpha >= 1 ? `rgb(${rgb})` : `rgba(${rgb}, ${alpha})`;
+    };
+    const shellColors = () => {
+        const style = getComputedStyle(document.querySelector('.agy-shell') || document.body);
+        return { color: normalizeColor(style.backgroundColor), symbolColor: normalizeColor(style.color) };
+    };
+    const themeSignature = () => {
+        const root = document.documentElement;
+        const rootStyle = getComputedStyle(root);
+        return [
+            rootStyle.getPropertyValue('--sidebar').trim(),
+            rootStyle.getPropertyValue('--foreground').trim(),
+            rootStyle.getPropertyValue('--shell').trim(),
+            rootStyle.getPropertyValue('--background').trim(),
+            root.className,
+            root.dataset.theme ?? '',
+            document.body?.className ?? '',
+            document.body?.dataset.theme ?? '',
+            document.body?.dataset.agyTheme ?? '',
+        ].join('\0');
+    };
     if (!enabled) {
         await window[key]?.dispose();
         // Keep ownership while disabled so a standby heartbeat cannot restore stale settings.
@@ -126,8 +153,9 @@ export async function installWallpaper(payload = {}) {
                         '.agy-sheet > .outline-none > :nth-child(3) { position:relative; z-index:auto !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) > .h-full.w-full { z-index:auto !important; }' +
                         // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
-                        '.agy-sheet > .outline-none > :nth-child(3) .flex-grow.overflow-hidden { position:relative; z-index:1001;' +
+                        '.agy-sheet > .outline-none > :nth-child(3) .flex-grow.overflow-hidden:not([data-has-browser-hole="true"]) { position:relative; z-index:1001;' +
                         surfaceBg(sidebarCover, '', sidebarOpacity, sidebarBlur, 'var(--background,#131313)') + ' }' +
+                        '[data-side-panel-body][data-has-browser-hole="true"] { background:transparent !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) .browser-hole-ancestor { background:transparent !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip { z-index:1002 !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip > div:has(iframe[data-testid="sidecar-iframe"]) { background:transparent !important; }' +
@@ -148,7 +176,7 @@ export async function installWallpaper(payload = {}) {
                         overviewFill + 'border-color:' + overviewOuter + ' !important; }' +
                         '[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }' +
                         '[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }' +
-                        '[data-split-sash],[data-testid="tiling-splitter"] { z-index:1003 !important; }' +
+                        '[data-split-sash],[data-testid="tiling-splitter"] { z-index:1003 !important;background:transparent !important;background-image:none !important; }' +
                         ':is(.agy-sheet[data-sheet-inset] [data-main-content-body],[data-split-panes] .agy-sheet[data-sheet-inset] [data-tiling-pane][data-edge-left],.agy-sheet[data-side-panel-maximized] [data-side-panel-body])::before { z-index:1002 !important; }'
                     );
                     currentSurfaces = signature;
@@ -157,8 +185,8 @@ export async function installWallpaper(payload = {}) {
                 lease = setTimeout(() => state.dispose(), 6500);
             },
             syncTitlebar(force = false) {
-                const style = shellStyle();
-                const overlay = { color: state.hasCss ? '#00000000' : style.backgroundColor, symbolColor: style.color };
+                const base = shellColors();
+                const overlay = state.hasCss ? { color: '#00000000', symbolColor: base.symbolColor } : base;
                 if (!force &&
                     state.titlebar?.color === overlay.color &&
                     state.titlebar?.symbolColor === overlay.symbolColor &&
@@ -173,14 +201,18 @@ export async function installWallpaper(payload = {}) {
                 layer.remove();
                 document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== layout);
                 if (window[key] === state) delete window[key];
-                const style = shellStyle();
-                return window.electronNative.setTitleBarOverlay?.({ color: style.backgroundColor, symbolColor: style.color });
+                return window.electronNative.setTitleBarOverlay?.(shellColors());
             },
         };
+        let currentTheme = themeSignature();
         const observer = new MutationObserver(() => {
+            const nextTheme = themeSignature();
+            if (nextTheme === currentTheme) return;
+            currentTheme = nextTheme;
             if (window[key] === state && state.hasCss) void state.syncTitlebar(true);
         });
         observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme'] });
+        if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme'] });
         window[key] = state;
     }
     const activeState = window[key];

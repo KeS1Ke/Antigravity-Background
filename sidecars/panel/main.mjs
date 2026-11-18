@@ -43,7 +43,6 @@ function sameSettings(a, b, ignoreTheme = false) {
     return true;
 }
 function resolveImage(input, saved) {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
     if (input.image !== undefined || typeof input.imageHash !== 'string') return input;
     for (const candidate of [draft?.image, saved.image]) {
         if (candidate !== undefined && imageDigest(candidate) === input.imageHash) {
