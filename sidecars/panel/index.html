@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none';">
+    <title>Antigravity Background</title>
+    <link rel="stylesheet" href="/styles.css?v=0.3.8">
+    <script src="/preload.js"></script>
+    <script src="/appearance.js" defer></script>
+    <script src="/app.js?v=0.3.8" defer></script>
+</head>
+<body>
+    <header>
+        <div><h1>背景设置</h1><p class="subtitle">Antigravity Background</p></div>
+        <label class="switch"><input id="enabled" type="checkbox" disabled><span>启用</span></label>
+    </header>
+    <main>
+        <details class="card preview-card" open>
+            <summary><h2>图片预览</h2><span id="mode-label">适应</span></summary>
+            <div id="preview" class="preview" role="img" aria-label="Antigravity 完整窗口外观示意预览：顶部栏、左侧导航、聊天区、消息气泡、Overview 面板、输入框与右侧栏">
+                <div class="sample-window" aria-hidden="true">
+                    <div class="sample-titlebar"><span>Antigravity</span><span>─　□　×</span></div>
+                    <div class="sample-workspace">
+                        <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><i></i><i></i></div>
+                        <div class="sample-main">
+                            <div class="sample-overview"><b>Overview</b><span>Review</span><span>Files</span></div>
+                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><span>调整对话框底色</span></div><i></i><i></i><i></i></div>
+                            <div class="sample-composer"><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
+                        </div>
+                        <div class="sample-panel"><div class="sample-tabs">README.md　＋</div><div class="sample-panel-body"><b>README.md</b><i></i><i></i><i></i><span>Review</span><span>Open File</span><span>Terminal</span><span>Browser</span></div></div>
+                    </div>
+                    <div class="wallpaper"></div>
+                </div>
+                <span id="empty">选择一张背景图片</span>
+            </div>
+            <div class="image-actions">
+                <label class="file-button">选择图片<input id="image" type="file" accept="image/png,image/jpeg,image/webp" disabled></label>
+                <button id="remove" type="button" disabled>移除</button>
+                <span class="file-hint">PNG / JPG / WebP</span>
+            </div>
+        </details>
+        <div class="settings-columns">
+            <div class="settings-column">
+                <details class="card" open>
+                    <summary><h2>图片布局</h2></summary>
+                    <div id="modes" class="modes" role="group" aria-label="图片布局">
+                        <button type="button" data-mode="fill" disabled><span class="mode-icon fill"></span>填充</button>
+                        <button type="button" data-mode="stretch" disabled><span class="mode-icon stretch"></span>拉伸</button>
+                        <button type="button" data-mode="fit" disabled><span class="mode-icon fit"></span>适应</button>
+                        <button type="button" data-mode="tile" disabled><span class="mode-icon tile"></span>平铺</button>
+                    </div>
+                </details>
+                <details class="card adjustments">
+                    <summary><h2>壁纸调整</h2></summary>
+                    <div class="section-label reset-row"><span></span><button id="reset" type="button" class="text-button" disabled>重置</button></div>
+                    <div id="controls"></div>
+                </details>
+            </div>
+            <div class="settings-column">
+                <details class="card">
+                    <summary><h2>侧边栏</h2></summary>
+                    <div class="section-label surface-switch"><label class="switch"><input id="sidebar-cover" type="checkbox" disabled> 显示底色</label></div>
+                    <div id="sidebar-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
+                    <summary><h2>对话框与面板</h2></summary>
+                    <div class="section-label surface-switch"><label class="switch"><input id="overview-sync" type="checkbox" disabled> 同步 Overview 面板</label></div>
+                    <div id="dialog-target-switch" class="target-tabs" role="group" aria-label="编辑目标" hidden><button type="button" data-dialog-target="bubble" aria-pressed="true" disabled>对话框</button><button type="button" data-dialog-target="overview" aria-pressed="false" disabled>Overview 面板</button></div>
+                    <div class="section-label surface-switch"><label class="switch"><input id="dialog-cover" type="checkbox" disabled> 显示底色</label></div>
+                    <div class="color-controls">
+                        <div class="color-row"><label for="dialogOuterColor">外圈颜色</label><input id="dialogOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-dialog-color="outer" class="text-button" disabled>默认</button></div>
+                        <div class="color-row"><label for="dialogInnerColor">内部颜色</label><input id="dialogInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-dialog-color="inner" class="text-button" disabled>默认</button></div>
+                    </div>
+                    <div id="dialog-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
+                    <summary><h2>输入框</h2></summary>
+                    <div class="section-label surface-switch"><label class="switch"><input id="composer-cover" type="checkbox" disabled> 显示底色</label></div>
+                    <div class="color-controls">
+                        <div class="color-row"><label for="composerOuterColor">外圈颜色</label><input id="composerOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerOuterColor" class="text-button" disabled>默认</button></div>
+                        <div class="color-row"><label for="composerInnerColor">内部颜色</label><input id="composerInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerInnerColor" class="text-button" disabled>默认</button></div>
+                    </div>
+                    <div id="composer-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
+                    <summary><h2>设置页主题</h2></summary>
+                    <div class="section-label"><label for="theme">主题</label>
+                        <select id="theme" disabled><option value="system">跟随应用</option><option value="dark">深色</option><option value="light">浅色</option></select>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <p id="status" role="status" aria-live="polite"></p>
+        <div class="footer-actions">
+            <button id="discard" type="button" title="放弃未保存的实时预览并恢复已保存设置" disabled>还原</button>
+            <button id="save" class="primary" type="button" disabled>保存设置</button>
+        </div>
+    </footer>
+</body>
+</html>

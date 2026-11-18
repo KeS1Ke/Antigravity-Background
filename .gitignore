@@ -1,0 +1,8 @@
+.artifacts/
+antigrative-dashboard-0.9.1/
+STATE.md
+node_modules/
+*.tmp
+*.lock
+*.bak
+.env*
