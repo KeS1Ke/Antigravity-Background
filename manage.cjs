@@ -3,34 +3,28 @@
 const fs = require('node:fs');
 const { join, resolve, dirname } = require('node:path');
 const { homedir } = require('node:os');
-const { randomUUID, createHash } = require('node:crypto');
+const { randomUUID } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const readline = require('node:readline/promises');
+const {
+    readAsarEntry,
+    replaceAtomic: replace,
+    digest,
+    inspectAsarPersist,
+    installAsarPersist,
+    restoreAsarPersist,
+    inspectShortcuts,
+    patchShortcuts,
+    restoreShortcuts,
+} = require('./plugin/persistence.cjs');
 
 const name = 'antigravity-ui';
 const runtimeFiles = ['plugin.json', 'plugin', 'sidecars', 'assets'];
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 function json(path, fallback) {
     try { return JSON.parse(fs.readFileSync(path, 'utf8').replace(/^\uFEFF/, '')); }
     catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
-}
-
-function replace(path, data) {
-    const temporary = path + '.' + randomUUID() + '.tmp';
-    try {
-        fs.writeFileSync(temporary, data, { flag: 'wx' });
-        fs.renameSync(temporary, path);
-    } finally { fs.rmSync(temporary, { force: true }); }
-}
-
-function readArchive(bytes, path) {
-    const header = JSON.parse(bytes.toString('utf8', 16, 16 + bytes.readUInt32LE(12)));
-    const entry = path.split('/').reduce((folder, key) => folder?.files?.[key], header);
-    if (!entry || entry.offset === undefined) return undefined;
-    const offset = 8 + bytes.readUInt32LE(4) + Number(entry.offset);
-    return bytes.subarray(offset, offset + entry.size);
 }
 
 function isHelperProcess(command) {
@@ -104,9 +98,9 @@ function restoreLegacy(installation) {
     let current;
     try { current = fs.readFileSync(path); }
     catch (error) { if (error.code === 'ENOENT') return; throw error; }
-    const marker = readArchive(current, 'dist/antigravity-ui/original.json');
+    const marker = readAsarEntry(current, 'dist/antigravity-ui/original.json');
     if (!marker) return;
-    const { sha256 } = JSON.parse(marker);
+    const { sha256 } = JSON.parse(marker.toString('utf8'));
     if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('旧补丁的恢复记录无效。');
     const original = fs.readFileSync(path + '.antigravity-ui.' + sha256 + '.bak');
     if (digest(original) !== sha256) throw new Error('旧补丁的原始资源备份校验失败。');
@@ -142,8 +136,10 @@ async function manage() {
     if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('请使用 Node.js 22 或更高版本。');
     const appOverride = rawAppOverride?.trim() || '';
     const home = homeOverride || homedir();
-    const configuration = join(home, '.gemini', 'config', 'config.json');
-    const destination = join(home, '.gemini', 'config', 'plugins', name);
+    const configDir = join(home, '.gemini', 'config');
+    const configuration = join(configDir, 'config.json');
+    const shortcutBackup = join(configDir, 'antigravity-ui.shortcuts.bak.json');
+    const destination = join(configDir, 'plugins', name);
     if (command === 'status') {
         const manifestRaw = json(join(destination, 'plugin.json'), null);
         const manifest = isPlainObject(manifestRaw) ? manifestRaw : null;
@@ -154,6 +150,20 @@ async function manage() {
         console.log(manifest
             ? 'Antigravity Background ' + manifest.version + ' ｜ 自定义插件已安装 ｜ ' + (plugin && sidecar ? '已启用' : '已停用')
             : 'Antigravity Background 尚未安装到自定义目录。');
+        const running = process.platform === 'win32' ? runningAntigravity() : [];
+        const installation = await resolveInstallation(command, appOverride, home, running);
+        const asarInfo = inspectAsarPersist(installation);
+        const shortcuts = process.platform === 'win32' ? inspectShortcuts({ home, installation }) : [];
+        const readyShortcuts = shortcuts.filter(item => item.ready).length;
+        const portFile = join(home, 'AppData', 'Roaming', 'Antigravity', 'DevToolsActivePort');
+        const hasPort = fs.existsSync(portFile);
+        if (asarInfo.exists || shortcuts.length > 0) {
+            console.log(
+                '持久化状态：app.asar 自启开关 ' + (asarInfo.patched ? '已注入' : '未注入') +
+                ' ｜ 快捷方式 ' + readyShortcuts + '/' + shortcuts.length + ' 已配置' +
+                ' ｜ 当前调试端口 ' + (hasPort ? '已就绪' : '未检测到')
+            );
+        }
         return;
     }
     const running = runningAntigravity();
@@ -167,6 +177,8 @@ async function manage() {
     const previous = destination + '.previous-' + randomUUID();
     let oldMoved = false;
     let newMoved = false;
+    let persistInfo;
+    let shortcutInfo;
     try {
         safeDirectory(destination);
         const before = fs.existsSync(configuration) ? fs.readFileSync(configuration) : null;
@@ -189,15 +201,29 @@ async function manage() {
             newMoved = true;
             config.plugins[name] = { ...(isPlainObject(config.plugins[name]) ? config.plugins[name] : null), enabled: true };
             config.sidecars[name + '/panel'] = { ...(isPlainObject(config.sidecars[name + '/panel']) ? config.sidecars[name + '/panel'] : null), enabled: true };
+            persistInfo = installAsarPersist(installation);
+            shortcutInfo = process.platform === 'win32'
+                ? patchShortcuts({ home, installation, backupPath: shortcutBackup })
+                : { total: 0, repaired: 0, ready: 0 };
         } else {
             delete config.plugins[name];
             delete config.sidecars[name + '/panel'];
+            persistInfo = restoreAsarPersist(installation);
+            shortcutInfo = process.platform === 'win32'
+                ? restoreShortcuts({ backupPath: shortcutBackup })
+                : { restored: 0 };
         }
         const now = fs.existsSync(configuration) ? fs.readFileSync(configuration) : null;
         if (Boolean(before) !== Boolean(now) || (before && !before.equals(now))) throw new Error('配置已被其他操作修改，请重试。');
         if (before) fs.writeFileSync(configuration + '.antigravity-ui.' + randomUUID() + '.bak', before, { flag: 'wx' });
         replace(configuration, JSON.stringify(config, null, 2) + '\n');
     } catch (error) {
+        if (command === 'install' && persistInfo?.status === 'patched') {
+            try { restoreAsarPersist(installation); } catch {}
+        }
+        if (command === 'install' && shortcutInfo?.repaired > 0) {
+            try { restoreShortcuts({ backupPath: shortcutBackup }); } catch {}
+        }
         if (newMoved) fs.rmSync(destination, { recursive: true, force: true });
         if (oldMoved) fs.renameSync(previous, destination);
         throw error;
@@ -210,9 +236,19 @@ async function manage() {
         try { fs.rmSync(previous, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
         catch (error) { console.warn('旧目录清理未完成，可手动删除 ' + previous + '：' + error.message); }
     }
-    console.log(command === 'install'
-        ? '已安装到 ' + destination + '。重启后从右侧 Extensions → Antigravity Background 打开设置页。'
-        : '已卸载。背景图片与设置保留在 Sidecar 数据目录。');
+    if (command === 'install') {
+        const persistNote = persistInfo?.status === 'patched' || persistInfo?.status === 'already-patched'
+            ? '已配置 app.asar 持久化自启开关（仅 127.0.0.1），'
+            : '';
+        const shortcutNote = shortcutInfo?.total > 0
+            ? '快捷方式已配置 ' + shortcutInfo.ready + '/' + shortcutInfo.total + ' 个，'
+            : '';
+        console.log('已安装到 ' + destination + '。' + persistNote + shortcutNote + '重启后从右侧 Extensions → Antigravity Background 打开设置页。');
+    } else {
+        const restoreNote = (persistInfo?.status === 'restored' ? '已恢复原版 app.asar，' : '') +
+            (shortcutInfo?.restored > 0 ? '已还原 ' + shortcutInfo.restored + ' 个快捷方式，' : '');
+        console.log('已卸载。' + restoreNote + '背景图片与设置保留在 Sidecar 数据目录。');
+    }
 }
 
 manage().catch(error => { console.error(error.message); process.exitCode = 1; });

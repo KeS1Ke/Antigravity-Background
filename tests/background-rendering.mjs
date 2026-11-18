@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -11,6 +11,7 @@ import { Connection, WallpaperRuntime } from '../sidecars/panel/runtime.mjs';
 import { installWallpaper } from '../sidecars/panel/renderer.mjs';
 import { SettingsStore } from '../sidecars/panel/store.mjs';
 import appearance from '../plugin/appearance.cjs';
+import persistence from '../plugin/persistence.cjs';
 
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
 const directory = await mkdtemp(join((await import('node:os')).tmpdir(), 'antigravity-ui-test-'));
@@ -1068,7 +1069,7 @@ try {
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
     assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 20);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 21);
     const activeGeneration = await evaluate('window.__antigravityUiRenderer.generation');
     const installInHost = payload => evaluate(`(${installWallpaper.toString()})(${JSON.stringify(payload)})`);
     await evaluate("window.oldLayer = document.querySelector('#antigravity-ui-background'); delete window.__antigravityUiRenderer.revision");
@@ -1076,7 +1077,7 @@ try {
     assert.equal(await installInHost({ enabled: true, css: 'color:red', imageHash: expectedImageHash, generation: activeGeneration + 1 }), 'NEED_IMAGE');
     assert.equal(await evaluate("window.oldLayer === document.querySelector('#antigravity-ui-background') && window.titlebarOptions.color === '#00000000'"), true);
     await runtime.update(true, false);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 20);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 21);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{
@@ -1447,6 +1448,104 @@ try {
     assert.equal(stackingChecks.maxBodyZ, '1002');
     assert.equal(stackingChecks.overlaidTabZ, '1002');
 
+    // Regression: floating body > [data-overlay-scrollbar-track] on scrollable working-status blocks must stay clipped to autoscroll-viewport
+    const floatingClipChecks = await evaluate(`(async () => {
+        const mainBody = document.querySelector('[data-main-content-body]');
+        const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+        const vpParent = vp.parentElement;
+        const cleanup = [];
+        try {
+            const splitEdge = mainBody.parentElement;
+            const prevDir = splitEdge.style.flexDirection;
+            const prevMinH = mainBody.style.minHeight;
+            splitEdge.style.flexDirection = 'column';
+            mainBody.style.minHeight = '0';
+            cleanup.push(() => { splitEdge.style.flexDirection = prevDir; mainBody.style.minHeight = prevMinH; });
+
+            const paneHeader = document.createElement('div');
+            paneHeader.setAttribute('data-main-content-header', 'true');
+            paneHeader.style.cssText = 'height:40px;flex-shrink:0;position:relative;';
+            const hdrBtn = document.createElement('button');
+            hdrBtn.textContent = 'Header';
+            hdrBtn.style.cssText = 'position:absolute;right:0;top:0;width:80px;height:40px;';
+            paneHeader.append(hdrBtn);
+            splitEdge.insertBefore(paneHeader, mainBody);
+            cleanup.push(() => paneHeader.remove());
+
+            const spacerTop = document.createElement('div');
+            spacerTop.style.height = '180px';
+            const stepBox = document.createElement('div');
+            stepBox.className = 'overflow-y-auto bleed-contain';
+            stepBox.style.cssText = 'max-height:110px;height:110px;overflow-y:auto;width:100%;';
+            const stepInner = document.createElement('div');
+            stepInner.style.height = '320px';
+            stepBox.append(stepInner);
+            const spacerBot = document.createElement('div');
+            spacerBot.style.height = '260px';
+            vp.firstElementChild.prepend(spacerTop, stepBox, spacerBot);
+            cleanup.push(() => { spacerTop.remove(); stepBox.remove(); spacerBot.remove(); });
+
+            const track = document.createElement('div');
+            track.setAttribute('data-overlay-scrollbar-track', '');
+            track.dataset.orientation = 'vertical';
+            track.style.cssText = 'position:fixed;width:12px;z-index:1002;';
+            document.body.append(track);
+            cleanup.push(() => track.remove());
+
+            const placeTrack = () => {
+                const r = stepBox.getBoundingClientRect();
+                track.style.top = (r.top + stepBox.clientTop + 2) + 'px';
+                track.style.left = (r.left + stepBox.clientLeft + stepBox.clientWidth - 14) + 'px';
+                track.style.height = (stepBox.clientHeight - 4) + 'px';
+            };
+
+            // 1. Scroll stepBox partway above autoscroll-viewport top (covering header at y=40..75)
+            vp.scrollTop = 225;
+            placeTrack();
+            await new Promise(r => setTimeout(r, 40));
+            const topClip = track.style.clipPath;
+            const trTop = track.getBoundingClientRect();
+            const vpR = vp.getBoundingClientRect();
+            const hdrHit = document.elementFromPoint(Math.round(trTop.left + 6), Math.round(paneHeader.getBoundingClientRect().top + 10));
+            const insideHit = document.elementFromPoint(Math.round(trTop.left + 6), Math.round(vpR.top + 14));
+
+            // 2. Scroll stepBox partway below autoscroll-viewport bottom
+            vp.scrollTop = 95;
+            placeTrack();
+            await new Promise(r => setTimeout(r, 40));
+            const botClip = track.style.clipPath;
+            const trBot = track.getBoundingClientRect();
+            const belowHit = document.elementFromPoint(Math.round(trBot.left + 6), Math.round(vp.getBoundingClientRect().bottom + 12));
+
+            // 3. Scroll stepBox completely inside autoscroll-viewport
+            vp.scrollTop = 165;
+            placeTrack();
+            await new Promise(r => setTimeout(r, 40));
+            const insideClip = track.style.clipPath;
+
+            // Keep an active clipped track to confirm dispose() clears clipPath cleanly afterwards
+            vp.scrollTop = 0;
+            return {
+                topClip,
+                botClip,
+                insideClip,
+                hdrBlocked: hdrBtn.contains(hdrHit) || paneHeader.contains(hdrHit),
+                insideTrackHit: track.contains(insideHit),
+                belowUnblocked: !track.contains(belowHit),
+                vpTop: Math.round(vpR.top),
+                trTopY: Math.round(trTop.top),
+            };
+        } finally {
+            while (cleanup.length) cleanup.pop()();
+        }
+    })()`);
+    assert.match(floatingClipChecks.topClip, /^inset\(\d+px/, 'Floating track extending above autoscroll-viewport must be top-clipped');
+    assert.equal(floatingClipChecks.hdrBlocked, true, 'Clipped top portion must pass pointer hits through to pane header');
+    assert.equal(floatingClipChecks.insideTrackHit, true, 'Visible portion inside autoscroll-viewport must remain interactive');
+    assert.match(floatingClipChecks.botClip, /^inset\(0px 0px \d+px(?: 0px)?\)/, 'Floating track extending below autoscroll-viewport must be bottom-clipped');
+    assert.equal(floatingClipChecks.belowUnblocked, true, 'Clipped bottom portion must not block elements below autoscroll-viewport');
+    assert.equal(floatingClipChecks.insideClip, '', 'Fully visible floating track must clear clip-path');
+
     // Regression: host theme recompute or direct setTitleBarOverlay overwrite must restore transparent titlebar
     await evaluate(`(()=>{
         document.documentElement.style.setProperty('--sidebar', '#444343');
@@ -1482,7 +1581,17 @@ try {
     hideWallpaper = false;
     await runtime.update(true, true);
     assert.equal(await evaluate('window.titlebarOptions?.color'), '#00000000');
+    await evaluate(`(()=>{
+        const box = document.querySelector('[data-testid="autoscroll-viewport"]');
+        const track = document.createElement('div');
+        track.id = 'dispose-clip-check';
+        track.setAttribute('data-overlay-scrollbar-track', '');
+        track.style.cssText = 'position:fixed;top:-20px;left:10px;width:12px;height:120px;clip-path:inset(30px 0px 0px 0px);';
+        document.body.append(track);
+        void box;
+    })()`);
     await runtime.stop();
+    assert.equal(await evaluate(`(() => { const t = document.querySelector('#dispose-clip-check'); const v = t.style.clipPath; t.remove(); return v; })()`), '', 'dispose() must clear clip-path on floating scrollbar tracks');
     assert.match(await evaluate('window.titlebarOptions?.color'), /^rgb\(\d+, \d+, \d+\)$/, 'dispose() must normalize color(srgb ...) shell background to rgb(...)');
     await evaluate(`document.body.style.removeProperty('background')`);
 
@@ -1497,7 +1606,141 @@ try {
     assert.equal(store.settings.bubbleBlur, 7);
     assert.equal(await store.reloadIfChanged(), false);
 
-    console.log('Passed: 0.3.8 unified dialog/Overview card & overviewSync, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, plus all Q1-Q5 rendering/save interactions.');
+    // Regression: persistence.cjs ASAR boot-switch install/idempotency/restore, shortcut backup/repair/restore & MISSING_DEVTOOLS_PORT UI flow
+    const persistTestRoot = join(directory, 'persist-check');
+    const fakeInstall = join(persistTestRoot, 'app');
+    const fakeRes = join(fakeInstall, 'resources');
+    const fakeHome = join(persistTestRoot, 'home');
+    const fakeDesktop = join(fakeHome, 'Desktop');
+    const fakeStart = join(fakeHome, 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    await mkdir(fakeRes, { recursive: true });
+    await mkdir(fakeDesktop, { recursive: true });
+    await mkdir(fakeStart, { recursive: true });
+    await writeFile(join(fakeInstall, 'Antigravity.exe'), '');
+    const sampleMain = Buffer.from('"use strict";\nconst electron_1 = require("electron");\nelectron_1.app.whenReady().then(()=>{});\n', 'utf8');
+    const samplePkg = Buffer.from('{"name":"antigravity"}', 'utf8');
+    const buildTestAsar = entries => {
+        const chunks = [];
+        let cursor = 0;
+        const header = { files: {} };
+        const hashOf = buf => createHash('sha256').update(buf).digest('hex');
+        for (const [p, buf] of Object.entries(entries)) {
+            const parts = p.split('/');
+            let cur = header;
+            for (let i = 0; i < parts.length - 1; i++) {
+                cur.files[parts[i]] ??= { files: {} };
+                cur = cur.files[parts[i]];
+            }
+            cur.files[parts[parts.length - 1]] = {
+                size: buf.length,
+                offset: String(cursor),
+                integrity: { algorithm: 'SHA256', hash: hashOf(buf), blockSize: 4194304, blocks: [hashOf(buf)] },
+            };
+            chunks.push(buf);
+            cursor += buf.length;
+        }
+        const json = Buffer.from(JSON.stringify(header), 'utf8');
+        const aligned = (json.length + 3) & ~3;
+        const prefix = Buffer.alloc(16);
+        prefix.writeUInt32LE(4, 0);
+        prefix.writeUInt32LE(aligned + 8, 4);
+        prefix.writeUInt32LE(aligned + 4, 8);
+        prefix.writeUInt32LE(json.length, 12);
+        return Buffer.concat([prefix, json, Buffer.alloc(aligned - json.length), ...chunks]);
+    };
+    const origAsar = buildTestAsar({ 'package.json': samplePkg, 'dist/main.js': sampleMain });
+    const fakeAsarPath = join(fakeRes, 'app.asar');
+    await writeFile(fakeAsarPath, origAsar);
+    const patch1 = persistence.installAsarPersist(fakeInstall);
+    assert.equal(patch1.status, 'patched');
+    const patchedMainText = persistence.readAsarEntry(await readFile(fakeAsarPath), 'dist/main.js').toString('utf8');
+    assert.match(patchedMainText, /\/\*antigravity-ui-persist\*\/[\s\S]*appendSwitch\('remote-debugging-port','0'\)/);
+    assert.equal(patchedMainText.indexOf('/*antigravity-ui-persist*/') < patchedMainText.indexOf('whenReady'), true);
+    assert.equal(persistence.installAsarPersist(fakeInstall).status, 'already-patched');
+    assert.equal(persistence.inspectAsarPersist(fakeInstall).patched, true);
+    assert.equal(persistence.restoreAsarPersist(fakeInstall).status, 'restored');
+    assert.equal(Buffer.compare(await readFile(fakeAsarPath), origAsar), 0, 'Restored app.asar must match original bytes');
+    assert.equal(persistence.inspectAsarPersist(fakeInstall).patched, false);
+
+    // Shortcut patch & restore + Sidecar MISSING_DEVTOOLS_PORT repair UI
+    const launcherDir = join(persistTestRoot, 'proxy');
+    await mkdir(launcherDir, { recursive: true });
+    await writeFile(join(launcherDir, 'AntigravityLauncher.exe'), '');
+    await writeFile(join(persistTestRoot, 'OtherApp.exe'), '');
+    const desktopLnk = join(fakeDesktop, 'Antigravity.lnk');
+    const startLnk = join(fakeStart, 'Antigravity.lnk');
+    const otherLnk = join(fakeDesktop, 'OtherApp.lnk');
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '$req = [Console]::In.ReadToEnd() | ConvertFrom-Json; $ws = New-Object -ComObject WScript.Shell; ' +
+        'foreach ($i in $req) { $s = $ws.CreateShortcut($i.p); $s.TargetPath = $i.t; $s.Arguments = $i.a; $s.Save() }',
+    ], {
+        input: JSON.stringify([
+            { p: desktopLnk, t: join(launcherDir, 'AntigravityLauncher.exe'), a: '--proxy-flag' },
+            { p: startLnk, t: join(fakeInstall, 'Antigravity.exe'), a: '--remote-debugging-port=0 --remote-debugging-address=127.0.0.1' },
+            { p: otherLnk, t: join(persistTestRoot, 'OtherApp.exe'), a: '--keep-me' },
+        ]),
+        windowsHide: true,
+    });
+    const fakeBackupJson = join(fakeHome, '.gemini', 'config', 'antigravity-ui.shortcuts.bak.json');
+    const scRes1 = persistence.patchShortcuts({ home: fakeHome, installation: fakeInstall, backupPath: fakeBackupJson });
+    assert.equal(scRes1.total, 2);
+    assert.equal(scRes1.repaired, 1);
+    assert.equal(scRes1.ready, 2);
+    assert.match(scRes1.shortcuts.find(s => s.path === desktopLnk).args, /--proxy-flag.*--remote-debugging-port=0.*--remote-debugging-address=127\.0\.0\.1/);
+    const otherArgs = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        '$ws = New-Object -ComObject WScript.Shell; $ws.CreateShortcut([Console]::In.ReadToEnd().Trim()).Arguments',
+    ], { input: otherLnk, encoding: 'utf8', windowsHide: true }).trim();
+    assert.equal(otherArgs, '--keep-me', 'Unrelated shortcuts must never be altered');
+
+    const missRuntime = new WallpaperRuntime(join(persistTestRoot, 'missing-profile'), () => ({ enabled: false }), async () => true, '9999');
+    await missRuntime.update(true, true);
+    assert.equal(missRuntime.health.errorCode, 'MISSING_DEVTOOLS_PORT');
+    assert.doesNotMatch(missRuntime.health.error, /ENOENT/);
+
+    // Launch a lightweight Sidecar pointing at missing DevToolsActivePort to verify /api/repair-shortcuts + #repair-launch UI
+    const missProbe = createServer();
+    await new Promise(resolve => missProbe.listen(0, '127.0.0.1', resolve));
+    const missPort = missProbe.address().port;
+    await new Promise(resolve => missProbe.close(resolve));
+    let missErr = '';
+    const missSidecar = spawn(process.execPath, [join(project, 'sidecars', 'panel', 'main.mjs')], {
+        env: {
+            ...environment,
+            USERPROFILE: fakeHome,
+            AG_UI_HOME: fakeHome,
+            AG_UI_INSTALLATION: fakeInstall,
+            AG_UI_PROFILE: join(persistTestRoot, 'missing-profile'),
+            ANTIGRAVITY_LS_ADDRESS: host,
+            ANTIGRAVITY_CSRF_TOKEN: 'test',
+            ANTIGRAVITY_SIDECAR_WEB_PORT: String(missPort),
+            ANTIGRAVITY_SIDECAR_UI_TOKEN: 'test-miss',
+            ANTIGRAVITY_EXECUTABLE_DATA_DIR: join(persistTestRoot, 'miss-data'),
+        },
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    missSidecar.stderr.on('data', chunk => { missErr += chunk; });
+    let missClient;
+    try {
+        const missUrl = 'http://127.0.0.1:' + missPort + '/?token=test-miss';
+        await until(async () => (await fetch('http://127.0.0.1:' + missPort + '/api/settings')).ok, 'Missing-port Sidecar did not start: ' + missErr);
+        // Restore desktop shortcut first so button actually repairs 1 shortcut
+        assert.equal(persistence.restoreShortcuts({ backupPath: fakeBackupJson }).restored, 1);
+        const missTarget = await fetch('http://127.0.0.1:' + port + '/json/new?' + encodeURIComponent(missUrl), { method: 'PUT' }).then(r => r.json());
+        missClient = new Connection(missTarget.webSocketDebuggerUrl);
+        await missClient.open();
+        await until(() => evalOn(missClient, 'Boolean(document.querySelector("#repair-launch")) && !document.querySelector("#repair-launch").hidden', 'Repair button'), '#repair-launch button did not appear when DevToolsActivePort is missing');
+        await evalOn(missClient, 'document.querySelector("#repair-launch").click()', 'Click repair button');
+        await until(() => evalOn(missClient, 'document.querySelector("#status").textContent.includes("已为 1 个快捷方式")', 'Repair status'), '#repair-launch did not update desktop shortcut via /api/repair-shortcuts');
+        const restoredAfterUi = persistence.restoreShortcuts({ backupPath: fakeBackupJson });
+        assert.equal(restoredAfterUi.restored, 1);
+    } finally {
+        missClient?.close();
+        missSidecar.kill('SIGTERM');
+        await new Promise(resolve => missSidecar.exitCode !== null ? resolve() : missSidecar.once('exit', resolve));
+    }
+
+    console.log('Passed: 0.3.8 unified dialog/Overview card & overviewSync, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), plus all Q1-Q5 rendering/save interactions.');
     await Promise.race([client.command('Browser.close'), delay(300)]);
 } finally {
     client?.close();

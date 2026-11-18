@@ -124,7 +124,17 @@ export class WallpaperRuntime {
     }
 
     async discoverTargets() {
-        const file = await readFile(join(this.profile, 'DevToolsActivePort'), 'utf8');
+        let file;
+        try {
+            file = await readFile(join(this.profile, 'DevToolsActivePort'), 'utf8');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                const missing = new Error('未检测到 Antigravity 本地调试端口，背景暂未附加（可能未使用快捷方式启动，或客户端更新覆盖了自启开关）。');
+                missing.code = 'MISSING_DEVTOOLS_PORT';
+                throw missing;
+            }
+            throw error;
+        }
         const port = Number(file.split(/\r?\n/)[0]);
         if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('界面检查端口无效。');
         const response = await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(2000) });
@@ -243,9 +253,11 @@ export class WallpaperRuntime {
             }
             if (!desired.enabled) this.lastLayout = null;
             else if (nextLayout) this.lastLayout = nextLayout;
+            const ok = Boolean(applied || (ignored && !lastError));
             this.health = {
                 windows: applied,
-                error: applied || (ignored && !lastError) ? '' : (lastError?.message || '等待 Antigravity 主窗口。'),
+                error: ok ? '' : (lastError?.message || '等待 Antigravity 主窗口。'),
+                ...(!ok && lastError?.code ? { errorCode: lastError.code } : {}),
                 ...(this.lastLayout ? { layout: this.lastLayout } : {}),
             };
         } catch (error) {
@@ -253,6 +265,7 @@ export class WallpaperRuntime {
             this.health = {
                 windows: 0,
                 error: error.message,
+                ...(error.code ? { errorCode: error.code } : {}),
                 ...(this.lastLayout ? { layout: this.lastLayout } : {}),
             };
         }

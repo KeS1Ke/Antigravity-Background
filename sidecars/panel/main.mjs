@@ -1,18 +1,23 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadSdk } from './sdk.mjs';
 import { WallpaperRuntime } from './runtime.mjs';
 import { InvalidSettingsError, SettingsStore } from './store.mjs';
 import appearance from '../../plugin/appearance.cjs';
+import persistence from '../../plugin/persistence.cjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
+const home = process.env.AG_UI_HOME || homedir();
 const profile = process.env.AG_UI_PROFILE || join(homedir(), 'AppData', 'Roaming', 'Antigravity');
 const data = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR ||
     join(homedir(), '.gemini', 'antigravity', 'sidecar_data', 'antigravity-ui', 'panel', 'data');
 const resources = process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'resources');
+const installation = process.env.AG_UI_INSTALLATION ||
+    (basename(process.execPath).toLowerCase() === 'antigravity.exe' ? dirname(process.execPath) : dirname(resources));
+const shortcutBackup = join(home, '.gemini', 'config', 'antigravity-ui.shortcuts.bak.json');
 const { SidecarApp, Response } = await loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 const store = new SettingsStore(data, profile);
 const configPath = join(homedir(), '.gemini', 'config', 'config.json');
@@ -178,6 +183,17 @@ app.api('/api/settings', input => enqueueRequest(async () => {
         return stateResponse();
     } catch (error) {
         return jsonResponse(400, { error: error.message });
+    }
+}), 'POST');
+app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
+    try {
+        const result = process.platform === 'win32'
+            ? persistence.patchShortcuts({ home, installation, backupPath: shortcutBackup })
+            : { total: 0, repaired: 0, ready: 0, shortcuts: [] };
+        const asarPatched = persistence.inspectAsarPersist(installation).patched;
+        return { ...result, asarPatched };
+    } catch (error) {
+        return jsonResponse(500, { error: error.message });
     }
 }), 'POST');
 await syncStore();

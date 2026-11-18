@@ -151,8 +151,10 @@ main { flex: 1; min-height: 0; width: 100%; overflow-y: auto; scrollbar-gutter: 
 output { color: var(--ag-ui-muted); font-variant-numeric: tabular-nums; font-size: 11px; }
 .slider input { width: 100%; margin: 0; min-height: 17px; }
 footer { flex-shrink: 0; padding: 12px 0 14px; margin-top: 8px; background: var(--ag-ui-page); border-top: 1px solid var(--ag-ui-border); display: flex; align-items: center; gap: 10px; }
-.footer-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.footer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .footer-actions button { white-space: nowrap; flex-shrink: 0; }
+#repair-launch[hidden] { display: none; }
+#repair-launch { border-color: var(--ag-ui-accent); color: var(--ag-ui-accent); }
 #status { flex: 1; min-width: 0; margin: 0; font-size: 11px; line-height: 1.5; color: var(--ag-ui-muted); overflow-wrap: anywhere; }
 #status.error { color: var(--ag-ui-danger); }
 .primary { background: var(--ag-ui-accent); color: var(--ag-ui-accent-ink); border-color: var(--ag-ui-accent); }

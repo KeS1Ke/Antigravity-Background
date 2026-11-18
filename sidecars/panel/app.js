@@ -4,6 +4,7 @@
     const find = selector => document.querySelector(selector);
     const status = find('#status');
     const imageInput = find('#image');
+    const repairLaunch = find('#repair-launch');
     const discard = find('#discard');
     const save = find('#save');
     const sliders = [];
@@ -47,6 +48,8 @@
     let syncQueued = false;
     let syncToken = 0;
     let hasRuntimeNotice = false;
+    let missingDebugPort = false;
+    let repairingLaunch = false;
     let operations = Promise.resolve();
 
     function syncOverviewFromBubble() {
@@ -80,7 +83,9 @@
     }
 
     function applyRuntimeLayout(runtime) {
-        if (runtime) hostLayout = runtime.layout;
+        if (!runtime) return;
+        hostLayout = runtime.layout;
+        missingDebugPort = runtime.errorCode === 'MISSING_DEVTOOLS_PORT';
     }
 
     function syncServerImage(result) {
@@ -176,6 +181,7 @@
             hasDraft,
             serverImageHash,
             hostLayout,
+            missingDebugPort,
             statusText: status.textContent,
             statusError: status.classList.contains('error'),
             hasRuntimeNotice,
@@ -188,6 +194,7 @@
         previewQueued = false;
         syncQueued = false;
         hostLayout = msg.hostLayout;
+        missingDebugPort = Boolean(msg.missingDebugPort);
         settings = normalize({ ...msg.settings, image: resolvedImage });
         if (msg.serverImageHash === '') {
             serverImage = '';
@@ -372,6 +379,8 @@
         dragPreviewReset.disabled = locked;
         dragPreviewMask.disabled = locked;
         if (!dragModal.hidden && (!settings.enabled || !settings.image)) closeModal();
+        repairLaunch.hidden = !missingDebugPort;
+        repairLaunch.disabled = actionLocked || repairingLaunch;
         discard.disabled = actionLocked || !hasDraft;
         save.disabled = actionLocked;
         find('#mode-label').textContent = names[settings.mode];
@@ -688,6 +697,30 @@
         finally {
             busy = false;
             imageInput.value = '';
+            render();
+        }
+    });
+    repairLaunch.addEventListener('click', async () => {
+        if (repairingLaunch) return;
+        repairingLaunch = true;
+        render();
+        message('正在检查并修复 Antigravity 快捷方式…');
+        try {
+            const res = await enqueue(() => request('POST', {}, '/api/repair-shortcuts'));
+            const asarTip = res.asarPatched
+                ? ''
+                : '；也可退出后运行一次 Antigravity-UI.cmd / manage.cjs install 开启全局启动持久化';
+            if (res.repaired > 0) {
+                message('已为 ' + res.repaired + ' 个快捷方式（共 ' + res.total + ' 个）补充调试端口参数。请完全退出后通过快捷方式重启 Antigravity' + asarTip + '。');
+            } else if (res.total > 0) {
+                message('已找到 ' + res.total + ' 个快捷方式且参数完整。请完全退出后改由桌面或开始菜单快捷方式重启 Antigravity' + asarTip + '。');
+            } else {
+                message('未找到 Antigravity 快捷方式，请退出后运行 manage.cjs install 或在快捷方式末尾追加 --remote-debugging-port=0 --remote-debugging-address=127.0.0.1。', true);
+            }
+        } catch (error) {
+            message('修复失败：' + error.message, true);
+        } finally {
+            repairingLaunch = false;
             render();
         }
     });

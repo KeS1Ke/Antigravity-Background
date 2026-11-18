@@ -6,7 +6,7 @@ export async function installWallpaper(payload = {}) {
     const key = '__antigravityUiRenderer';
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 20;
+    const revision = 21;
     const active = window[key];
     if (active && (
         active.version > version || (active.version === version && active.revision > revision) ||
@@ -81,6 +81,149 @@ export async function installWallpaper(payload = {}) {
         let currentSurfaces;
         let lease;
         let bodyObserved = false;
+        const trackOwners = new WeakMap();
+        const appliedClip = new WeakMap();
+        const observedTracks = new WeakSet();
+        const recentScrollables = new Set();
+        const matchesTrackOwner = (el, tr, horizontal) => {
+            if (!el || !el.isConnected || el === document.body || el === document.documentElement) return false;
+            const cs = getComputedStyle(el);
+            const ov = horizontal ? cs.overflowX : cs.overflowY;
+            if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') return false;
+            if (horizontal ? el.scrollWidth <= el.clientWidth + 1 : el.scrollHeight <= el.clientHeight + 1) return false;
+            const r = el.getBoundingClientRect();
+            const cw = el.clientWidth || r.width;
+            const ch = el.clientHeight || r.height;
+            const expTop = horizontal ? r.top + el.clientTop + ch - 14 : r.top + el.clientTop + 2;
+            const expLeft = horizontal ? r.left + el.clientLeft + 2 : r.left + el.clientLeft + cw - 14;
+            const expLen = Math.max(0, (horizontal ? el.clientWidth : el.clientHeight) - 4);
+            const actLen = horizontal ? tr.width : tr.height;
+            return Math.abs(expTop - tr.top) <= 3 && Math.abs(expLeft - tr.left) <= 3 && Math.abs(expLen - actLen) <= 3;
+        };
+        const findTrackOwner = (track, tr, horizontal) => {
+            const cached = trackOwners.get(track);
+            if (matchesTrackOwner(cached, tr, horizontal)) return cached;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+            const samples = horizontal
+                ? [
+                    [clamp((Math.max(0, tr.left) + Math.min(vw, tr.right)) / 2, 0, vw - 1), clamp(tr.top - 4, 0, vh - 1)],
+                    [clamp(Math.max(0, tr.left) + 12, 0, vw - 1), clamp(tr.top - 4, 0, vh - 1)],
+                    [clamp(Math.min(vw, tr.right) - 12, 0, vw - 1), clamp(tr.top - 4, 0, vh - 1)],
+                ]
+                : [
+                    [clamp(tr.left - 4, 0, vw - 1), clamp((Math.max(0, tr.top) + Math.min(vh, tr.bottom)) / 2, 0, vh - 1)],
+                    [clamp(tr.left - 4, 0, vw - 1), clamp(Math.max(0, tr.top) + 12, 0, vh - 1)],
+                    [clamp(tr.left - 4, 0, vw - 1), clamp(Math.min(vh, tr.bottom) - 12, 0, vh - 1)],
+                ];
+            for (const [sx, sy] of samples) {
+                for (const hit of document.elementsFromPoint(sx, sy)) {
+                    for (let cur = hit; cur && cur !== document.body && cur !== document.documentElement; cur = cur.parentElement) {
+                        if (matchesTrackOwner(cur, tr, horizontal)) {
+                            trackOwners.set(track, cur);
+                            return cur;
+                        }
+                    }
+                }
+            }
+            for (const el of recentScrollables) {
+                if (!el.isConnected) { recentScrollables.delete(el); continue; }
+                if (matchesTrackOwner(el, tr, horizontal)) {
+                    trackOwners.set(track, el);
+                    return el;
+                }
+            }
+            for (const el of document.querySelectorAll('[class*="overflow-"], [style*="overflow"]')) {
+                if (matchesTrackOwner(el, tr, horizontal)) {
+                    trackOwners.set(track, el);
+                    return el;
+                }
+            }
+            return null;
+        };
+        const computeClipRect = owner => {
+            let left = 0;
+            let top = 0;
+            let right = window.innerWidth;
+            let bottom = window.innerHeight;
+            let cs = getComputedStyle(owner);
+            if (cs.position === 'fixed') return { left, top, right, bottom };
+            let needCb = cs.position === 'absolute';
+            for (let el = owner.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+                cs = getComputedStyle(el);
+                if (cs.display === 'contents') continue;
+                const isCb = cs.position !== 'static' || cs.transform !== 'none' || cs.filter !== 'none' ||
+                    cs.backdropFilter !== 'none' || /\b(?:paint|layout|strict|content)\b/.test(cs.contain);
+                if (needCb && !isCb) continue;
+                needCb = cs.position === 'absolute';
+                const clipX = cs.overflowX !== 'visible';
+                const clipY = cs.overflowY !== 'visible';
+                if (clipX || clipY) {
+                    const r = el.getBoundingClientRect();
+                    const l = r.left + el.clientLeft;
+                    const t = r.top + el.clientTop;
+                    if (clipX) {
+                        left = Math.max(left, l);
+                        right = Math.min(right, l + el.clientWidth);
+                    }
+                    if (clipY) {
+                        top = Math.max(top, t);
+                        bottom = Math.min(bottom, t + el.clientHeight);
+                    }
+                }
+                if (cs.position === 'fixed') break;
+            }
+            return { left, top, right, bottom };
+        };
+        const syncFloatingScrollbars = () => {
+            if (!document.body) return;
+            for (const track of document.body.querySelectorAll(':scope > [data-overlay-scrollbar-track]')) {
+                if (!observedTracks.has(track)) {
+                    observedTracks.add(track);
+                    trackStyleObserver.observe(track, { attributes: true, attributeFilter: ['style'] });
+                }
+                const tr = track.getBoundingClientRect();
+                if (tr.width <= 0 || tr.height <= 0) continue;
+                const horizontal = track.dataset.orientation === 'horizontal';
+                const owner = findTrackOwner(track, tr, horizontal);
+                let nextClip = '';
+                if (owner) {
+                    const clip = computeClipRect(owner);
+                    const topInset = Math.max(0, Math.ceil(clip.top - tr.top));
+                    const bottomInset = Math.max(0, Math.ceil(tr.bottom - clip.bottom));
+                    const leftInset = Math.max(0, Math.ceil(clip.left - tr.left));
+                    const rightInset = Math.max(0, Math.ceil(tr.right - clip.right));
+                    if (topInset + bottomInset >= tr.height || leftInset + rightInset >= tr.width) {
+                        nextClip = 'inset(100% 0px 0px 0px)';
+                    } else if (topInset || rightInset || bottomInset || leftInset) {
+                        nextClip = `inset(${topInset}px ${rightInset}px ${bottomInset}px ${leftInset}px)`;
+                    }
+                }
+                if (appliedClip.get(track) !== nextClip || Boolean(track.style.clipPath) !== Boolean(nextClip)) {
+                    appliedClip.set(track, nextClip);
+                    if (nextClip) track.style.clipPath = nextClip;
+                    else track.style.removeProperty('clip-path');
+                }
+            }
+        };
+        const trackStyleObserver = new MutationObserver(syncFloatingScrollbars);
+        const trackObserver = new MutationObserver(syncFloatingScrollbars);
+        const onScrollOrOver = event => {
+            if (event.target instanceof HTMLElement && event.target !== document.body && event.target !== document.documentElement) {
+                if (event.target.scrollHeight > event.target.clientHeight + 1 || event.target.scrollWidth > event.target.clientWidth + 1) {
+                    if (recentScrollables.size > 32) recentScrollables.clear();
+                    recentScrollables.add(event.target);
+                }
+            }
+            if (document.body?.querySelector(':scope > [data-overlay-scrollbar-track]')) syncFloatingScrollbars();
+        };
+        const onResize = () => {
+            if (document.body?.querySelector(':scope > [data-overlay-scrollbar-track]')) syncFloatingScrollbars();
+        };
+        document.addEventListener('scroll', onScrollOrOver, { capture: true, passive: true });
+        document.addEventListener('pointerover', onScrollOrOver, { capture: true, passive: true });
+        window.addEventListener('resize', onResize, { passive: true });
         const state = {
             version,
             revision,
@@ -210,6 +353,7 @@ export async function installWallpaper(payload = {}) {
                     );
                     currentSurfaces = signature;
                 }
+                syncFloatingScrollbars();
                 clearTimeout(lease);
                 lease = setTimeout(() => state.dispose(), 6500);
             },
@@ -227,6 +371,14 @@ export async function installWallpaper(payload = {}) {
             dispose() {
                 clearTimeout(lease);
                 observer.disconnect();
+                trackObserver.disconnect();
+                trackStyleObserver.disconnect();
+                document.removeEventListener('scroll', onScrollOrOver, { capture: true });
+                document.removeEventListener('pointerover', onScrollOrOver, { capture: true });
+                window.removeEventListener('resize', onResize);
+                for (const track of document.body?.querySelectorAll(':scope > [data-overlay-scrollbar-track]') || []) {
+                    track.style.removeProperty('clip-path');
+                }
                 layer.remove();
                 document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== layout);
                 if (window[key] === state) delete window[key];
@@ -244,6 +396,8 @@ export async function installWallpaper(payload = {}) {
         const observeBody = () => {
             if (bodyObserved || !document.body) return;
             observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme'] });
+            trackObserver.observe(document.body, { childList: true });
+            syncFloatingScrollbars();
             bodyObserved = true;
         };
         observer.observe(document.documentElement, {
