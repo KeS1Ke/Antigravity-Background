@@ -1,7 +1,7 @@
 {
   "name": "antigravity-ui",
   "display_name": "Antigravity Background",
-  "description": "自定义壁纸、布局与深浅主题，独立调整侧边栏、对话框、Overview 面板和输入框的底色、透明度及模糊。",
+  "description": "自定义壁纸、布局与深浅主题，支持左侧边栏/右侧面板透明与模糊、输入框与对话框同步分层级感与配色，以及独立的 Overview 面板定制。",
   "version": "0.3.8",
   "logo": "assets/logo.png"
 }

@@ -6,7 +6,7 @@ export async function installWallpaper(payload = {}) {
     const key = '__antigravityUiRenderer';
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 21;
+    const revision = 23;
     const active = window[key];
     if (active && (
         active.version > version || (active.version === version && active.revision > revision) ||
@@ -282,70 +282,105 @@ export async function installWallpaper(payload = {}) {
                 const signature = JSON.stringify(options);
                 if (signature !== currentSurfaces) {
                     const mix = (color, alpha) => 'color-mix(in srgb,' + color + ' ' + alpha + '%,transparent)';
-                    const outerBorder = (cover, color, alpha, fallback) => cover && color ? mix(color, alpha) : fallback;
-                    const surfaceBg = (cover, color, alpha, blur, fallback) =>
-                        'background:' + mix((cover && color) || fallback, cover ? alpha : 0) + ' !important;' +
-                        'backdrop-filter:blur(' + (cover ? blur : 0) + 'px) !important;';
-                    const {
-                        sidebarCover = true, sidebarOpacity = 100, sidebarBlur = 0,
-                        composerCover = true, composerOpacity = 100, composerBlur = 0,
-                        composerOuterColor = '', composerInnerColor = '',
-                        bubbleCover = true, bubbleOpacity = 100, bubbleBlur = 0,
-                        bubbleOuterColor = '', bubbleInnerColor = '',
-                        overviewCover = bubbleCover, overviewOpacity = bubbleOpacity, overviewBlur = bubbleBlur,
-                        overviewOuterColor = bubbleOuterColor, overviewInnerColor = bubbleInnerColor,
-                    } = options;
+                    const surfaceState = (prefix, flatFallback, borderFallback, allowLayered = false) => {
+                        const cover = options[prefix + 'Cover'] !== false;
+                        const layered = allowLayered && options[prefix + 'Layered'] !== false;
+                        const opacity = options[prefix + 'Opacity'] ?? 100;
+                        const blur = options[prefix + 'Blur'] ?? 0;
+                        const outerColor = options[prefix + 'OuterColor'] || '';
+                        const innerColor = options[prefix + 'InnerColor'] || '';
+                        const alpha = cover ? opacity : 0;
+                        const effectiveBlur = cover ? blur : 0;
+                        const outerBg = cover ? mix(outerColor || 'var(--ag-ui-frame-default)', alpha) : 'transparent';
+                        const innerBg = cover
+                            ? mix(innerColor || (layered ? 'var(--ag-ui-raised-default)' : flatFallback), alpha)
+                            : 'transparent';
+                        const outerBorder = cover && outerColor
+                            ? mix(outerColor, alpha)
+                            : (layered ? 'var(--ag-ui-rim-default)' : borderFallback);
+                        const innerRim = cover && innerColor
+                            ? 'color-mix(in srgb,' + innerColor + ' ' + Math.min(100, alpha + 22) + '%,var(--ag-ui-rim-default))'
+                            : 'var(--ag-ui-rim-default)';
+                        return { cover, layered, alpha, effectiveBlur, outerBg, innerBg, outerBorder, innerRim };
+                    };
                     const cardFallback = 'var(--card,var(--background,#131313))';
-                    const composerOuter = outerBorder(
-                        composerCover, composerOuterColor, composerOpacity,
-                        'var(--card-border,var(--color-card-border,var(--glass-border,var(--border,rgba(128,128,128,.22)))))'
+                    const defaultBorder = 'var(--glass-border,var(--card-border,var(--border,rgba(128,128,128,.22))))';
+                    const leftSidebar = surfaceState('leftSidebar', 'var(--sidebar,var(--background,#131313))', defaultBorder, false);
+                    const sidebar = surfaceState('sidebar', 'var(--background,#131313)', defaultBorder, false);
+                    const composer = surfaceState(
+                        'composer',
+                        'var(--background,#131313)',
+                        'var(--card-border,var(--color-card-border,var(--glass-border,var(--border,rgba(128,128,128,.22)))))',
+                        true
                     );
-                    const composerFill = surfaceBg(composerCover, composerInnerColor, composerOpacity, composerBlur, 'var(--background,#131313)');
-                    const bubbleOuter = outerBorder(
-                        bubbleCover, bubbleOuterColor, bubbleOpacity,
-                        'var(--glass-border,var(--card-border,var(--border,rgba(128,128,128,.22))))'
+                    const overview = surfaceState(
+                        'overview',
+                        cardFallback,
+                        'var(--border,var(--card-border,rgba(128,128,128,.22)))',
+                        false
                     );
-                    const bubbleFill = surfaceBg(bubbleCover, bubbleInnerColor, bubbleOpacity, bubbleBlur, cardFallback);
-                    const overviewOuter = outerBorder(
-                        overviewCover, overviewOuterColor, overviewOpacity,
-                        'var(--border,var(--card-border,rgba(128,128,128,.22)))'
-                    );
-                    const overviewFill = surfaceBg(
-                        overviewCover, overviewInnerColor, overviewOpacity, overviewBlur, cardFallback
-                    );
+                    const flatBg = (bg, blur) => 'background:' + bg + ' !important;backdrop-filter:blur(' + blur + 'px) !important;';
+                    const raisedShadow = rim => 'box-shadow:inset 0 1px 0 var(--ag-ui-highlight-default),0 0 0 1px ' + rim + ',var(--ag-ui-card-shadow) !important;';
+                    const outerFrameShadow = border => 'box-shadow:inset 0 0 0 1px ' + border + ',inset 0 1px 2px var(--ag-ui-inset-shadow),var(--ag-ui-drop-shadow) !important;';
+                    const leftDocked = '[data-testid="sidebar-split"] > :first-child:has(.bg-sidebar):not(:has([data-peek-surface]))';
+                    const leftShell = ':is([data-testid="sidebar-split"] > :first-child:not(:has([data-peek-surface])),[data-testid="sidebar-split"] [data-peek-surface="open"]) .h-full.w-full.flex.flex-col.bg-sidebar,.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"]';
+                    const rightBody = '.agy-sheet > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"])';
+                    const anyComposer = '[data-testid="agent-input-box"] .surface-composer';
                     const topComposer = '[data-testid="agent-input-box"] .surface-composer:has(> [data-testid="input-box-bottom-toolbar"])';
                     const baseComposer = '[data-testid="agent-input-box"] .surface-composer:not(:has(> [data-testid="input-box-bottom-toolbar"]))';
+                    const overviewHosts = '[data-testid="overview-panel-host-overlay"],[data-testid="overview-panel-host-gutter"],[data-testid="overview-panel-host-sibling"],[data-testid="battle-overview-dropdown"]';
+                    const themeTokens =
+                        ':root { --ag-ui-frame-default:var(--onyx-frame,#0d0d11);--ag-ui-raised-default:var(--onyx-raised,var(--card,var(--background,#131313)));--ag-ui-rim-default:rgba(255,255,255,.12);--ag-ui-highlight-default:rgba(255,255,255,.14);--ag-ui-inset-shadow:rgba(0,0,0,.34);--ag-ui-drop-shadow:0 18px 40px -12px rgba(0,0,0,.44),0 2px 8px -2px rgba(0,0,0,.28);--ag-ui-card-shadow:0 4px 12px -2px rgba(0,0,0,.34),0 1px 3px rgba(0,0,0,.22); }' +
+                        ':is(body[data-agy-theme]:not(.dark):not(.dark-theme):not(.theme-dark):not(.vscode-dark),.vscode-light,[data-theme="light"]) { --ag-ui-frame-default:var(--onyx-frame,#eaedf2);--ag-ui-raised-default:var(--onyx-raised,var(--card,#ffffff));--ag-ui-rim-default:rgba(10,10,12,.11);--ag-ui-highlight-default:rgba(255,255,255,.85);--ag-ui-inset-shadow:rgba(10,10,12,.06);--ag-ui-drop-shadow:0 10px 26px -10px rgba(10,10,12,.14),0 2px 6px -1px rgba(10,10,12,.06);--ag-ui-card-shadow:0 3px 10px -2px rgba(10,10,12,.08),0 1px 3px rgba(10,10,12,.05); }' +
+                        ':is(.dark,.dark-theme,.theme-dark,.vscode-dark,[data-theme="dark"]) { --ag-ui-frame-default:color-mix(in srgb,var(--onyx-frame,#111216) 72%,#000);--ag-ui-raised-default:color-mix(in srgb,var(--onyx-raised,var(--card,#1d1e23)) 92%,#fff);--ag-ui-rim-default:rgba(255,255,255,.12);--ag-ui-highlight-default:rgba(255,255,255,.14);--ag-ui-inset-shadow:rgba(0,0,0,.34);--ag-ui-drop-shadow:0 18px 40px -12px rgba(0,0,0,.44),0 2px 8px -2px rgba(0,0,0,.28);--ag-ui-card-shadow:0 4px 12px -2px rgba(0,0,0,.34),0 1px 3px rgba(0,0,0,.22); }';
+                    const leftSidebarRules =
+                        leftDocked + ' { position:relative;z-index:1001 !important; }' +
+                        '[data-testid="sidebar-split"] .bg-sidebar .bg-sidebar,[data-testid="sidebar-split"] .bg-sidebar .agy-row-actions::before,.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"] .bg-sidebar .bg-sidebar,.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"] .agy-row-actions::before { background:transparent !important; }' +
+                        leftShell + ' {' + flatBg(leftSidebar.innerBg, leftSidebar.effectiveBlur) + 'box-shadow:none !important; }';
+                    const rightPanelRules =
+                        '.agy-sheet > .outline-none > :nth-child(3) .browser-hole-ancestor { background:transparent !important; }' +
+                        // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
+                        rightBody + ' { position:relative;z-index:1001;' + flatBg(sidebar.innerBg, sidebar.effectiveBlur) + 'box-shadow:none !important; }';
+                    const composerRules = composer.layered
+                        ? anyComposer + ' { padding:4px !important;border-radius:calc(var(--nux-composer-radius,20px) + 4px) !important;' + flatBg(composer.outerBg, composer.effectiveBlur) + outerFrameShadow(composer.outerBorder) + ' }' +
+                          anyComposer + ' .surface-composer-card { border-radius:var(--nux-composer-radius,20px) !important;background:' + composer.innerBg + ' !important;backdrop-filter:none !important;' + raisedShadow(composer.innerRim) + ' }' +
+                          anyComposer + ':focus-within > .surface-composer-card { box-shadow:inset 0 1px 0 var(--ag-ui-highlight-default),0 0 0 1px ' + composer.innerRim + ',var(--ag-ui-drop-shadow) !important; }'
+                        : topComposer + ' {' + flatBg(composer.innerBg, composer.effectiveBlur) + 'box-shadow:inset 0 0 0 1px ' + composer.outerBorder + ' !important; }' +
+                          topComposer + ' .surface-composer-card { background:transparent !important;backdrop-filter:none !important;box-shadow:none !important; }' +
+                          baseComposer + ' { background:transparent !important;backdrop-filter:none !important;box-shadow:inset 0 0 0 1px ' + composer.outerBorder + ' !important; }' +
+                          baseComposer + ' .surface-composer-card {' + flatBg(composer.innerBg, composer.effectiveBlur) + 'box-shadow:none !important; }';
+                    const bubbleRules = composer.layered
+                        ? '.agy-user-bubble-frame { padding:3px !important;border-radius:calc(var(--nux-composer-radius,20px) + 3px) !important;' + flatBg(composer.outerBg, composer.effectiveBlur) + outerFrameShadow(composer.outerBorder) + ' }' +
+                          '.agy-user-bubble { border-radius:var(--nux-composer-radius,20px) !important;background:' + composer.innerBg + ' !important;backdrop-filter:none !important;' + raisedShadow(composer.innerRim) + ' }'
+                        : '.agy-user-bubble-frame { background:transparent !important;backdrop-filter:none !important;box-shadow:inset 0 0 0 1px ' + composer.outerBorder + ' !important; }' +
+                          '.agy-user-bubble {' + flatBg(composer.innerBg, composer.effectiveBlur) + 'box-shadow:none !important; }';
+                    const overviewRules =
+                        overviewHosts + ' { z-index:1002 !important;' + flatBg(overview.innerBg, overview.effectiveBlur) + 'border-color:' + overview.outerBorder + ' !important;box-shadow:none !important; }';
                     layout.replaceSync(
+                        themeTokens +
                         '#antigravity-ui-background { position:fixed; inset:0; z-index:1000; pointer-events:none; overflow:hidden; contain:paint; }' +
                         '.agy-sheet { z-index:auto !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) { position:relative; z-index:auto !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) > .h-full.w-full { z-index:auto !important; }' +
-                        // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
-                        '.agy-sheet > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"]) { position:relative; z-index:1001;' +
-                        surfaceBg(sidebarCover, '', sidebarOpacity, sidebarBlur, 'var(--background,#131313)') + ' }' +
+                        leftSidebarRules +
+                        rightPanelRules +
                         '.agy-sheet[data-side-panel-maximized] > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"]),.agy-sheet:is([data-side-panel-maximized],:has(> [data-split-root] > [data-split-overlaid="true"])) [data-side-panel-strip] { position:relative; z-index:1002 !important; }' +
                         '[data-side-panel-body][data-has-browser-hole="true"] { background:transparent !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important; }' +
-                        '.agy-sheet > .outline-none > :nth-child(3) .browser-hole-ancestor { background:transparent !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip { z-index:1002 !important; }' +
                         '.agy-sheet > .pointer-events-none.overflow-clip > div:has(iframe[data-testid="sidecar-iframe"]) { background:transparent !important; }' +
                         '.agy-inset-shell > .absolute.left-0.top-0,.agy-inset-shell > .absolute.right-0,[data-testid="sidebar-peek-hot-zone"],[data-testid="sidebar-split"] [data-split-sized]:has([data-peek-surface="open"]),.agy-inset-shell > [data-testid="sidebar-popover-backdrop"],.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"],.fixed.z-40:has([data-testid="voice-dock-composer"]) { z-index:1003 !important; }' +
                         '.agy-inset-shell > .absolute.right-0 > div { background:transparent !important; }' +
                         '.agy-inset-shell > .absolute.right-0 > div > .right-full { background:none !important; }' +
                         '.relative.z-10:has([data-testid="agent-input-box"]),.z-\\[1\\]:has([data-testid="agent-input-box"]) { z-index:1001 !important; }' +
-                        topComposer + ' {' + composerFill + 'box-shadow:inset 0 0 0 1px ' + composerOuter + ' !important; }' +
-                        topComposer + ' .surface-composer-card { background:transparent !important;backdrop-filter:none !important;box-shadow:none !important; }' +
-                        baseComposer + ' { background:transparent !important;backdrop-filter:none !important;box-shadow:inset 0 0 0 1px ' + composerOuter + ' !important; }' +
-                        baseComposer + ' .surface-composer-card {' + composerFill + 'box-shadow:none !important; }' +
+                        composerRules +
                         '[data-testid="autoscroll-viewport"] { isolation:auto !important;position:relative;z-index:1001 !important;' +
-                        (bubbleCover && bubbleBlur > 0 ? 'mask-image:none !important;-webkit-mask-image:none !important;' : '') + ' }' +
+                        (composer.cover && composer.effectiveBlur > 0 ? 'mask-image:none !important;-webkit-mask-image:none !important;' : '') + ' }' +
                         '[data-testid="autoscroll-viewport"] ~ [data-testid="overlay-scrollbar"],[data-testid="autoscroll-viewport"] ~ .agy-scroll-bottom,[data-testid="bottom-terminal-panel-resize-handle"],body > [data-overlay-scrollbar-track][style*="z-index: 51"] { z-index:1001 !important; }' +
                         '[data-testid="conversation-view"] > .pointer-events-none.inset-y-0.left-0:has([data-testid="conversation-navigator"]),[data-testid="conversation-navigator"],.sticky.top-0:has([data-testid="find-bar-match-count"]),[data-main-content-body] .absolute.top-4.right-4:has(> button[aria-label="Close"]),.selection-popup,[data-comment-bubble-popover="true"],[data-testid="pdf-selected-annotation-popover"],[data-testid="comment-box"].absolute { z-index:1002 !important; }' +
                         '[data-main-content-body] [data-split-sized]:not(:has([data-peek-surface])) { z-index:auto !important; }' +
-                        '.agy-user-bubble-frame { background:transparent !important;box-shadow:inset 0 0 0 1px ' + bubbleOuter + ' !important; }' +
-                        '.agy-user-bubble {' + bubbleFill + 'box-shadow:none !important; }' +
+                        bubbleRules +
                         '[data-testid="overview-panel-overlay-backdrop"] { z-index:1002 !important; }' +
-                        '[data-testid="overview-panel-host-overlay"],[data-testid="overview-panel-host-gutter"],[data-testid="overview-panel-host-sibling"],[data-testid="battle-overview-dropdown"] { z-index:1002 !important;' +
-                        overviewFill + 'border-color:' + overviewOuter + ' !important; }' +
+                        overviewRules +
                         '[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }' +
                         '[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }' +
                         '[data-split-sash],[data-testid="tiling-splitter"] { z-index:1003 !important;background:transparent !important;background-image:none !important; }' +

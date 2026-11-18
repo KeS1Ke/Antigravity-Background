@@ -10,21 +10,21 @@
     };
 
     const defaults = Object.fromEntries(Object.entries(controls).map(([key, option]) => [key, option.value]));
-    const surfaceControls = {
-        sidebarOpacity: { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' },
-        sidebarBlur: { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' },
-        composerOpacity: { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' },
-        composerBlur: { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' },
-        bubbleOpacity: { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' },
-        bubbleBlur: { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' },
-        overviewOpacity: { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' },
-        overviewBlur: { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' },
-    };
+    const surfacePrefixes = ['leftSidebar', 'sidebar', 'composer', 'bubble', 'overview'];
+    const surfaceControls = Object.fromEntries(surfacePrefixes.flatMap(prefix => [
+        [prefix + 'Opacity', { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' }],
+        [prefix + 'Blur', { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' }],
+    ]));
     const maximumImageLength = 10 * 1024 * 1024;
-    const colorKeys = [
-        'composerOuterColor', 'composerInnerColor',
-        'bubbleOuterColor', 'bubbleInnerColor',
-        'overviewOuterColor', 'overviewInnerColor',
+    const colorPrefixes = ['composer', 'bubble', 'overview'];
+    const colorKeys = colorPrefixes.flatMap(prefix => [prefix + 'OuterColor', prefix + 'InnerColor']);
+    const boundSuffixes = ['Cover', 'Layered', 'Opacity', 'Blur', 'OuterColor', 'InnerColor'];
+    const surfaceKeys = [
+        'leftSidebarCover', 'leftSidebarOpacity', 'leftSidebarBlur',
+        'sidebarCover', 'sidebarOpacity', 'sidebarBlur',
+        ...boundSuffixes.map(suffix => 'composer' + suffix),
+        ...boundSuffixes.map(suffix => 'bubble' + suffix),
+        'overviewCover', 'overviewOpacity', 'overviewBlur', 'overviewOuterColor', 'overviewInnerColor',
     ];
 
     function normalize(input = {}) {
@@ -43,9 +43,6 @@
         if (!['fill', 'stretch', 'fit', 'tile'].includes(mode)) throw new Error('图片布局无效。');
         if (!['system', 'light', 'dark'].includes(theme)) throw new Error('界面主题无效。');
         const sidebarCover = typeof input.sidebarCover === 'boolean' ? input.sidebarCover : input.sidebarTransparent !== true;
-        const bubbleCover = input.bubbleCover !== false;
-        const overviewSync = input.overviewSync !== false;
-        const overviewCover = overviewSync ? bubbleCover : input.overviewCover !== false;
         const colors = {};
         for (const key of colorKeys) {
             const color = input[key] ?? '';
@@ -54,23 +51,27 @@
             }
             colors[key] = color.toLowerCase();
         }
-        if (overviewSync) {
-            options.overviewOpacity = options.bubbleOpacity;
-            options.overviewBlur = options.bubbleBlur;
-            colors.overviewOuterColor = colors.bubbleOuterColor;
-            colors.overviewInnerColor = colors.bubbleInnerColor;
-        }
-        return {
+        const composerLayered = input.composerLayered !== false;
+        const normalized = {
             ...options, ...colors, image, mode, theme, enabled: input.enabled !== false,
+            leftSidebarCover: input.leftSidebarCover !== false,
             sidebarTransparent: !sidebarCover,
             sidebarCover,
             composerCover: input.composerCover !== false,
-            bubbleCover,
-            overviewSync,
-            overviewCover,
+            composerLayered,
+            overviewCover: input.overviewCover !== false,
             imageWidth: Number.isInteger(input.imageWidth) ? Math.min(2560, Math.max(1, input.imageWidth)) : 512,
             imageHeight: Number.isInteger(input.imageHeight) ? Math.min(2560, Math.max(1, input.imageHeight)) : 512,
         };
+        for (const suffix of boundSuffixes) {
+            normalized['bubble' + suffix] = normalized['composer' + suffix];
+        }
+        return normalized;
+    }
+
+    /** Extracts surface appearance settings sent to the host renderer. */
+    function surfaceConfig(settings) {
+        return Object.fromEntries(surfaceKeys.map(key => [key, settings[key]]));
     }
 
     function wallpaperStyle({ x, y, scale, blur, opacity, brightness, fade, image, enabled, mode, imageWidth, imageHeight }, imageSource = 'url("' + image + '")') {
@@ -100,7 +101,7 @@
         `;
     }
 
-    const appearance = { controls, surfaceControls, defaults, normalize, wallpaperStyle };
+    const appearance = { controls, surfacePrefixes, surfaceControls, defaults, normalize, surfaceConfig, wallpaperStyle };
     if (typeof module === 'object') module.exports = appearance;
     else window.wallpaperAppearance = appearance;
 })();

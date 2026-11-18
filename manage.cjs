@@ -109,6 +109,30 @@ function restoreLegacy(installation) {
     console.log('已迁移旧背景补丁，原始应用资源恢复完成。');
 }
 
+function writeInstallSource(staged) {
+    const manifest = json(join(__dirname, 'plugin.json'), null);
+    if (!manifest?.version) return;
+    let commit = null;
+    if (fs.existsSync(join(__dirname, '.git'))) {
+        try {
+            const head = execFileSync('git', ['-C', __dirname, 'rev-parse', 'HEAD'], {
+                encoding: 'utf8',
+                windowsHide: true,
+                stdio: ['ignore', 'pipe', 'ignore'],
+            }).trim();
+            if (/^[0-9a-f]{40}$/i.test(head)) commit = head.toLowerCase();
+        } catch {}
+    }
+    if (!commit) return;
+    fs.writeFileSync(join(staged, '.install-source.json'), JSON.stringify({
+        repo: 'KeS1Ke/Antigravity-Background',
+        channel: 'main',
+        version: manifest.version,
+        commit,
+        updatedAt: new Date().toISOString(),
+    }, null, 2) + '\n');
+}
+
 function safeDirectory(path) {
     const parent = dirname(path);
     fs.mkdirSync(parent, { recursive: true });
@@ -193,6 +217,7 @@ async function manage() {
         if (command === 'install') {
             fs.mkdirSync(staged);
             for (const file of runtimeFiles) fs.cpSync(join(__dirname, file), join(staged, file), { recursive: true });
+            writeInstallSource(staged);
         }
         restoreLegacy(installation);
         if (fs.lstatSync(destination, { throwIfNoEntry: false })) { fs.renameSync(destination, previous); oldMoved = true; }

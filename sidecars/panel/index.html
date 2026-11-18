@@ -12,8 +12,20 @@
 </head>
 <body>
     <header>
-        <div><h1>背景设置</h1><p class="subtitle">Antigravity Background</p></div>
-        <label class="switch"><input id="enabled" type="checkbox" disabled><span>启用</span></label>
+        <div class="header-brand">
+            <h1>背景设置</h1>
+            <p class="subtitle"><span>Antigravity Background</span><span id="plugin-version" class="version-badge" hidden></span></p>
+        </div>
+        <div class="header-actions">
+            <a id="github-link" class="header-icon-link" href="https://github.com/KeS1Ke/Antigravity-Background" target="_blank" rel="noopener noreferrer" title="打开 GitHub 仓库" aria-label="打开 GitHub 仓库">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 0 0-2.05 12.67c.32.06.44-.14.44-.31v-1.1c-1.8.39-2.18-.87-2.18-.87-.3-.75-.72-.95-.72-.95-.59-.4.04-.39.04-.39.65.05 1 .67 1 .67.58 1 1.52.71 1.89.54.06-.42.23-.71.41-.87-1.44-.16-2.95-.72-2.95-3.2 0-.71.25-1.28.67-1.74-.07-.16-.29-.82.06-1.71 0 0 .55-.18 1.79.67a6.2 6.2 0 0 1 3.26 0c1.24-.85 1.79-.67 1.79-.67.35.89.13 1.55.06 1.71.42.46.67 1.03.67 1.74 0 2.49-1.51 3.04-2.96 3.2.23.2.44.6.44 1.21v1.79c0 .17.12.37.44.31A6.5 6.5 0 0 0 8 1.5Z"/></svg>
+            </a>
+            <button id="check-update" type="button" class="header-update-btn" title="检查 GitHub 仓库更新">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 6a4.8 4.8 0 1 0 0 4M12.5 2.5V6H9"/></svg>
+                <span>检查更新</span>
+            </button>
+            <label class="switch"><input id="enabled" type="checkbox" disabled><span>启用</span></label>
+        </div>
     </header>
     <main>
         <details class="card preview-card" open>
@@ -25,8 +37,8 @@
                         <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><i></i><i></i></div>
                         <div class="sample-main">
                             <div class="sample-overview"><b>Overview</b><span>Review</span><span>Files</span></div>
-                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><span>调整对话框底色</span></div><i></i><i></i><i></i></div>
-                            <div class="sample-composer"><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
+                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><div class="sample-bubble-inner"><span>调整对话框底色</span></div></div><i></i><i></i><i></i></div>
+                            <div class="sample-composer"><div class="sample-composer-bar"><span>Temp ▾</span><span>Local ▾</span></div><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
                         </div>
                         <div class="sample-panel"><div class="sample-tabs">README.md　＋</div><div class="sample-panel-body"><b>README.md</b><i></i><i></i><i></i><span>Review</span><span>Open File</span><span>Terminal</span><span>Browser</span></div></div>
                     </div>
@@ -56,27 +68,34 @@
                     <div class="section-label reset-row"><button id="open-drag-preview" type="button" class="open-preview-button" disabled>打开预览</button><button id="reset" type="button" class="text-button" disabled>重置</button></div>
                     <div id="controls"></div>
                 </details>
+                <details class="card">
+                    <summary><h2>设置页主题</h2></summary>
+                    <div class="section-label"><label for="theme">主题</label>
+                        <select id="theme" disabled><option value="system">跟随应用</option><option value="dark">深色</option><option value="light">浅色</option></select>
+                    </div>
+                </details>
             </div>
             <div class="settings-column">
                 <details class="card">
-                    <summary><h2>侧边栏</h2></summary>
-                    <div class="section-label surface-switch"><label class="switch"><input id="sidebar-cover" type="checkbox" disabled> 显示底色</label></div>
+                    <summary><h2>左侧边栏</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="left-sidebar-cover" type="checkbox" disabled> 显示底色</label>
+                    </div>
+                    <div id="left-sidebar-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
+                    <summary><h2>右侧面板</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="sidebar-cover" type="checkbox" disabled> 显示底色</label>
+                    </div>
                     <div id="sidebar-controls" class="surface-controls"></div>
                 </details>
                 <details class="card">
-                    <summary><h2>对话框与面板</h2></summary>
-                    <div class="section-label surface-switch"><label class="switch"><input id="overview-sync" type="checkbox" disabled> 同步 Overview 面板</label></div>
-                    <div id="dialog-target-switch" class="target-tabs" role="group" aria-label="编辑目标" hidden><button type="button" data-dialog-target="bubble" aria-pressed="true" disabled>对话框</button><button type="button" data-dialog-target="overview" aria-pressed="false" disabled>Overview 面板</button></div>
-                    <div class="section-label surface-switch"><label class="switch"><input id="dialog-cover" type="checkbox" disabled> 显示底色</label></div>
-                    <div class="color-controls">
-                        <div class="color-row"><label for="dialogOuterColor">外圈颜色</label><input id="dialogOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-dialog-color="outer" class="text-button" disabled>默认</button></div>
-                        <div class="color-row"><label for="dialogInnerColor">内部颜色</label><input id="dialogInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-dialog-color="inner" class="text-button" disabled>默认</button></div>
+                    <summary><h2>输入框与对话框</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="composer-layered" type="checkbox" disabled> 原版分层级感</label>
+                        <label class="switch"><input id="composer-cover" type="checkbox" disabled> 显示底色</label>
                     </div>
-                    <div id="dialog-controls" class="surface-controls"></div>
-                </details>
-                <details class="card">
-                    <summary><h2>输入框</h2></summary>
-                    <div class="section-label surface-switch"><label class="switch"><input id="composer-cover" type="checkbox" disabled> 显示底色</label></div>
                     <div class="color-controls">
                         <div class="color-row"><label for="composerOuterColor">外圈颜色</label><input id="composerOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerOuterColor" class="text-button" disabled>默认</button></div>
                         <div class="color-row"><label for="composerInnerColor">内部颜色</label><input id="composerInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerInnerColor" class="text-button" disabled>默认</button></div>
@@ -84,10 +103,15 @@
                     <div id="composer-controls" class="surface-controls"></div>
                 </details>
                 <details class="card">
-                    <summary><h2>设置页主题</h2></summary>
-                    <div class="section-label"><label for="theme">主题</label>
-                        <select id="theme" disabled><option value="system">跟随应用</option><option value="dark">深色</option><option value="light">浅色</option></select>
+                    <summary><h2>Overview 面板</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="overview-cover" type="checkbox" disabled> 显示底色</label>
                     </div>
+                    <div class="color-controls">
+                        <div class="color-row"><label for="overviewOuterColor">外圈颜色</label><input id="overviewOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="overviewOuterColor" class="text-button" disabled>默认</button></div>
+                        <div class="color-row"><label for="overviewInnerColor">内部颜色</label><input id="overviewInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="overviewInnerColor" class="text-button" disabled>默认</button></div>
+                    </div>
+                    <div id="overview-controls" class="surface-controls"></div>
                 </details>
             </div>
         </div>
@@ -120,14 +144,61 @@
                         <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><i></i><i></i></div>
                         <div class="sample-main">
                             <div class="sample-overview"><b>Overview</b><span>Review</span><span>Files</span></div>
-                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><span>调整对话框底色</span></div><i></i><i></i><i></i></div>
-                            <div class="sample-composer"><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
+                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><div class="sample-bubble-inner"><span>调整对话框底色</span></div></div><i></i><i></i><i></i></div>
+                            <div class="sample-composer"><div class="sample-composer-bar"><span>Temp ▾</span><span>Local ▾</span></div><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
                         </div>
                         <div class="sample-panel"><div class="sample-tabs">README.md　＋</div><div class="sample-panel-body"><b>README.md</b><i></i><i></i><i></i><span>Review</span><span>Open File</span><span>Terminal</span><span>Browser</span></div></div>
                     </div>
                     <div class="wallpaper"></div>
                 </div>
                 <span class="drag-stage-badge">拖拽移动 · 滚轮缩放</span>
+            </div>
+        </div>
+    </div>
+    <div id="update-modal" class="drag-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title" hidden>
+        <div class="drag-modal-card update-modal-card">
+            <div class="update-modal-header">
+                <h2 id="update-modal-title">插件更新</h2>
+                <button id="close-update-modal" type="button" class="icon-close-btn" aria-label="关闭">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+                </button>
+            </div>
+            <div class="update-status-row">
+                <span id="update-status-icon" class="update-status-icon" aria-hidden="true">
+                    <svg viewBox="0 0 20 20"><path id="update-status-path" d="M15.7 8a6 6 0 1 0-.2 4.5M16 3.5V8h-4.5"/></svg>
+                </span>
+                <div class="update-status-copy">
+                    <strong id="update-status-text">检查更新</strong>
+                    <span id="update-source-badge" class="update-source-badge" hidden></span>
+                </div>
+            </div>
+            <div class="update-progress-wrap">
+                <div class="update-progress-caption">
+                    <span id="update-progress-label">准备检查</span>
+                    <span id="update-progress-value"></span>
+                </div>
+                <div id="update-progress-track" class="update-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                    <i id="update-progress-fill"></i>
+                </div>
+            </div>
+            <dl class="update-meta-grid">
+                <div><dt>当前版本</dt><dd id="update-current-version">—</dd></div>
+                <div><dt>远端最新</dt><dd id="update-latest-version">—</dd></div>
+            </dl>
+            <div class="update-repo-row">
+                <a id="update-github-link" href="https://github.com/KeS1Ke/Antigravity-Background" target="_blank" rel="noopener noreferrer">
+                    <span id="update-github-link-label">在 GitHub 查看仓库</span>
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5h6v6M12.5 3.5l-7 7"/></svg>
+                </a>
+                <button id="copy-github-link" type="button" class="text-button">复制链接</button>
+            </div>
+            <section id="update-notes-wrap" class="update-notes-wrap" hidden>
+                <h3 id="update-notes-label">更新内容</h3>
+                <p id="update-notes"></p>
+            </section>
+            <div class="update-modal-footer">
+                <span id="update-feedback" role="status" aria-live="polite"></span>
+                <button id="update-action" type="button" class="primary" hidden>一键更新</button>
             </div>
         </div>
     </div>

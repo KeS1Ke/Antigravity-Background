@@ -27,28 +27,41 @@ const expectedImageHash = createHash('sha256').update(settings.image).digest('he
 assert.equal(appearance.normalize({ sidebarTransparent: true }).sidebarCover, false);
 assert.equal(appearance.normalize({ composerOpacity: 500 }).composerOpacity, 100);
 assert.equal(appearance.normalize().composerOuterColor, '');
+assert.equal(appearance.normalize().overviewOuterColor, '');
+assert.equal(appearance.normalize().overviewInnerColor, '');
+assert.equal(appearance.normalize().composerLayered, true);
+assert.equal(appearance.normalize().bubbleLayered, true);
 assert.equal(appearance.normalize({ composerInnerColor: '#AABBCC' }).composerInnerColor, '#aabbcc');
 assert.deepEqual(
     (() => {
         const s = appearance.normalize({
-            bubbleCover: false, bubbleOpacity: 42, bubbleBlur: 9,
-            bubbleOuterColor: '#112233', bubbleInnerColor: '#AABBCC',
+            composerCover: false, composerLayered: false, composerOpacity: 42, composerBlur: 9,
+            composerOuterColor: '#112233', composerInnerColor: '#AABBCC',
             overviewOpacity: 90, overviewBlur: 2, overviewOuterColor: '#ff0000',
         });
-        return [s.overviewSync, s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor];
+        return [
+            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur, s.bubbleOuterColor, s.bubbleInnerColor,
+            s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor,
+        ];
     })(),
-    [true, false, 42, 9, '#112233', '#aabbcc']
+    [false, false, 42, 9, '#112233', '#aabbcc', true, 90, 2, '#ff0000', '']
 );
 assert.deepEqual(
     (() => {
         const s = appearance.normalize({
-            overviewSync: false, bubbleOpacity: 42,
+            composerCover: true, composerLayered: false, composerOpacity: 42, composerBlur: 9,
+            bubbleCover: false, bubbleLayered: true, bubbleOpacity: 11, bubbleBlur: 3,
+            overviewSync: true,
             overviewCover: false, overviewOpacity: 75, overviewBlur: 12,
             overviewOuterColor: '#445566', overviewInnerColor: '#778899',
         });
-        return [s.overviewSync, s.bubbleOpacity, s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor];
+        return [
+            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur,
+            s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor,
+            'overviewSync' in s, 'leftSidebarLayered' in s, 'sidebarLayered' in s, 'overviewLayered' in s,
+        ];
     })(),
-    [false, 42, false, 75, 12, '#445566', '#778899']
+    [true, false, 42, 9, false, 75, 12, '#445566', '#778899', false, false, false, false]
 );
 assert.throws(() => appearance.normalize(null), /背景设置无效/);
 assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 50 }), /transform:\s*scale\(1\)/);
@@ -58,6 +71,7 @@ assert.match(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50 })
 assert.throws(() => appearance.normalize({ composerOuterColor: 'red; background:url(test)' }), /颜色/);
 assert.throws(() => appearance.normalize({ composerInnerColor: 123 }), /颜色/);
 assert.throws(() => appearance.normalize({ bubbleOuterColor: 'red' }), /颜色/);
+assert.throws(() => appearance.normalize({ overviewOuterColor: 'blue' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜色/);
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
 await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify(settings));
@@ -226,12 +240,15 @@ try {
     assert.deepEqual(await geometry(), initialGeometry);
 
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerOpacity: 55, composerBlur: 6 });
-    const surfaceState = () => evaluate("(()=>{const sidebar=getComputedStyle(document.querySelector('.pane .flex-grow'));const composer=getComputedStyle(document.querySelector('.surface-composer-card'));const outer=getComputedStyle(document.querySelector('.surface-composer'));const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');function rgba(color){g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return [...g.getImageData(0,0,1,1).data]}return{sidebarAlpha:rgba(sidebar.backgroundColor)[3],sidebarBlur:sidebar.backdropFilter,composerAlpha:rgba(composer.backgroundColor)[3],composerRgb:rgba(composer.backgroundColor).slice(0,3),composerBlur:composer.backdropFilter,outerBg:outer.backgroundColor,outerShadow:outer.boxShadow,tools:getComputedStyle(document.querySelector('#window-tools')).backgroundColor}})()");
+    const surfaceState = () => evaluate("(()=>{const sidebar=getComputedStyle(document.querySelector('.pane .flex-grow'));const composer=getComputedStyle(document.querySelector('.surface-composer-card'));const outer=getComputedStyle(document.querySelector('.surface-composer'));const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');function rgba(color){g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return [...g.getImageData(0,0,1,1).data]}return{sidebarAlpha:rgba(sidebar.backgroundColor)[3],sidebarBlur:sidebar.backdropFilter,composerAlpha:rgba(composer.backgroundColor)[3],composerRgb:rgba(composer.backgroundColor).slice(0,3),composerBlur:composer.backdropFilter,composerShadow:composer.boxShadow,outerBg:outer.backgroundColor,outerBgAlpha:rgba(outer.backgroundColor)[3],outerBlur:outer.backdropFilter,outerShadow:outer.boxShadow,tools:getComputedStyle(document.querySelector('#window-tools')).backgroundColor}})()");
     const surfaces = await surfaceState();
     assert(Math.abs(surfaces.sidebarAlpha - 89) <= 1);
     assert.equal(surfaces.sidebarBlur, 'blur(10px)');
     assert(Math.abs(surfaces.composerAlpha - 140) <= 1);
-    assert.equal(surfaces.composerBlur, 'blur(6px)');
+    assert(Math.abs(surfaces.outerBgAlpha - 140) <= 1);
+    assert.equal(surfaces.outerBlur, 'blur(6px)');
+    assert.equal(surfaces.composerBlur, 'none');
+    assert.notEqual(surfaces.composerShadow, 'none');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#tabs')).backgroundColor"), 'rgba(0, 0, 0, 0)');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.pane')).zIndex"), 'auto');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.pane > .h-full')).zIndex"), 'auto');
@@ -241,23 +258,25 @@ try {
 
     await save(webPort, 40, false, { composerOuterColor: '#ff0000', composerInnerColor: '#00ff00' });
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer-card')).backgroundColor"), 'color(srgb 0 1 0)');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer')).backgroundColor"), 'color(srgb 1 0 0)');
     assert.match(await evaluate("getComputedStyle(document.querySelector('.surface-composer')).boxShadow"), /color\(srgb 1 0 0\).*inset/);
     assert.equal(surfaces.tools, 'rgba(0, 0, 0, 0)');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#window-tools > .right-full')).backgroundImage"), 'none');
 
-    // Q3: Default empty composerOuterColor and composerCover: false both retain 1px inset border without solid white background block
+    // Q3: Default empty composerOuterColor retains layered frame & inset border; composerCover: false removes fill while keeping transparent layered rim
     const insetBorder = /(?:0px ){3}1px.*inset|inset.*(?:0px ){3}1px/;
     await save(webPort, 40, false, { composerCover: true, composerOuterColor: '' });
     const defaultOuter = await surfaceState();
-    assert.equal(defaultOuter.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.notEqual(defaultOuter.outerBg, 'rgba(0, 0, 0, 0)');
     assert.match(defaultOuter.outerShadow, insetBorder);
 
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerCover: false, composerOpacity: 55, composerBlur: 6 });
     const uncovered = await surfaceState();
     assert.equal(uncovered.composerAlpha, 0);
-    assert.equal(uncovered.composerBlur, 'blur(0px)');
+    assert.equal(uncovered.outerBlur, 'blur(0px)');
     assert.equal(uncovered.outerBg, 'rgba(0, 0, 0, 0)');
     assert.match(uncovered.outerShadow, insetBorder);
+    assert.notEqual(uncovered.composerShadow, 'none', 'Layered transparent mode must retain inner glass highlight/shadow');
     assert.equal(uncovered.sidebarAlpha, surfaces.sidebarAlpha);
     assert.deepEqual(await geometry(), initialGeometry);
 
@@ -265,7 +284,13 @@ try {
     const uncoveredWithColor = await surfaceState();
     assert.equal(uncoveredWithColor.outerBg, 'rgba(0, 0, 0, 0)');
     assert.match(uncoveredWithColor.outerShadow, insetBorder);
-    assert.doesNotMatch(uncoveredWithColor.outerShadow, /255,\s*255,\s*255|srgb 1 1 1/);
+    assert.equal(uncoveredWithColor.outerShadow, uncovered.outerShadow);
+
+    await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerCover: false, composerLayered: false, composerOuterColor: '#ffffff', composerOpacity: 55, composerBlur: 6 });
+    const flatUncovered = await surfaceState();
+    assert.equal(flatUncovered.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(flatUncovered.composerShadow, 'none');
+    assert.equal(flatUncovered.composerBlur, 'blur(0px)');
 
     const editorHit = await evaluate("(()=>{const e=document.querySelector('#editor'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(editorHit, true, 'Composer must remain interactive above wallpaper');
@@ -369,9 +394,9 @@ try {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.z-\\\\[1\\\\]')).zIndex"), '1');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-testid=\"autoscroll-viewport\"]')).isolation"), 'isolate');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-testid=\"overview-panel-host-overlay\"]')).zIndex"), '50');
-    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-bubble-outer').trim()"), 'var(--ag-ui-border)');
+    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-outer').trim()"), 'var(--ag-ui-border)');
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-outer').trim()"), 'var(--ag-ui-border)');
-    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-bubble-blur').trim()"), '0px');
+    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-composer-blur').trim()"), '0px');
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-blur').trim()"), '0px');
     await delay(1800);
     assert.equal(await evaluate("Boolean(document.querySelector('#antigravity-ui-background'))"), false, 'Standby heartbeat must not undo disabled preview');
@@ -406,7 +431,7 @@ try {
     assert.equal(zeroSurface.sidebarBlur, 'blur(11px)');
     assert.deepEqual(zeroSurface.composerRgb, [34, 136, 68]);
     await panel("(()=>{const cb=document.querySelector('#wallpaper-composerBlur');cb.value=4;cb.dispatchEvent(new Event('input'));})()");
-    await until(async () => (await surfaceState()).composerBlur === 'blur(4px)', 'Composer blur did not live-update at opacity 0');
+    await until(async () => (await surfaceState()).outerBlur === 'blur(4px)', 'Composer blur did not live-update at opacity 0');
     assert.equal(await evaluate("Boolean(document.querySelector('#antigravity-ui-background'))"), false);
 
     await panel("(()=>{const o=document.querySelector('#wallpaper-opacity');o.value=40;o.dispatchEvent(new Event('input'));})()");
@@ -422,22 +447,31 @@ try {
     await waitDiscard();
     await until(() => evaluate("Boolean(document.querySelector('#antigravity-ui-background'))"), 'Discard after remove did not restore wallpaper');
 
-    // Q3: Subcontrol disabled states when sidebarCover / composerCover are false
+    // Q3: Subcontrol disabled states & removed layered/color controls for leftSidebar/sidebar
+    assert.deepEqual(
+        await panel("['#left-sidebar-layered','#leftSidebarOuterColor','#leftSidebarInnerColor','#sidebar-layered','#sidebarOuterColor','#sidebarInnerColor','#overview-sync','#overview-layered','#dialog-cover'].map(s=>document.querySelector(s)===null)"),
+        [true, true, true, true, true, true, true, true, true]
+    );
     assert.equal(await panel("document.querySelector('[data-reset-color=composerOuterColor]').disabled"), true);
+    await panel("document.querySelector('#left-sidebar-cover').click()");
+    assert.equal(await panel("document.querySelector('#wallpaper-leftSidebarOpacity').disabled"), true);
+    assert.equal(await panel("document.querySelector('#wallpaper-leftSidebarBlur').disabled"), true);
     await panel("document.querySelector('#sidebar-cover').click()");
     assert.equal(await panel("document.querySelector('#wallpaper-sidebarOpacity').disabled"), true);
     assert.equal(await panel("document.querySelector('#wallpaper-sidebarBlur').disabled"), true);
     await panel("(()=>{const oc=document.querySelector('#composerOuterColor');oc.value='#2468ac';oc.dispatchEvent(new Event('input'));})()");
     assert.equal(await panel("document.querySelector('[data-reset-color=composerOuterColor]').disabled"), false);
     await panel("document.querySelector('#composer-cover').click()");
-    assert.deepEqual(await panel("[document.querySelector('#composerOuterColor').disabled,document.querySelector('#composerInnerColor').disabled,document.querySelector('[data-reset-color=composerOuterColor]').disabled,document.querySelector('[data-reset-color=composerInnerColor]').disabled,document.querySelector('#wallpaper-composerOpacity').disabled,document.querySelector('#wallpaper-composerBlur').disabled]"), [true, true, true, true, true, true]);
+    assert.deepEqual(await panel("[document.querySelector('#composer-layered').disabled,document.querySelector('#composerOuterColor').disabled,document.querySelector('#composerInnerColor').disabled,document.querySelector('[data-reset-color=composerOuterColor]').disabled,document.querySelector('[data-reset-color=composerInnerColor]').disabled,document.querySelector('#wallpaper-composerOpacity').disabled,document.querySelector('#wallpaper-composerBlur').disabled]"), [false, true, true, true, true, true, true]);
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-outer').trim()"), 'var(--ag-ui-border)');
+    await panel("document.querySelector('#overview-cover').click()");
+    assert.deepEqual(await panel("[document.querySelector('#overviewOuterColor').disabled,document.querySelector('#overviewInnerColor').disabled,document.querySelector('[data-reset-color=overviewOuterColor]').disabled,document.querySelector('[data-reset-color=overviewInnerColor]').disabled,document.querySelector('#wallpaper-overviewOpacity').disabled,document.querySelector('#wallpaper-overviewBlur').disabled]"), [true, true, true, true, true, true]);
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
 
     // Existing accordion, color save, default outer border save, independent controls save, delayed preview/save, invalid 400
-    assert.equal(await panel("document.querySelectorAll('input[type=range]').length"), 13);
-    assert.equal(await panel("document.querySelectorAll('details').length"), 7);
+    assert.equal(await panel("document.querySelectorAll('input[type=range]').length"), 15);
+    assert.equal(await panel("document.querySelectorAll('details').length"), 8);
     assert.equal(await panel("document.querySelector('#composer-cover').closest('details').open"), false);
     await panel("document.querySelector('#composer-cover').closest('details').querySelector('summary').click()");
     assert.equal(await panel("document.querySelector('#composer-cover').closest('details').open"), true);
@@ -631,6 +665,7 @@ try {
     assert.equal(embeddedState.bodyBg, 'rgba(0, 0, 0, 0)', 'Embedded body must be transparent to avoid double opacity');
     assert.equal(embeddedState.footerBg, 'rgba(0, 0, 0, 0)', 'Embedded footer must be transparent');
     assert.equal(embeddedState.overflow, false, '320px embedded footer with discard button must not overflow horizontally');
+    assert.equal(await iframe("(()=>{for(const d of document.querySelectorAll('details'))d.open=true;return document.documentElement.scrollWidth>window.innerWidth})()"), false, '320px embedded panel with all cards expanded must not overflow horizontally');
 
     await iframe("(()=>{const s=document.querySelector('#wallpaper-sidebarOpacity');s.value=20;s.dispatchEvent(new Event('input'));})()");
     await delay(160);
@@ -681,7 +716,7 @@ try {
         const readBubble=(frameSel,bubbleSel)=>{
             const f=getComputedStyle(document.querySelector(frameSel));
             const b=getComputedStyle(document.querySelector(bubbleSel));
-            return{frameBg:f.backgroundColor,frameShadow:f.boxShadow,frameRgba:shadowRgba(f.boxShadow),bgRgba:rgba(b.backgroundColor),blur:b.backdropFilter,shadow:b.boxShadow};
+            return{frameBg:f.backgroundColor,frameBgRgba:rgba(f.backgroundColor),frameBlur:f.backdropFilter,frameShadow:f.boxShadow,frameRgba:shadowRgba(f.boxShadow),bgRgba:rgba(b.backgroundColor),blur:b.backdropFilter,shadow:b.boxShadow};
         };
         const bd=getComputedStyle(document.querySelector('[data-testid="overview-panel-overlay-backdrop"]'));
         const ov=getComputedStyle(document.querySelector('[data-testid="overview-panel-host-overlay"]'));
@@ -695,158 +730,134 @@ try {
             viewport:{isolation:vps.isolation,zIndex:vps.zIndex,maskImage:vps.maskImage,webkitMaskImage:vps.webkitMaskImage},
             regularBubble:readBubble('#regular-bubble-frame','#regular-bubble'),
             proceededBubble:readBubble('#proceeded-bubble-frame','#proceeded-bubble'),
-            overview:{backdropZ:bd.zIndex,hostZ:ov.zIndex,bgRgba:rgba(ov.backgroundColor),blur:ov.backdropFilter,borderColor:ov.borderTopColor,borderRgba:rgba(ov.borderTopColor)},
-            homeComposer:{wrapperZ:zw.zIndex,outerBgRgba:rgba(hc.backgroundColor),outerBlur:hc.backdropFilter,outerShadow:hc.boxShadow,outerShadowRgba:shadowRgba(hc.boxShadow),cardBg:hcc.backgroundColor,cardBlur:hcc.backdropFilter,cardShadow:hcc.boxShadow},
-            normalComposer:{outerBg:nc.backgroundColor,outerBlur:nc.backdropFilter,outerShadow:nc.boxShadow,outerShadowRgba:shadowRgba(nc.boxShadow),cardBgRgba:rgba(ncc.backgroundColor),cardBlur:ncc.backdropFilter,cardShadow:ncc.boxShadow},
+            overview:{backdropZ:bd.zIndex,hostZ:ov.zIndex,bgRgba:rgba(ov.backgroundColor),blur:ov.backdropFilter,shadow:ov.boxShadow,borderColor:ov.borderTopColor,borderRgba:rgba(ov.borderTopColor)},
+            homeComposer:{wrapperZ:zw.zIndex,outerBg:hc.backgroundColor,outerBgRgba:rgba(hc.backgroundColor),outerBlur:hc.backdropFilter,outerShadow:hc.boxShadow,outerShadowRgba:shadowRgba(hc.boxShadow),cardBg:hcc.backgroundColor,cardBgRgba:rgba(hcc.backgroundColor),cardBlur:hcc.backdropFilter,cardShadow:hcc.boxShadow},
+            normalComposer:{outerBg:nc.backgroundColor,outerBgRgba:rgba(nc.backgroundColor),outerBlur:nc.backdropFilter,outerShadow:nc.boxShadow,outerShadowRgba:shadowRgba(nc.boxShadow),cardBg:ncc.backgroundColor,cardBgRgba:rgba(ncc.backgroundColor),cardBlur:ncc.backdropFilter,cardShadow:ncc.boxShadow},
         };
     })()`, 'Read host surfaces');
 
-    // (c) Cross-session composer unification: HOME_VIEW .z-[1] and toolbarPlacement="top" single-layer fill/blur/inset border
-    await panel("(()=>{const d=document.querySelector('#composer-cover').closest('details');if(!d.open)d.querySelector('summary').click();document.querySelector('#composer-cover').click();const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#composerOuterColor','#ff0000');set('#composerInnerColor','#00ff00');set('#wallpaper-composerOpacity',55);set('#wallpaper-composerBlur',6);})()");
-    await until(async () => (await readHostSurfaces(client)).homeComposer.outerBlur === 'blur(6px)', 'HOME_VIEW top-toolbar composer did not update');
+    // (c) Bound "输入框与对话框" card: composer + user bubbles + HOME_VIEW .z-[1] two-layer frame/card & flat toggle, never syncing Overview
+    await panel("(()=>{const d=document.querySelector('#composer-cover').closest('details');if(!d.open)d.querySelector('summary').click();const cov=document.querySelector('#composer-cover');if(!cov.checked)cov.click();const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#composerOuterColor','#ff0000');set('#composerInnerColor','#00ff00');set('#wallpaper-composerOpacity',55);set('#wallpaper-composerBlur',6);})()");
+    await until(async () => {
+        const s = await readHostSurfaces(client);
+        return s.homeComposer.outerBlur === 'blur(6px)' && s.regularBubble.frameBlur === 'blur(6px)';
+    }, 'Bound composer + bubble layered preview did not update');
     const unifiedHome = await readHostSurfaces(client);
     assert.equal(unifiedHome.homeComposer.wrapperZ, '1001');
-    approxRgba(unifiedHome.homeComposer.outerBgRgba, [0, 255, 0, 140]);
+    approxRgba(unifiedHome.homeComposer.outerBgRgba, [255, 0, 0, 140]);
     assert.equal(unifiedHome.homeComposer.outerBlur, 'blur(6px)');
     assert.match(unifiedHome.homeComposer.outerShadow, insetBorder);
     approxRgba(unifiedHome.homeComposer.outerShadowRgba, [255, 0, 0, 140]);
-    assert.equal(unifiedHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
+    approxRgba(unifiedHome.homeComposer.cardBgRgba, [0, 255, 0, 140]);
     assert.equal(unifiedHome.homeComposer.cardBlur, 'none');
-    assert.equal(unifiedHome.homeComposer.cardShadow, 'none');
-    assert.equal(unifiedHome.normalComposer.outerBg, 'rgba(0, 0, 0, 0)');
-    assert.equal(unifiedHome.normalComposer.outerBlur, 'none');
+    assert.notEqual(unifiedHome.homeComposer.cardShadow, 'none');
+    approxRgba(unifiedHome.normalComposer.outerBgRgba, [255, 0, 0, 140]);
+    assert.equal(unifiedHome.normalComposer.outerBlur, 'blur(6px)');
     assert.match(unifiedHome.normalComposer.outerShadow, insetBorder);
     approxRgba(unifiedHome.normalComposer.outerShadowRgba, [255, 0, 0, 140]);
     approxRgba(unifiedHome.normalComposer.cardBgRgba, [0, 255, 0, 140]);
-    assert.equal(unifiedHome.normalComposer.cardBlur, 'blur(6px)');
-    assert.equal(unifiedHome.normalComposer.cardShadow, 'none');
+    assert.equal(unifiedHome.normalComposer.cardBlur, 'none');
+    assert.notEqual(unifiedHome.normalComposer.cardShadow, 'none');
+    for (const bubble of [unifiedHome.regularBubble, unifiedHome.proceededBubble]) {
+        approxRgba(bubble.frameBgRgba, [255, 0, 0, 140]);
+        assert.equal(bubble.frameBlur, 'blur(6px)');
+        assert.match(bubble.frameShadow, insetBorder);
+        approxRgba(bubble.frameRgba, [255, 0, 0, 140]);
+        approxRgba(bubble.bgRgba, [0, 255, 0, 140]);
+        assert.equal(bubble.blur, 'none');
+        assert.notEqual(bubble.shadow, 'none');
+    }
+    assert.equal(unifiedHome.overview.blur, 'blur(0px)', 'Composer changes must never sync to Overview panel');
+    assert.equal(unifiedHome.overview.shadow, 'none', 'Overview panel must remain flat');
     const homeEditorHit = await evaluate("(()=>{const e=document.querySelector('#home-editor'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(homeEditorHit, true, 'HOME_VIEW composer editor must be interactive above wallpaper');
 
+    // Toggle #composer-layered off -> flattens BOTH composers and user bubbles together
+    await panel("document.querySelector('#composer-layered').click()");
+    await until(async () => {
+        const s = await readHostSurfaces(client);
+        return s.homeComposer.cardShadow === 'none' && s.regularBubble.shadow === 'none';
+    }, 'Disabling composerLayered did not flatten composer + bubbles');
+    const flatHome = await readHostSurfaces(client);
+    approxRgba(flatHome.homeComposer.outerBgRgba, [0, 255, 0, 140]);
+    assert.equal(flatHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(flatHome.normalComposer.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(flatHome.normalComposer.cardBlur, 'blur(6px)');
+    assert.equal(flatHome.normalComposer.cardShadow, 'none');
+    for (const bubble of [flatHome.regularBubble, flatHome.proceededBubble]) {
+        assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(bubble.frameBlur, 'none');
+        approxRgba(bubble.bgRgba, [0, 255, 0, 140]);
+        assert.equal(bubble.blur, 'blur(6px)');
+        assert.equal(bubble.shadow, 'none');
+    }
+    await panel("document.querySelector('#composer-layered').click()");
+    await until(async () => {
+        const s = await readHostSurfaces(client);
+        return s.homeComposer.cardShadow !== 'none' && s.regularBubble.shadow !== 'none';
+    }, 'Re-enabling composerLayered did not restore layered depth');
+
     await panel("document.querySelector('#composer-cover').click()");
-    await until(async () => (await readHostSurfaces(client)).homeComposer.outerBgRgba[3] === 0, 'Disabling composerCover did not clear HOME_VIEW composer');
+    await until(async () => {
+        const s = await readHostSurfaces(client);
+        return s.homeComposer.outerBgRgba[3] === 0 && s.regularBubble.bgRgba[3] === 0;
+    }, 'Disabling composerCover did not clear composer + bubble colors');
     const uncoveredHome = await readHostSurfaces(client);
     assert.equal(uncoveredHome.homeComposer.outerBlur, 'blur(0px)');
     assert.match(uncoveredHome.homeComposer.outerShadow, insetBorder);
     assert.notDeepEqual(uncoveredHome.homeComposer.outerShadowRgba.slice(0, 3), [255, 0, 0]);
     assert.equal(uncoveredHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
-    assert.equal(uncoveredHome.homeComposer.cardShadow, 'none');
+    assert.notEqual(uncoveredHome.homeComposer.cardShadow, 'none', 'Layered transparent HOME_VIEW composer retains raised glass rim/shadow');
+    for (const bubble of [uncoveredHome.regularBubble, uncoveredHome.proceededBubble]) {
+        assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(bubble.bgRgba[3], 0);
+        assert.equal(bubble.frameBlur, 'blur(0px)');
+        assert.match(bubble.frameShadow, insetBorder);
+        assert.notDeepEqual(bubble.frameRgba.slice(0, 3), [255, 0, 0]);
+        assert.notEqual(bubble.shadow, 'none', 'Layered transparent bubble retains inner rim/shadow');
+    }
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
 
-    // (a) Shared "对话框与面板" card, overviewSync, independent Overview toggle, and non-leaking disabled controls
-    assert.equal(await panel("document.querySelector('#overview-sync').checked"), true);
-    assert.equal(await panel("document.querySelector('#dialog-target-switch').hidden"), true);
-    assert.equal(await panel("getComputedStyle(document.querySelector('#dialog-target-switch')).display"), 'none');
-    assert.deepEqual(await panel("[...document.querySelectorAll('[data-dialog-target]')].map(b=>b.disabled)"), [true, true]);
-
-    await panel("(()=>{const d=document.querySelector('#dialog-cover').closest('details');if(!d.open)d.querySelector('summary').click();})()");
-    assert.equal(await panel("document.querySelector('#dialog-cover').closest('details').open"), true);
-    await panel("(()=>{const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#dialogOuterColor','#ff0000');set('#dialogInnerColor','#00ff00');set('#wallpaper-dialogOpacity',60);set('#wallpaper-dialogBlur',8);})()");
-    await until(async () => {
-        const s = await readHostSurfaces(client);
-        return s.regularBubble.blur === 'blur(8px)' && s.overview.blur === 'blur(8px)';
-    }, 'Synced dialog + Overview live preview did not apply');
-    const syncedHost = await readHostSurfaces(client);
-    for (const bubble of [syncedHost.regularBubble, syncedHost.proceededBubble]) {
-        assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
-        assert.match(bubble.frameShadow, insetBorder);
-        approxRgba(bubble.frameRgba, [255, 0, 0, 153]);
-        approxRgba(bubble.bgRgba, [0, 255, 0, 153]);
-        assert.equal(bubble.blur, 'blur(8px)');
-        assert.equal(bubble.shadow, 'none');
-    }
-    assert.equal(syncedHost.overview.backdropZ, '1002');
-    assert.equal(syncedHost.overview.hostZ, '1002');
-    approxRgba(syncedHost.overview.bgRgba, [0, 255, 0, 153]);
-    assert.equal(syncedHost.overview.blur, 'blur(8px)');
-    approxRgba(syncedHost.overview.borderRgba, [255, 0, 0, 153]);
-    const overviewHit = await evaluate("(()=>{const e=document.querySelector('[data-testid=\"overview-panel-host-overlay\"]'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
-    assert.equal(overviewHit, true, 'Overview panel at z-index 1002 must be interactive above wallpaper');
-
-    const syncedPreviewVars = await panel("(()=>{const s=document.querySelector('#preview').style;const get=k=>s.getPropertyValue(k).trim();return{bOut:get('--preview-bubble-outer'),bIn:get('--preview-bubble-inner'),bBlur:get('--preview-bubble-blur'),oOut:get('--preview-overview-outer'),oIn:get('--preview-overview-inner'),oBlur:get('--preview-overview-blur')}})()");
-    assert.match(syncedPreviewVars.bOut, /#ff0000.*60%/);
-    assert.match(syncedPreviewVars.bIn, /#00ff00.*60%/);
-    assert.notEqual(syncedPreviewVars.bBlur, '0px');
-    assert.equal(syncedPreviewVars.oOut, syncedPreviewVars.bOut);
-    assert.equal(syncedPreviewVars.oIn, syncedPreviewVars.bIn);
-    assert.equal(syncedPreviewVars.oBlur, syncedPreviewVars.bBlur);
-
-    // Disable overviewSync -> target switch appears -> independently edit Overview without affecting bubbles
-    await panel("document.querySelector('#overview-sync').click()");
-    assert.equal(await panel("document.querySelector('#overview-sync').checked"), false);
-    assert.equal(await panel("document.querySelector('#dialog-target-switch').hidden"), false);
-    assert.notEqual(await panel("getComputedStyle(document.querySelector('#dialog-target-switch')).display"), 'none');
-    await panelClient.command('Emulation.setDeviceMetricsOverride', { width: 480, height: 750, deviceScaleFactor: 1, mobile: false });
-    try {
-        const tabs480 = await panel("(()=>{const btns=[...document.querySelectorAll('#dialog-target-switch [data-dialog-target]')];return{overflow:document.documentElement.scrollWidth>window.innerWidth,buttons:btns.map(b=>({sw:b.scrollWidth,cw:b.clientWidth,top:Math.round(b.getBoundingClientRect().top)}))}})()");
-        assert.equal(tabs480.overflow, false, '480px panel with #dialog-target-switch must not overflow horizontally');
-        assert.equal(tabs480.buttons.length, 2);
-        for (const btn of tabs480.buttons) assert(btn.sw <= btn.cw, `Target button text truncated at 480px: scrollWidth=${btn.sw} > clientWidth=${btn.cw}`);
-        assert.equal(tabs480.buttons[0].top, tabs480.buttons[1].top, 'Target switch buttons at 480px should remain on same row');
-    } finally {
-        await panelClient.command('Emulation.clearDeviceMetricsOverride');
-    }
-    await panel("document.querySelector('[data-dialog-target=\"overview\"]').click()");
-    assert.equal(await panel("document.querySelector('[data-dialog-target=\"overview\"]').getAttribute('aria-pressed')"), 'true');
-    assert.equal(await panel("document.querySelector('[data-dialog-target=\"bubble\"]').getAttribute('aria-pressed')"), 'false');
-    await panel("(()=>{const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#dialogOuterColor','#0000ff');set('#dialogInnerColor','#ffff00');set('#wallpaper-dialogOpacity',30);set('#wallpaper-dialogBlur',12);})()");
+    // (a) Independent "Overview 面板" card: flat rendering, zero composer/bubble coupling & non-leaking disabled controls
+    await panel("(()=>{const d=document.querySelector('#overview-cover').closest('details');if(!d.open)d.querySelector('summary').click();})()");
+    assert.equal(await panel("document.querySelector('#overview-cover').closest('details').open"), true);
+    await panel("(()=>{const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#overviewOuterColor','#0000ff');set('#overviewInnerColor','#ffff00');set('#wallpaper-overviewOpacity',30);set('#wallpaper-overviewBlur',12);})()");
     await until(async () => (await readHostSurfaces(client)).overview.blur === 'blur(12px)', 'Independent Overview adjustment did not apply');
     const splitHost = await readHostSurfaces(client);
+    assert.equal(splitHost.overview.backdropZ, '1002');
+    assert.equal(splitHost.overview.hostZ, '1002');
     approxRgba(splitHost.overview.bgRgba, [255, 255, 0, 77]);
     approxRgba(splitHost.overview.borderRgba, [0, 0, 255, 77]);
     assert.equal(splitHost.overview.blur, 'blur(12px)');
-    assert.equal(splitHost.overview.hostZ, '1002');
+    assert.equal(splitHost.overview.shadow, 'none', 'Overview panel must remain flat without layered box-shadow');
+    const overviewHit = await evaluate("(()=>{const e=document.querySelector('[data-testid=\"overview-panel-host-overlay\"]'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
+    assert.equal(overviewHit, true, 'Overview panel at z-index 1002 must be interactive above wallpaper');
     for (const bubble of [splitHost.regularBubble, splitHost.proceededBubble]) {
-        approxRgba(bubble.frameRgba, [255, 0, 0, 153]);
-        approxRgba(bubble.bgRgba, [0, 255, 0, 153]);
-        assert.equal(bubble.blur, 'blur(8px)');
+        assert.equal(bubble.frameBlur, 'blur(0px)', 'Overview adjustment must never affect user bubbles');
     }
-    const splitPreviewVars = await panel("(()=>{const s=document.querySelector('#preview').style;const get=k=>s.getPropertyValue(k).trim();return{bOut:get('--preview-bubble-outer'),bIn:get('--preview-bubble-inner'),oOut:get('--preview-overview-outer'),oIn:get('--preview-overview-inner')}})()");
-    assert.match(splitPreviewVars.bOut, /#ff0000.*60%/);
-    assert.match(splitPreviewVars.bIn, /#00ff00.*60%/);
-    assert.match(splitPreviewVars.oOut, /#0000ff.*30%/);
-    assert.match(splitPreviewVars.oIn, /#ffff00.*30%/);
+    assert.equal(splitHost.homeComposer.outerBlur, 'blur(0px)', 'Overview adjustment must never affect composer');
 
-    // Re-check overviewSync -> Overview immediately mirrors back to bubbles
-    await panel("document.querySelector('#overview-sync').click()");
-    assert.equal(await panel("document.querySelector('#overview-sync').checked"), true);
-    assert.equal(await panel("document.querySelector('#dialog-target-switch').hidden"), true);
-    await until(async () => (await readHostSurfaces(client)).overview.blur === 'blur(8px)', 'Re-enabling overviewSync did not mirror back');
-    const resyncedHost = await readHostSurfaces(client);
-    approxRgba(resyncedHost.overview.bgRgba, [0, 255, 0, 153]);
-    approxRgba(resyncedHost.overview.borderRgba, [255, 0, 0, 153]);
+    const overviewPreviewVars = await panel("(()=>{const s=document.querySelector('#preview').style;const get=k=>s.getPropertyValue(k).trim();return{oOut:get('--preview-overview-outer'),oIn:get('--preview-overview-inner'),oBlur:get('--preview-overview-blur'),cBlur:get('--preview-composer-blur')}})()");
+    assert.match(overviewPreviewVars.oOut, /#0000ff.*30%/);
+    assert.match(overviewPreviewVars.oIn, /#ffff00.*30%/);
+    assert.notEqual(overviewPreviewVars.oBlur, '0px');
+    assert.equal(overviewPreviewVars.cBlur, '0px');
 
-    // Turn off #dialog-cover -> subcontrols disabled & hidden colors do not leak
-    await panel("document.querySelector('#dialog-cover').click()");
-    assert.deepEqual(await panel("[document.querySelector('#dialogOuterColor').disabled,document.querySelector('#dialogInnerColor').disabled,document.querySelector('[data-reset-dialog-color=\"outer\"]').disabled,document.querySelector('[data-reset-dialog-color=\"inner\"]').disabled,document.querySelector('#wallpaper-dialogOpacity').disabled,document.querySelector('#wallpaper-dialogBlur').disabled]"), [true, true, true, true, true, true]);
-    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-bubble-outer').trim()"), 'var(--ag-ui-border)');
+    // Turn off #overview-cover -> subcontrols disabled & hidden colors do not leak
+    await panel("document.querySelector('#overview-cover').click()");
+    assert.deepEqual(await panel("[document.querySelector('#overviewOuterColor').disabled,document.querySelector('#overviewInnerColor').disabled,document.querySelector('[data-reset-color=\"overviewOuterColor\"]').disabled,document.querySelector('[data-reset-color=\"overviewInnerColor\"]').disabled,document.querySelector('#wallpaper-overviewOpacity').disabled,document.querySelector('#wallpaper-overviewBlur').disabled]"), [true, true, true, true, true, true]);
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-outer').trim()"), 'var(--ag-ui-border)');
-    assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-bubble-blur').trim()"), '0px');
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-blur').trim()"), '0px');
-    await until(async () => (await readHostSurfaces(client)).regularBubble.blur === 'blur(0px)', 'Disabling dialogCover did not clear bubble blur');
-    const uncoveredDialog = await readHostSurfaces(client);
-    for (const bubble of [uncoveredDialog.regularBubble, uncoveredDialog.proceededBubble]) {
-        assert.equal(bubble.bgRgba[3], 0);
-        assert.equal(bubble.blur, 'blur(0px)');
-        assert.match(bubble.frameShadow, insetBorder);
-        assert.notDeepEqual(bubble.frameRgba.slice(0, 3), [255, 0, 0]);
-    }
-    assert.equal(uncoveredDialog.overview.bgRgba[3], 0);
-    assert.equal(uncoveredDialog.overview.blur, 'blur(0px)');
-    assert.notDeepEqual(uncoveredDialog.overview.borderRgba.slice(0, 3), [255, 0, 0]);
-
-    // Independent cover: enable bubble cover only while Overview remains uncovered without color leak
-    await panel("(()=>{document.querySelector('#overview-sync').click();document.querySelector('[data-dialog-target=\"bubble\"]').click();document.querySelector('#dialog-cover').click();})()");
-    await until(async () => (await readHostSurfaces(client)).regularBubble.blur === 'blur(8px)', 'Re-enabling bubble cover independently did not apply');
-    const bubbleOnlyHost = await readHostSurfaces(client);
-    approxRgba(bubbleOnlyHost.regularBubble.bgRgba, [0, 255, 0, 153]);
-    assert.equal(bubbleOnlyHost.overview.bgRgba[3], 0);
-    assert.notDeepEqual(bubbleOnlyHost.overview.borderRgba.slice(0, 3), [255, 0, 0]);
+    await until(async () => (await readHostSurfaces(client)).overview.blur === 'blur(0px)', 'Disabling overviewCover did not clear Overview blur');
+    const uncoveredOverview = await readHostSurfaces(client);
+    assert.equal(uncoveredOverview.overview.bgRgba[3], 0);
+    assert.equal(uncoveredOverview.overview.blur, 'blur(0px)');
+    assert.notDeepEqual(uncoveredOverview.overview.borderRgba.slice(0, 3), [0, 0, 255]);
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
 
-    // (b) Scrollable autoscroll-viewport mask-image vs Backdrop Filter
+    // (b) Scrollable autoscroll-viewport mask-image vs Backdrop Filter (driven by composerBlur -> bound composer + bubble blur)
     await evaluate("document.querySelector('[data-testid=\"autoscroll-viewport\"]').scrollTop = 20");
     const blurZeroState = await readHostSurfaces(client);
     assert.equal(blurZeroState.viewport.isolation, 'auto');
@@ -854,19 +865,148 @@ try {
     assert.match(blurZeroState.viewport.maskImage, /linear-gradient/);
     assert.match(blurZeroState.viewport.webkitMaskImage, /linear-gradient/);
 
-    await panel("(()=>{const b=document.querySelector('#wallpaper-dialogBlur');b.value=10;b.dispatchEvent(new Event('input'));})()");
-    await until(async () => (await readHostSurfaces(client)).regularBubble.blur === 'blur(10px)', 'bubbleBlur > 0 did not apply');
+    await panel("(()=>{const c=document.querySelector('#composer-cover');if(!c.checked)c.click();const b=document.querySelector('#wallpaper-composerBlur');b.value=10;b.dispatchEvent(new Event('input'));})()");
+    await until(async () => (await readHostSurfaces(client)).regularBubble.frameBlur === 'blur(10px)', 'composerBlur > 0 did not apply to bubbles');
     const blurActiveState = await readHostSurfaces(client);
     assert.equal(blurActiveState.viewport.isolation, 'auto');
     assert.equal(blurActiveState.viewport.zIndex, '1001');
     assert.equal(blurActiveState.viewport.maskImage, 'none');
     assert.equal(blurActiveState.viewport.webkitMaskImage, 'none');
-    assert.equal(blurActiveState.proceededBubble.blur, 'blur(10px)');
+    assert.equal(blurActiveState.proceededBubble.frameBlur, 'blur(10px)');
+    assert.equal(blurActiveState.homeComposer.outerBlur, 'blur(10px)');
 
-    await panel("(()=>{const b=document.querySelector('#wallpaper-dialogBlur');b.value=0;b.dispatchEvent(new Event('input'));})()");
-    await until(async () => (await readHostSurfaces(client)).regularBubble.blur === 'blur(0px)', 'Resetting bubbleBlur to 0 did not clear blur');
+    await panel("(()=>{const b=document.querySelector('#wallpaper-composerBlur');b.value=0;b.dispatchEvent(new Event('input'));const c=document.querySelector('#composer-cover');if(c.checked)c.click();})()");
+    await until(async () => (await readHostSurfaces(client)).regularBubble.frameBlur === 'blur(0px)', 'Resetting composerBlur to 0 did not clear blur');
     assert.match((await readHostSurfaces(client)).viewport.maskImage, /linear-gradient/);
-    await until(() => panel("document.querySelector('#discard').disabled"), 'Reverting bubbleBlur to saved value should clear draft');
+    await until(() => panel("document.querySelector('#discard').disabled"), 'Reverting composerBlur and composerCover to saved values should clear draft');
+
+    // (e) Left Sidebar & Right Panel flat rendering (no top-left inset seam, aligned right tab strip) + transparent mode + native themes
+    await evaluate(`(()=>{
+        const shell=document.querySelector('.agy-inset-shell');
+        const sheet=document.querySelector('.agy-sheet');
+        const split=document.createElement('div');
+        split.id='test-sidebar-split';
+        split.setAttribute('data-testid','sidebar-split');
+        split.setAttribute('data-split-root','true');
+        split.style.cssText='display:flex;width:100%;height:100%;';
+        const leftDock=document.createElement('div');
+        leftDock.id='test-left-dock';
+        leftDock.className='flex';
+        leftDock.style.cssText='width:180px;height:100%;flex-shrink:0;';
+        leftDock.innerHTML='<div class="h-full w-full flex flex-col pb-2 bg-sidebar" id="test-left-shell"><div class="px-2">Nav</div><div class="flex-1 min-h-0 overflow-y-auto outline-none flex flex-col py-3" id="test-left-inner"><div class="w-full relative flex-1 min-h-0 h-full"><div data-testid="conversation-list-sidebar" class="relative w-full h-full overflow-y-auto px-2"><div class="bg-sidebar" id="test-left-sticky" style="background:rgb(60,60,60)">Sticky</div><div class="agy-sidebar-row bg-sidebar-secondary" data-selected="true" id="test-left-selected"><span class="agy-row-actions">Row</span></div></div></div></div></div>';
+        shell.insertBefore(split, sheet);
+        split.append(leftDock, sheet);
+        document.querySelector('#tabs').setAttribute('data-side-panel-strip','true');
+    })()`);
+    try {
+        await panel(`(()=>{
+            for (const sel of ['#left-sidebar-cover', '#sidebar-cover', '#composer-cover']) {
+                const d = document.querySelector(sel).closest('details');
+                if (!d.open) d.querySelector('summary').click();
+            }
+            const set = (s, v) => { const el = document.querySelector(s); el.value = v; el.dispatchEvent(new Event('input')); };
+            set('#wallpaper-leftSidebarOpacity', 40);
+            set('#wallpaper-leftSidebarBlur', 8);
+            set('#wallpaper-sidebarOpacity', 50);
+            set('#wallpaper-sidebarBlur', 10);
+        })()`);
+        const readSideSurfaces = () => evaluate(`(()=>{
+            const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');
+            const rgba=color=>{g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return[...g.getImageData(0,0,1,1).data]};
+            const ld=getComputedStyle(document.querySelector('#test-left-dock'));
+            const ls=getComputedStyle(document.querySelector('#test-left-shell'));
+            const lstick=getComputedStyle(document.querySelector('#test-left-sticky'));
+            const li=getComputedStyle(document.querySelector('#test-left-inner'));
+            const lsel=getComputedStyle(document.querySelector('#test-left-selected'));
+            const rs=getComputedStyle(document.querySelector('.pane .browser-hole-ancestor'));
+            const rtEl=document.querySelector('#tabs');
+            const rt=getComputedStyle(rtEl);
+            const rbEl=document.querySelector('.pane [data-side-panel-body]');
+            const rb=getComputedStyle(rbEl);
+            const mainEl=document.querySelector('[data-main-content-body]');
+            return {
+                left:{dockZ:ld.zIndex,shellBg:rgba(ls.backgroundColor),shellBlur:ls.backdropFilter,shellShadow:ls.boxShadow,stickyBg:lstick.backgroundColor,innerBg:rgba(li.backgroundColor),innerShadow:li.boxShadow,innerRadius:li.borderRadius,selectedShadow:lsel.boxShadow},
+                right:{shellZ:rs.zIndex,shellBg:rgba(rs.backgroundColor),shellBlur:rs.backdropFilter,tabsBg:rt.backgroundColor,tabsTop:Math.round(rtEl.getBoundingClientRect().top),mainTop:Math.round(mainEl.getBoundingClientRect().top),bodyTop:Math.round(rbEl.getBoundingClientRect().top),bodyBg:rgba(rb.backgroundColor),bodyBlur:rb.backdropFilter,bodyShadow:rb.boxShadow,bodyRadius:rb.borderRadius},
+            };
+        })()`);
+        await until(async () => (await readSideSurfaces()).right.bodyBlur === 'blur(10px)' && (await readSideSurfaces()).left.shellBlur === 'blur(8px)', 'Left sidebar & right panel flat styles did not apply');
+        const flatSides = await readSideSurfaces();
+        assert.equal(flatSides.left.dockZ, '1001');
+        approxRgba(flatSides.left.shellBg, [19, 19, 19, 102]);
+        assert.equal(flatSides.left.shellBlur, 'blur(8px)');
+        assert.equal(flatSides.left.shellShadow, 'none', 'Left sidebar shell must not render an inset border/shadow seam below titlebar');
+        assert.equal(flatSides.left.stickyBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(flatSides.left.innerBg[3], 0);
+        assert.equal(flatSides.left.innerShadow, 'none');
+        assert.equal(flatSides.left.innerRadius, '0px');
+        assert.equal(flatSides.left.selectedShadow, 'none');
+        assert.equal(flatSides.right.shellZ, 'auto');
+        assert.equal(flatSides.right.shellBg[3], 0);
+        assert.equal(flatSides.right.shellBlur, 'none');
+        assert.equal(flatSides.right.tabsBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(flatSides.right.tabsTop, flatSides.right.mainTop, 'Right panel tab strip top must stay aligned with main header');
+        assert.equal(flatSides.right.bodyTop - flatSides.right.tabsTop, 40, 'Right panel body must begin flush under tab strip');
+        approxRgba(flatSides.right.bodyBg, [19, 19, 19, 128]);
+        assert.equal(flatSides.right.bodyBlur, 'blur(10px)');
+        assert.equal(flatSides.right.bodyShadow, 'none');
+        assert.equal(flatSides.right.bodyRadius, '0px');
+
+        // Turn off #left-sidebar-cover & #sidebar-cover -> completely transparent flat surfaces with no card rim/shadow
+        await panel("(()=>{document.querySelector('#left-sidebar-cover').click();document.querySelector('#sidebar-cover').click();})()");
+        await until(async () => (await readSideSurfaces()).left.shellBlur === 'blur(0px)' && (await readSideSurfaces()).right.bodyBlur === 'blur(0px)', 'Disabling sidebar covers did not clear blur');
+        const clearSides = await readSideSurfaces();
+        assert.equal(clearSides.left.shellBg[3], 0);
+        assert.equal(clearSides.left.shellShadow, 'none');
+        assert.equal(clearSides.left.innerBg[3], 0);
+        assert.equal(clearSides.left.innerShadow, 'none');
+        assert.equal(clearSides.right.bodyBg[3], 0);
+        assert.equal(clearSides.right.bodyShadow, 'none');
+
+        // Default empty OuterColor/InnerColor under native Antigravity dark & light body[data-agy-theme] produces two-tone depth
+        await panel(`(()=>{
+            const d=document.querySelector('#composer-cover').closest('details');
+            if(!d.open)d.querySelector('summary').click();
+            if(!document.querySelector('#composer-cover').checked)document.querySelector('#composer-cover').click();
+            for(const key of ['composerOuterColor','composerInnerColor']){
+                const btn=document.querySelector('[data-reset-color="'+key+'"]');
+                if(!btn.disabled)btn.click();
+            }
+        })()`);
+        await until(async () => (await readHostSurfaces(client)).homeComposer.outerBgRgba[3] > 0 && (await readHostSurfaces(client)).homeComposer.cardBgRgba[3] > 0, 'Composer cover with default colors did not apply');
+        const checkNativeThemes = await evaluate(`(()=>{
+            const root=document.documentElement;
+            const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');
+            const rgba=color=>{g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return[...g.getImageData(0,0,1,1).data]};
+            document.body.dataset.agyTheme='';
+            document.body.classList.add('dark');
+            root.style.setProperty('--onyx-frame','#424141');
+            root.style.setProperty('--onyx-raised','#4a4949');
+            const darkOuter=rgba(getComputedStyle(document.querySelector('#home-composer')).backgroundColor);
+            const darkInner=rgba(getComputedStyle(document.querySelector('#home-composer-card')).backgroundColor);
+            document.body.classList.remove('dark');
+            root.style.setProperty('--onyx-frame','#f1f3f6');
+            root.style.setProperty('--onyx-raised','#ffffff');
+            const lightOuter=rgba(getComputedStyle(document.querySelector('#home-composer')).backgroundColor);
+            const lightInner=rgba(getComputedStyle(document.querySelector('#home-composer-card')).backgroundColor);
+            delete document.body.dataset.agyTheme;
+            root.style.removeProperty('--onyx-frame');
+            root.style.removeProperty('--onyx-raised');
+            return {darkOuter,darkInner,lightOuter,lightInner};
+        })()`);
+        assert(checkNativeThemes.darkOuter[3] > 0 && checkNativeThemes.darkOuter[0] < checkNativeThemes.darkInner[0], `Dark default outer frame (${checkNativeThemes.darkOuter}) must be darker than raised inner card (${checkNativeThemes.darkInner})`);
+        assert(checkNativeThemes.lightOuter[3] > 0 && checkNativeThemes.lightOuter[0] < checkNativeThemes.lightInner[0], `Light default outer frame (${checkNativeThemes.lightOuter}) must be softer than bright white inner card (${checkNativeThemes.lightInner})`);
+    } finally {
+        await evaluate(`(()=>{
+            const shell=document.querySelector('.agy-inset-shell');
+            const sheet=document.querySelector('.agy-sheet');
+            const split=document.querySelector('#test-sidebar-split');
+            if(split&&sheet)shell.insertBefore(sheet,split);
+            split?.remove();
+            document.querySelector('#tabs').removeAttribute('data-side-panel-strip');
+        })()`);
+        await panel("document.querySelector('#discard').click()");
+        await waitDiscard();
+    }
 
     // (d) Multi-window & multi-panel sync: BroadcastChannel (no loopback), 250ms/0ms multi-window discovery, external reloadIfChanged() + focus/visibilitychange
     const panel2Target = await fetch('http://127.0.0.1:' + port + '/json/new?' + encodeURIComponent('http://127.0.0.1:' + webPort + '/?token=test'), { method: 'PUT' }).then(r => r.json());
@@ -879,11 +1019,11 @@ try {
     await panel2("(()=>{const t=window.sidecar||window;const orig=t.fetch.bind(t);window.__fetchLog=[];t.fetch=(p,o)=>{window.__fetchLog.push({path:p,method:o?.method||'GET'});return orig(p,o);};})()");
 
     // Panel 1 live modify -> BroadcastChannel -> Panel 2 (zero loopback HTTP requests)
-    await panel("(()=>{const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#wallpaper-opacity',47);set('#wallpaper-dialogBlur',5);set('#dialogInnerColor','#336699');})()");
+    await panel("(()=>{const c=document.querySelector('#composer-cover');if(!c.checked)c.click();const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#wallpaper-opacity',47);set('#wallpaper-composerBlur',5);set('#composerInnerColor','#336699');})()");
     await until(() => panel("document.querySelector('#status').textContent.includes('实时预览 · 未保存')"), 'Panel 1 preview did not finish');
-    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='47'&&document.querySelector('#wallpaper-dialogBlur').value==='5'&&document.querySelector('#dialogInnerColor').value==='#336699'&&!document.querySelector('#discard').disabled&&document.querySelector('#status').textContent.includes('实时预览 · 未保存')"), 'BroadcastChannel modify did not sync to Panel 2');
+    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='47'&&document.querySelector('#wallpaper-composerBlur').value==='5'&&document.querySelector('#composerInnerColor').value==='#336699'&&!document.querySelector('#discard').disabled&&document.querySelector('#status').textContent.includes('实时预览 · 未保存')"), 'BroadcastChannel modify did not sync to Panel 2');
     assert.equal(await panel2('window.__fetchLog.length'), 0, 'BroadcastChannel modify sync must not trigger loopback requests on Panel 2');
-    assert.match(await panel2("document.querySelector('#preview').style.getPropertyValue('--preview-bubble-inner')"), /#336699/);
+    assert.match(await panel2("document.querySelector('#preview').style.getPropertyValue('--preview-inner')"), /#336699/);
 
     // Panel 1 save -> BroadcastChannel -> Panel 2 (zero loopback)
     await panel("document.querySelector('#save').click()");
@@ -892,7 +1032,9 @@ try {
     assert.equal(await panel2('window.__fetchLog.length'), 0, 'BroadcastChannel save sync must not trigger loopback requests on Panel 2');
     const savedMulti = JSON.parse(await readFile(join(data, 'settings.json'), 'utf8'));
     assert.equal(savedMulti.opacity, 47);
+    assert.equal(savedMulti.composerBlur, 5);
     assert.equal(savedMulti.bubbleBlur, 5);
+    assert.equal(savedMulti.composerInnerColor, '#336699');
     assert.equal(savedMulti.bubbleInnerColor, '#336699');
 
     // Panel 1 modify + discard -> BroadcastChannel -> Panel 2 (zero loopback)
@@ -977,18 +1119,20 @@ try {
     await evalOn(host2Client, `window.__antigravityUiRenderer.generation = ${highGenA}`, 'Bump Host 2 generation A');
     await delay(50);
     await writeFile(join(data, 'settings.json'), JSON.stringify(appearance.normalize({
-        ...settings, opacity: 23, bubbleBlur: 11, bubbleOuterColor: '#abcdef', overviewSync: false, overviewOpacity: 88,
+        ...settings, opacity: 23, composerBlur: 11, composerOuterColor: '#abcdef', overviewOpacity: 88,
     })));
     await panel2("window.dispatchEvent(new Event('focus'))");
-    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='23'&&document.querySelector('#wallpaper-dialogBlur').value==='11'&&document.querySelector('#dialogOuterColor').value==='#abcdef'&&!document.querySelector('#overview-sync').checked"), 'Panel 2 focus resync did not reload external settings.json');
+    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='23'&&document.querySelector('#wallpaper-composerBlur').value==='11'&&document.querySelector('#composerOuterColor').value==='#abcdef'&&document.querySelector('#wallpaper-overviewOpacity').value==='88'"), 'Panel 2 focus resync did not reload external settings.json');
     assert((await panel2('window.__fetchLog')).some(entry => entry.path === '/api/settings' && entry.method === 'GET'));
     await until(async () => (await readHostSurfaces(client)).wallpaperOpacity === '0.23' && (await readHostSurfaces(host2Client)).wallpaperOpacity === '0.23', 'Both high-generation host windows did not sync external settings.json');
     for (const conn of [client, host2Client]) {
         const s = await readHostSurfaces(conn);
         assert.equal(s.viewport.maskImage, 'none');
-        assert.equal(s.regularBubble.blur, 'blur(11px)');
-        assert.equal(s.proceededBubble.blur, 'blur(11px)');
+        assert.equal(s.regularBubble.frameBlur, 'blur(11px)');
+        assert.equal(s.proceededBubble.frameBlur, 'blur(11px)');
+        assert.equal(s.homeComposer.outerBlur, 'blur(11px)');
         approxRgba(s.overview.bgRgba, [19, 19, 19, 224], 5);
+        assert.equal(s.overview.shadow, 'none');
     }
 
     // Heartbeat syncStore() runs before GET /api/settings on high-generation host -> pendingActivate triggers activateRuntime(true)
@@ -997,26 +1141,26 @@ try {
     await evalOn(host2Client, `window.__antigravityUiRenderer.generation = ${highGenB}`, 'Bump Host 2 generation B');
     await delay(50);
     await writeFile(join(data, 'settings.json'), JSON.stringify(appearance.normalize({
-        ...settings, opacity: 34, bubbleBlur: 15, bubbleOuterColor: '#112233',
+        ...settings, opacity: 34, composerBlur: 15, composerOuterColor: '#112233',
     })));
     await delay(1650);
     assert.equal((await readHostSurfaces(client)).wallpaperOpacity, '0.23', 'Non-activated heartbeat must not override high-generation host');
     await panel2("window.dispatchEvent(new Event('focus'))");
-    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='34'&&document.querySelector('#wallpaper-dialogBlur').value==='15'"), 'Panel 2 focus did not sync after heartbeat reload');
+    await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='34'&&document.querySelector('#wallpaper-composerBlur').value==='15'"), 'Panel 2 focus did not sync after heartbeat reload');
     await until(async () => (await readHostSurfaces(client)).wallpaperOpacity === '0.34' && (await readHostSurfaces(host2Client)).wallpaperOpacity === '0.34', 'High-generation host windows did not activate via pendingActivate on GET /api/settings');
-    assert.equal((await readHostSurfaces(client)).regularBubble.blur, 'blur(15px)');
-    assert.equal((await readHostSurfaces(host2Client)).regularBubble.blur, 'blur(15px)');
+    assert.equal((await readHostSurfaces(client)).regularBubble.frameBlur, 'blur(15px)');
+    assert.equal((await readHostSurfaces(host2Client)).regularBubble.frameBlur, 'blur(15px)');
 
     // Stale draft cleared by external rewrite + Panel 1 visibilitychange resync
     await panel("(()=>{const o=document.querySelector('#wallpaper-opacity');o.value=71;o.dispatchEvent(new Event('input'));})()");
     await until(() => panel("document.querySelector('#status').textContent.includes('实时预览 · 未保存')&&!document.querySelector('#discard').disabled"), 'Panel 1 stale draft did not activate');
     await delay(50);
     await writeFile(join(data, 'settings.json'), JSON.stringify(appearance.normalize({
-        ...settings, opacity: 79, bubbleBlur: 0, composerCover: false, composerInnerColor: '#13579b', sidebarBlur: 7,
+        ...settings, opacity: 79, composerBlur: 0, composerCover: false, composerInnerColor: '#13579b', sidebarBlur: 7,
     })));
     if (await panel('document.hidden')) await panelClient.command('Page.bringToFront');
     else await panel("document.dispatchEvent(new Event('visibilitychange'))");
-    await until(() => panel("document.querySelector('#wallpaper-opacity').value==='79'&&document.querySelector('#wallpaper-dialogBlur').value==='0'&&document.querySelector('#discard').disabled"), 'Panel 1 visibilitychange resync did not clear stale draft and reload settings.json');
+    await until(() => panel("document.querySelector('#wallpaper-opacity').value==='79'&&document.querySelector('#wallpaper-composerBlur').value==='0'&&document.querySelector('#discard').disabled"), 'Panel 1 visibilitychange resync did not clear stale draft and reload settings.json');
     await until(async () => (await readHostSurfaces(client)).wallpaperOpacity === '0.79' && (await readHostSurfaces(host2Client)).wallpaperOpacity === '0.79', 'Host windows did not sync after visibilitychange reload');
     assert.match((await readHostSurfaces(client)).viewport.maskImage, /linear-gradient/);
     assert.match((await readHostSurfaces(host2Client)).viewport.maskImage, /linear-gradient/);
@@ -1069,7 +1213,7 @@ try {
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
     assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 21);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 23);
     const activeGeneration = await evaluate('window.__antigravityUiRenderer.generation');
     const installInHost = payload => evaluate(`(${installWallpaper.toString()})(${JSON.stringify(payload)})`);
     await evaluate("window.oldLayer = document.querySelector('#antigravity-ui-background'); delete window.__antigravityUiRenderer.revision");
@@ -1077,7 +1221,7 @@ try {
     assert.equal(await installInHost({ enabled: true, css: 'color:red', imageHash: expectedImageHash, generation: activeGeneration + 1 }), 'NEED_IMAGE');
     assert.equal(await evaluate("window.oldLayer === document.querySelector('#antigravity-ui-background') && window.titlebarOptions.color === '#00000000'"), true);
     await runtime.update(true, false);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 21);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 23);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{
@@ -1600,9 +1744,10 @@ try {
     await store.save({ ...settings, opacity: 31 });
     assert.equal(await store.reloadIfChanged(), false);
     await delay(50);
-    await writeFile(join(storeTestDir, 'settings.json'), JSON.stringify(appearance.normalize({ ...settings, opacity: 64, bubbleBlur: 7 })));
+    await writeFile(join(storeTestDir, 'settings.json'), JSON.stringify(appearance.normalize({ ...settings, opacity: 64, composerBlur: 7 })));
     assert.equal(await store.reloadIfChanged(), true);
     assert.equal(store.settings.opacity, 64);
+    assert.equal(store.settings.composerBlur, 7);
     assert.equal(store.settings.bubbleBlur, 7);
     assert.equal(await store.reloadIfChanged(), false);
 
@@ -1740,7 +1885,7 @@ try {
         await new Promise(resolve => missSidecar.exitCode !== null ? resolve() : missSidecar.once('exit', resolve));
     }
 
-    console.log('Passed: 0.3.8 unified dialog/Overview card & overviewSync, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), plus all Q1-Q5 rendering/save interactions.');
+    console.log('Passed: 0.3.8 bound composer/dialog layered depth, flat leftSidebar/rightPanel (seam-free & aligned tab strip), independent flat Overview panel, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & unified top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), plus all Q1-Q5 rendering/save interactions.');
     await Promise.race([client.command('Browser.close'), delay(300)]);
 } finally {
     client?.close();

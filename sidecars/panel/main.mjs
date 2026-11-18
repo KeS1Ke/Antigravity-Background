@@ -1,15 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadSdk } from './sdk.mjs';
 import { WallpaperRuntime } from './runtime.mjs';
 import { InvalidSettingsError, SettingsStore } from './store.mjs';
+import { PluginUpdater, releaseRuntimeDirectory } from './updater.mjs';
 import appearance from '../../plugin/appearance.cjs';
 import persistence from '../../plugin/persistence.cjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
+const pluginDir = resolve(directory, '..', '..');
+try { releaseRuntimeDirectory(pluginDir); } catch {}
 const home = process.env.AG_UI_HOME || homedir();
 const profile = process.env.AG_UI_PROFILE || join(homedir(), 'AppData', 'Roaming', 'Antigravity');
 const data = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR ||
@@ -103,25 +106,41 @@ function stateResponse(extra = {}) {
 }
 const runtime = new WallpaperRuntime(profile, () => {
     const settings = draft || store.settings;
-    const {
-        sidebarCover, sidebarOpacity, sidebarBlur,
-        composerCover, composerOpacity, composerBlur, composerOuterColor, composerInnerColor,
-        bubbleCover, bubbleOpacity, bubbleBlur, bubbleOuterColor, bubbleInnerColor,
-        overviewSync, overviewCover, overviewOpacity, overviewBlur, overviewOuterColor, overviewInnerColor,
-    } = settings;
     return {
         enabled: settings.enabled,
         css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'),
         image: settings.image,
         imageHash: imageDigest(settings.image),
-        surfaces: {
-            sidebarCover, sidebarOpacity, sidebarBlur,
-            composerCover, composerOpacity, composerBlur, composerOuterColor, composerInnerColor,
-            bubbleCover, bubbleOpacity, bubbleBlur, bubbleOuterColor, bubbleInnerColor,
-            overviewSync, overviewCover, overviewOpacity, overviewBlur, overviewOuterColor, overviewInnerColor,
-        },
+        surfaces: appearance.surfaceConfig(settings),
     };
 }, enabled, hostPort);
+function parseLoopbackEndpoints() {
+    const raw = process.env.AG_UI_UPDATE_ENDPOINTS;
+    if (!raw) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const result = {};
+        for (const key of ['apiBase', 'webBase', 'rawBase', 'codeloadBase']) {
+            if (typeof parsed[key] !== 'string') continue;
+            const url = new URL(parsed[key]);
+            if (['127.0.0.1', 'localhost'].includes(url.hostname) && ['http:', 'https:'].includes(url.protocol)) {
+                result[key] = url.origin;
+            }
+        }
+        return result;
+    } catch {
+        return {};
+    }
+}
+const updater = new PluginUpdater({
+    pluginDir,
+    dataDir: data,
+    home,
+    endpoints: parseLoopbackEndpoints(),
+    onReload: () => void shutdown(),
+});
+await updater.initializeLocalInfo();
 const app = new SidecarApp();
 const files = {
     '/': ['index.html', 'text/html'],
@@ -196,6 +215,22 @@ app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
         return jsonResponse(500, { error: error.message });
     }
 }), 'POST');
+app.api('/api/update', () => updater.publicState(), 'GET');
+app.api('/api/update/check', () => updater.requestCheck(), 'POST');
+app.api('/api/update/apply', async input => {
+    try {
+        return await updater.apply(input || {});
+    } catch (error) {
+        return jsonResponse(400, { error: error.message });
+    }
+}, 'POST');
+app.api('/api/update/reload', () => {
+    try {
+        return updater.requestReload();
+    } catch (error) {
+        return jsonResponse(400, { error: error.message });
+    }
+}, 'POST');
 await syncStore();
 await app.run();
 let heartbeatPending = false;

@@ -90,3 +90,15 @@
 - **双保险持久化与自修复设计**：
   - 新增共享模块 `plugin/persistence.cjs`：`manage.cjs install` 在保留已有 `restoreLegacy` 旧补丁迁移的前提下，为桌面/开始菜单/任务栏中的 Antigravity 快捷方式（含透传参数的 `AntigravityLauncher.exe` 快捷方式）幂等补齐 `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1` 并持久化备份原始参数；同时在 `resources/app.asar` 的 `dist/main.js` 模块加载早期（`app.whenReady()` 前）注入仅限本机 `127.0.0.1` 的 `app.commandLine.appendSwitch` 启动开关及 `dist/antigravity-ui/persist.json` + SHA-256 备份，`uninstall` 时校验哈希并无损恢复 `app.asar` 与快捷方式。
   - `runtime.mjs` 将 `DevToolsActivePort` 缺失（`ENOENT`）归类为 `errorCode: 'MISSING_DEVTOOLS_PORT'` 并输出清晰中文说明；`main.mjs` 提供 `POST /api/repair-shortcuts`，设置页仅在检测到 `MISSING_DEVTOOLS_PORT` 时于底栏展示「修复快捷方式」按钮，帮助用户在不重启前先修复快捷方式并明确提示重启即可恢复。
+
+## 14. 分层级感精简绑定与侧栏对齐修复（`renderer` `version = 18` / `revision = 23`）
+
+- **左右侧边栏去分层与接缝/对齐修复（`plugin/appearance.cjs`、`sidecars/panel/renderer.mjs`）**：
+  - 去除左侧边栏（`leftSidebar*`）与右侧面板（`sidebar*`）的「原版分层级感」与外内双色控件，恢复单层纯色/透明与毛玻璃定制（保留 `Cover`、`Opacity`、`Blur`）。
+  - 左侧边栏宿主 `.h-full.w-full.flex.flex-col.bg-sidebar` 设置 `box-shadow: none !important` 且移除列表内卡框线，消除菜单栏下方顶部横竖内阴影接缝；仅透明化嵌套 `.bg-sidebar` 与 `.agy-row-actions::before`。
+  - 右侧面板移除外层 `.browser-hole-ancestor` 的背景、模糊与 `z-index` 提升，保持 `[data-side-panel-strip]` 与主界面顶部文件栏齐平且无缝隙，仅对 `[data-side-panel-body]:not([data-has-browser-hole="true"])` 施加底色与模糊（`box-shadow: none !important`、无圆角内嵌框）。
+- **输入框与对话框效果绑定，Overview 面板完全解耦（`renderer` `revision = 23`）**：
+  - 移除 `overviewSync`、顶部 `#dialog-target-switch` 切换栏及 `overviewLayered`。`plugin/appearance.cjs` 中由 `composer*`（`composerCover`、`composerLayered`、`composerOpacity`、`composerBlur`、`composerOuterColor`、`composerInnerColor`）唯一驱动，并在 `normalize()` 中实时镜像写入对应 `bubble*` 字段（由 `appearance.surfaceConfig(settings)` 下发给宿主渲染器），确保输入框（`.surface-composer` / `.surface-composer-card`）与用户气泡（`.agy-user-bubble-frame` / `.agy-user-bubble`）始终同步保持一致的双层或扁平质感与配色，从不同步到 Overview 面板。
+  - 拆出独立扁平 **「Overview 面板」** 设置卡（`overviewCover`、`overviewOuterColor`、`overviewInnerColor`、`overviewOpacity`、`overviewBlur`），保留外框颜色与内部填充，移除 `box-shadow` 立体卡片层叠，完全独立于输入框与对话框。
+- **双列设置页均衡布局与实时预览（`index.html`、`styles.css`、`app.js`）**：
+  - 左列放置「图片布局」「壁纸调整」「设置页主题」，右列放置「左侧边栏」「右侧面板」「输入框与对话框」「Overview 面板」（全页 8 张 `<details>` 卡片、15 根滑块）；顶部 16:9 `#preview` 与弹窗 `#drag-preview-stage` 同步反映扁平左右栏、对齐文件标签条、同步输入框/气泡分层以及独立扁平 Overview 面板。

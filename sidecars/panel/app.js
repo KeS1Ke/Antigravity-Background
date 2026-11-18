@@ -1,6 +1,50 @@
 (() => {
     const { controls, surfaceControls, defaults, normalize, wallpaperStyle } = window.wallpaperAppearance;
-    const DIALOG_SUFFIXES = ['Cover', 'OuterColor', 'InnerColor', 'Opacity', 'Blur'];
+    const BOUND_SUFFIXES = ['Cover', 'Layered', 'Opacity', 'Blur', 'OuterColor', 'InnerColor'];
+    const SURFACES = [
+        {
+            prefix: 'leftSidebar',
+            slug: 'left-sidebar',
+            hasLayered: false,
+            hasColors: false,
+            innerVar: '--preview-left-sidebar',
+            blurVar: '--preview-left-sidebar-blur',
+            defaultInner: 'var(--ag-ui-surface)',
+        },
+        {
+            prefix: 'sidebar',
+            slug: 'sidebar',
+            hasLayered: false,
+            hasColors: false,
+            innerVar: '--preview-sidebar',
+            blurVar: '--preview-sidebar-blur',
+            defaultInner: 'var(--ag-ui-page)',
+        },
+        {
+            prefix: 'composer',
+            slug: 'composer',
+            hasLayered: true,
+            hasColors: true,
+            attr: 'composerLayered',
+            outerBgVar: '--preview-composer-outer-bg',
+            outerVar: '--preview-outer',
+            innerVar: '--preview-inner',
+            blurVar: '--preview-composer-blur',
+            defaultOuter: 'var(--ag-sample-frame)',
+            defaultInner: 'var(--ag-sample-raised)',
+        },
+        {
+            prefix: 'overview',
+            slug: 'overview',
+            hasLayered: false,
+            hasColors: true,
+            outerVar: '--preview-overview-outer',
+            innerVar: '--preview-overview-inner',
+            blurVar: '--preview-overview-blur',
+            defaultOuter: 'var(--ag-ui-border)',
+            defaultInner: 'var(--ag-ui-card)',
+        },
+    ];
     const find = selector => document.querySelector(selector);
     const status = find('#status');
     const imageInput = find('#image');
@@ -9,7 +53,6 @@
     const save = find('#save');
     const sliders = [];
     const modes = [...document.querySelectorAll('[data-mode]')];
-    const dialogTargets = [...document.querySelectorAll('[data-dialog-target]')];
     const names = { fill: '填充', stretch: '拉伸', fit: '适应', tile: '平铺' };
     const stages = ['#preview', '#drag-preview-stage'].map(find);
     const dragModal = find('#drag-preview-modal');
@@ -19,6 +62,29 @@
     const dragPreviewReset = find('#drag-preview-reset');
     const dragPreviewMeta = find('#drag-preview-meta');
     const dragStage = find('#drag-preview-stage');
+    const pluginVersion = find('#plugin-version');
+    const githubLink = find('#github-link');
+    const checkUpdateBtn = find('#check-update');
+    const updateModal = find('#update-modal');
+    const closeUpdateModalBtn = find('#close-update-modal');
+    const updateStatusIcon = find('#update-status-icon');
+    const updateStatusPath = find('#update-status-path');
+    const updateStatusText = find('#update-status-text');
+    const updateSourceBadge = find('#update-source-badge');
+    const updateProgressLabel = find('#update-progress-label');
+    const updateProgressValue = find('#update-progress-value');
+    const updateProgressTrack = find('#update-progress-track');
+    const updateProgressFill = find('#update-progress-fill');
+    const updateCurrentVersion = find('#update-current-version');
+    const updateLatestVersion = find('#update-latest-version');
+    const updateGithubLink = find('#update-github-link');
+    const updateGithubLinkLabel = find('#update-github-link-label');
+    const copyGithubLinkBtn = find('#copy-github-link');
+    const updateNotesWrap = find('#update-notes-wrap');
+    const updateNotesLabel = find('#update-notes-label');
+    const updateNotes = find('#update-notes');
+    const updateFeedback = find('#update-feedback');
+    const updateActionBtn = find('#update-action');
     const previewSheet = new CSSStyleSheet();
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, previewSheet];
     if (window.parent !== window) document.documentElement.dataset.embedded = 'true';
@@ -26,7 +92,6 @@
     const tabId = crypto.randomUUID();
     const channel = new BroadcastChannel('antigravity-ui-panel-sync');
     let settings = normalize();
-    let activeDialogTarget = 'bubble';
     let ready = false;
     let busy = false;
     let saving = false;
@@ -51,10 +116,15 @@
     let missingDebugPort = false;
     let repairingLaunch = false;
     let operations = Promise.resolve();
-
-    function syncOverviewFromBubble() {
-        for (const suffix of DIALOG_SUFFIXES) settings['overview' + suffix] = settings['bubble' + suffix];
-    }
+    let updateState = {
+        state: 'idle',
+        repoUrl: 'https://github.com/KeS1Ke/Antigravity-Background',
+    };
+    let updateBusy = false;
+    let updatePollTimer;
+    let updateEpoch = 0;
+    let updateMeterPhase = null;
+    let updateCopyTimer;
 
     function sameValues(a, b) {
         return Object.keys(a).every(key => a[key] === b[key]);
@@ -280,12 +350,12 @@
         applyTheme();
     });
 
-    const colorBindings = [
-        { inputId: 'composerOuterColor', resetSelector: '[data-reset-color="composerOuterColor"]', key: () => 'composerOuterColor', cover: () => settings.composerCover },
-        { inputId: 'composerInnerColor', resetSelector: '[data-reset-color="composerInnerColor"]', key: () => 'composerInnerColor', cover: () => settings.composerCover },
-        { inputId: 'dialogOuterColor', resetSelector: '[data-reset-dialog-color="outer"]', key: () => activeDialogTarget + 'OuterColor', cover: () => settings[activeDialogTarget + 'Cover'] },
-        { inputId: 'dialogInnerColor', resetSelector: '[data-reset-dialog-color="inner"]', key: () => activeDialogTarget + 'InnerColor', cover: () => settings[activeDialogTarget + 'Cover'] },
-    ];
+    const colorBindings = SURFACES
+        .filter(surface => surface.hasColors)
+        .flatMap(({ prefix }) => [
+            { inputId: prefix + 'OuterColor', resetSelector: `[data-reset-color="${prefix}OuterColor"]`, key: prefix + 'OuterColor', cover: () => settings[prefix + 'Cover'] },
+            { inputId: prefix + 'InnerColor', resetSelector: `[data-reset-color="${prefix}InnerColor"]`, key: prefix + 'InnerColor', cover: () => settings[prefix + 'Cover'] },
+        ]);
 
     const minScale = () => settings.mode === 'tile' ? controls.scale.min : 100;
     const effectiveScale = () => settings.mode === 'tile' ? settings.scale : Math.max(100, settings.scale);
@@ -341,34 +411,25 @@
         const draggable = canDragWallpaper();
         const enabled = find('#enabled');
         const theme = find('#theme');
-        const sidebarCover = find('#sidebar-cover');
-        const composerCover = find('#composer-cover');
-        const overviewSync = find('#overview-sync');
-        const dialogCover = find('#dialog-cover');
-        if (settings.overviewSync) activeDialogTarget = 'bubble';
         enabled.checked = settings.enabled;
         enabled.disabled = locked;
         theme.value = settings.theme;
         theme.disabled = locked;
-        sidebarCover.checked = settings.sidebarCover;
-        sidebarCover.disabled = locked;
-        composerCover.checked = settings.composerCover;
-        composerCover.disabled = locked;
-        overviewSync.checked = settings.overviewSync;
-        overviewSync.disabled = locked;
-        find('#dialog-target-switch').hidden = settings.overviewSync;
-        for (const button of dialogTargets) {
-            button.disabled = locked || settings.overviewSync;
-            button.setAttribute('aria-pressed', String(button.dataset.dialogTarget === activeDialogTarget));
+        for (const { prefix, slug, hasLayered } of SURFACES) {
+            if (hasLayered) {
+                const layeredEl = find('#' + slug + '-layered');
+                layeredEl.checked = settings[prefix + 'Layered'];
+                layeredEl.disabled = locked;
+            }
+            const coverEl = find('#' + slug + '-cover');
+            coverEl.checked = settings[prefix + 'Cover'];
+            coverEl.disabled = locked;
         }
-        dialogCover.checked = settings[activeDialogTarget + 'Cover'];
-        dialogCover.disabled = locked;
         for (const binding of colorBindings) {
-            const key = binding.key();
             const input = find('#' + binding.inputId);
-            input.value = settings[key] || '#131313';
+            input.value = settings[binding.key] || '#131313';
             input.disabled = locked || !binding.cover();
-            find(binding.resetSelector).disabled = locked || !binding.cover() || !settings[key];
+            find(binding.resetSelector).disabled = locked || !binding.cover() || !settings[binding.key];
         }
         const sidebarAlpha = !settings.enabled ? 100 : (settings.sidebarCover ? settings.sidebarOpacity : 0);
         document.documentElement.style.setProperty('--ag-ui-sidebar-alpha', sidebarAlpha + '%');
@@ -416,11 +477,23 @@
             }
         }
         const mix = (color, alpha) => 'color-mix(in srgb,' + color + ' ' + alpha + '%,transparent)';
-        const setSurfacePreview = (frame, ratio, cover, opacity, blur, outerColor, innerColor, defaultInner, outerVar, innerVar, blurVar) => {
+        const setSurfacePreview = (frame, ratio, item) => {
+            const cover = settings[item.prefix + 'Cover'];
+            const opacity = settings[item.prefix + 'Opacity'];
+            const blur = settings[item.prefix + 'Blur'];
+            const outerColor = item.hasColors ? settings[item.prefix + 'OuterColor'] : '';
+            const innerColor = item.hasColors ? settings[item.prefix + 'InnerColor'] : '';
+            const activeLayered = item.hasLayered ? (!settings.enabled || settings[item.prefix + 'Layered']) : false;
             const alpha = !settings.enabled ? 100 : (cover ? opacity : 0);
-            frame.style.setProperty(innerVar, mix((settings.enabled && innerColor) || defaultInner, alpha));
-            frame.style.setProperty(outerVar, (!settings.enabled || !cover || !outerColor) ? 'var(--ag-ui-border)' : mix(outerColor, alpha));
-            frame.style.setProperty(blurVar, ((settings.enabled && cover ? blur : 0) * ratio) + 'px');
+            if (item.attr) frame.dataset[item.attr] = String(activeLayered);
+            if (item.outerBgVar) {
+                frame.style.setProperty(item.outerBgVar, (!settings.enabled || cover) ? mix((settings.enabled && outerColor) || item.defaultOuter, alpha) : 'transparent');
+            }
+            frame.style.setProperty(item.innerVar, (!settings.enabled || cover) ? mix((settings.enabled && innerColor) || (item.hasLayered && !activeLayered ? 'var(--ag-ui-page)' : item.defaultInner), alpha) : 'transparent');
+            if (item.outerVar) {
+                frame.style.setProperty(item.outerVar, (!settings.enabled || !cover || !outerColor) ? 'var(--ag-ui-border)' : mix(outerColor, alpha));
+            }
+            frame.style.setProperty(item.blurVar, ((settings.enabled && cover ? blur : 0) * ratio) + 'px');
         };
         const metrics = hostMetrics();
         const aspect = metrics.width + ' / ' + metrics.height;
@@ -436,11 +509,7 @@
             const width = frame.clientWidth;
             if (!width) continue;
             const ratio = width / metrics.width;
-            frame.style.setProperty('--preview-sidebar', mix('var(--ag-ui-page)', sidebarAlpha));
-            frame.style.setProperty('--preview-sidebar-blur', ((settings.enabled && settings.sidebarCover ? settings.sidebarBlur : 0) * ratio) + 'px');
-            setSurfacePreview(frame, ratio, settings.composerCover, settings.composerOpacity, settings.composerBlur, settings.composerOuterColor, settings.composerInnerColor, 'var(--ag-ui-page)', '--preview-outer', '--preview-inner', '--preview-composer-blur');
-            setSurfacePreview(frame, ratio, settings.bubbleCover, settings.bubbleOpacity, settings.bubbleBlur, settings.bubbleOuterColor, settings.bubbleInnerColor, 'var(--ag-ui-card)', '--preview-bubble-outer', '--preview-bubble-inner', '--preview-bubble-blur');
-            setSurfacePreview(frame, ratio, settings.overviewCover, settings.overviewOpacity, settings.overviewBlur, settings.overviewOuterColor, settings.overviewInnerColor, 'var(--ag-ui-card)', '--preview-overview-outer', '--preview-overview-inner', '--preview-overview-blur');
+            for (const item of SURFACES) setSurfacePreview(frame, ratio, item);
             const css = wallpaperStyle({ ...settings, blur: settings.blur * ratio, imageWidth: settings.imageWidth * ratio, imageHeight: settings.imageHeight * ratio }, 'var(--image)');
             if (css) rules.push('#' + frame.id + ' .wallpaper {' + css + ' position: absolute; }');
         }
@@ -458,7 +527,7 @@
     for (const stage of stages) stageObserver.observe(stage);
 
     function changed() {
-        if (settings.overviewSync) syncOverviewFromBubble();
+        for (const suffix of BOUND_SUFFIXES) settings['bubble' + suffix] = settings['composer' + suffix];
         syncQueued = false;
         hasDraft = true;
         revision++;
@@ -503,30 +572,18 @@
             isDisabled: () => false,
         });
     }
-    for (const [key, option] of Object.entries(surfaceControls)) {
-        if (!key.startsWith('sidebar') && !key.startsWith('composer')) continue;
-        const prefix = key.startsWith('sidebar') ? 'sidebar' : 'composer';
-        addSlider({
-            id: key,
-            option,
-            container: '#' + prefix + '-controls',
-            getValue: () => settings[key],
-            onInput: value => { settings[key] = value; changed(); },
-            isDisabled: () => !settings[prefix + 'Cover'],
-        });
-    }
-    for (const suffix of ['Opacity', 'Blur']) {
-        addSlider({
-            id: 'dialog' + suffix,
-            option: surfaceControls['bubble' + suffix],
-            container: '#dialog-controls',
-            getValue: () => settings[activeDialogTarget + suffix],
-            onInput: value => {
-                settings[activeDialogTarget + suffix] = value;
-                changed();
-            },
-            isDisabled: () => !settings[activeDialogTarget + 'Cover'],
-        });
+    for (const { prefix, slug } of SURFACES) {
+        for (const suffix of ['Opacity', 'Blur']) {
+            const key = prefix + suffix;
+            addSlider({
+                id: key,
+                option: surfaceControls[key],
+                container: '#' + slug + '-controls',
+                getValue: () => settings[key],
+                onInput: value => { settings[key] = value; changed(); },
+                isDisabled: () => !settings[prefix + 'Cover'],
+            });
+        }
     }
     for (const button of modes) {
         button.addEventListener('click', () => {
@@ -537,43 +594,33 @@
             changed();
         });
     }
-    for (const button of dialogTargets) {
-        button.addEventListener('click', () => {
-            if (settings.overviewSync || activeDialogTarget === button.dataset.dialogTarget) return;
-            activeDialogTarget = button.dataset.dialogTarget;
-            render();
-        });
-    }
     find('#enabled').addEventListener('change', event => { settings.enabled = event.target.checked; changed(); });
     find('#theme').addEventListener('change', event => { settings.theme = event.target.value; changed(); });
-    find('#sidebar-cover').addEventListener('change', event => {
-        settings.sidebarCover = event.target.checked;
-        settings.sidebarTransparent = !settings.sidebarCover;
-        changed();
-    });
-    find('#composer-cover').addEventListener('change', event => { settings.composerCover = event.target.checked; changed(); });
-    find('#overview-sync').addEventListener('change', event => {
-        settings.overviewSync = event.target.checked;
-        if (settings.overviewSync) activeDialogTarget = 'bubble';
-        changed();
-    });
-    find('#dialog-cover').addEventListener('change', event => {
-        settings[activeDialogTarget + 'Cover'] = event.target.checked;
-        changed();
-    });
+    for (const { prefix, slug, hasLayered } of SURFACES) {
+        if (hasLayered) {
+            find('#' + slug + '-layered').addEventListener('change', event => {
+                settings[prefix + 'Layered'] = event.target.checked;
+                changed();
+            });
+        }
+        find('#' + slug + '-cover').addEventListener('change', event => {
+            settings[prefix + 'Cover'] = event.target.checked;
+            if (prefix === 'sidebar') settings.sidebarTransparent = !settings.sidebarCover;
+            changed();
+        });
+    }
     for (const binding of colorBindings) {
         const colorInput = find('#' + binding.inputId);
         const updateColor = event => {
-            const key = binding.key();
             const next = event.target.value.toLowerCase();
-            if (settings[key] === next) return;
-            settings[key] = next;
+            if (settings[binding.key] === next) return;
+            settings[binding.key] = next;
             changed();
         };
         colorInput.addEventListener('input', updateColor);
         colorInput.addEventListener('change', updateColor);
         find(binding.resetSelector).addEventListener('click', () => {
-            settings[binding.key()] = '';
+            settings[binding.key] = '';
             changed();
         });
     }
@@ -658,7 +705,285 @@
         if (event.target === dragModal) closeModal();
     });
     window.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && !dragModal.hidden) closeModal();
+        if (event.key !== 'Escape') return;
+        if (!dragModal.hidden) closeModal();
+        else if (!updateModal.hidden) closeUpdateDialog();
+    });
+    window.addEventListener('pagehide', () => {
+        clearTimeout(updatePollTimer);
+        clearTimeout(updateCopyTimer);
+    });
+
+    const UPDATE_STATUS_TEXT = {
+        idle: '检查更新',
+        checking: '正在检查…',
+        current: '已是最新版本',
+        available: '发现新版本',
+        installing: '正在下载并安装…',
+        installed: '更新已完成',
+        reloading: '正在重新加载…',
+        error: '更新未完成',
+    };
+    const UPDATE_PHASE_TEXT = {
+        check: '正在连接 GitHub 仓库',
+        download: '正在下载更新包',
+        verify: '正在校验更新包',
+        extract: '正在准备插件文件',
+        backup: '正在备份当前版本',
+        install: '正在替换插件文件',
+        recover: '正在恢复原版本',
+        complete: '更新完成',
+    };
+    const UPDATE_ERROR_TEXT = {
+        network: '连接 GitHub 失败，请稍后重试',
+        verification: '未通过更新包校验',
+        location: '无法确认插件安装目录，请检查目录位置或链接后重试',
+        busy: '已有更新正在进行',
+        install: '未能确认安装完成，请重新检查更新',
+        rollback: '恢复失败，请重新运行 manage.cjs install 修复',
+    };
+    const UPDATE_ERROR_DETAIL = {
+        timeout: '连接超时，请检查网络或代理后重试',
+        dns: '无法解析 GitHub 地址，请检查网络设置',
+        certificate: '无法验证 HTTPS 证书，请检查代理或系统证书',
+        proxy: '代理连接失败，请检查系统或环境变量代理设置',
+        http: 'GitHub 暂时拒绝请求，请稍后重试',
+        connection: '网络连接中断，请检查网络后重试',
+        permission: '插件文件被占用或无写入权限，请关闭占用后重试',
+        'install-location': '无法确认标准插件安装目录，请运行 manage.cjs install 更新',
+        'dev-workspace': '当前运行在源码工作区，仅支持检查与跳转 GitHub',
+        'plan-expired': '更新信息已变化或过期，请重新检查更新',
+    };
+
+    function formatVersionWithCommit(version, commitShort) {
+        if (!version) return '—';
+        return commitShort ? `v${version} (${commitShort})` : `v${version}`;
+    }
+
+    function renderUpdateProgress() {
+        const s = updateState;
+        const progress = s.progress || {};
+        const phase = progress.phase;
+        const complete = ['current', 'available', 'installed'].includes(s.state);
+        const active = ['checking', 'installing', 'reloading'].includes(s.state);
+        const known = s.state === 'installing' && phase === 'download' &&
+            Number.isSafeInteger(progress.total) && progress.total > 0 &&
+            Number.isSafeInteger(progress.received) && progress.received >= 0 && progress.received <= progress.total;
+        const fraction = known ? progress.received / progress.total : (complete ? 1 : null);
+        const meterKey = `${s.state}:${known ? 'download' : (phase || 'unknown')}`;
+        if (updateMeterPhase !== meterKey) {
+            updateMeterPhase = meterKey;
+            updateProgressFill.style.transition = 'none';
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => updateProgressFill.style.removeProperty('transition'));
+            });
+        }
+        let label = UPDATE_PHASE_TEXT[phase] || '正在处理';
+        if (s.state === 'idle') label = '等待检查';
+        else if (s.state === 'checking') label = UPDATE_PHASE_TEXT.check;
+        else if (s.state === 'current') label = '检查完成';
+        else if (s.state === 'available') label = '准备就绪';
+        else if (s.state === 'installed') label = UPDATE_PHASE_TEXT.complete;
+        else if (s.state === 'reloading') label = '正在重新加载插件';
+        else if (s.state === 'error') label = '操作未完成，可重试';
+
+        updateProgressLabel.textContent = label;
+        if (known) {
+            updateProgressValue.textContent = `${(progress.received / 1048576).toFixed(1)} / ${(progress.total / 1048576).toFixed(1)} MB · ${Math.floor(fraction * 100)}%`;
+        } else if (s.state === 'installing' && phase === 'download' && Number.isSafeInteger(progress.received)) {
+            updateProgressValue.textContent = `已下载 ${(progress.received / 1048576).toFixed(1)} MB`;
+        } else {
+            updateProgressValue.textContent = complete ? '100%' : '';
+        }
+
+        updateModal.dataset.progress = s.state === 'error' ? 'error' : (fraction === null ? 'unknown' : 'known');
+        updateProgressTrack.setAttribute('aria-label', label);
+        if (fraction !== null) {
+            updateProgressTrack.setAttribute('aria-valuenow', String(Math.floor(fraction * 100)));
+            updateProgressFill.style.transform = `scaleX(${fraction})`;
+        } else {
+            updateProgressTrack.removeAttribute('aria-valuenow');
+            updateProgressFill.style.removeProperty('transform');
+        }
+        updateStatusIcon.dataset.busy = String(active);
+        updateStatusIcon.dataset.complete = String(complete);
+        updateStatusIcon.dataset.error = String(s.state === 'error');
+        updateStatusPath.setAttribute('d', complete
+            ? 'M4.5 10l3.5 3.5 7.5-7.5'
+            : (s.state === 'error' ? 'M10 5.5v5.5M10 14h.01' : 'M15.7 8a6 6 0 1 0-.2 4.5M16 3.5V8h-4.5'));
+    }
+
+    function renderUpdateState() {
+        const s = updateState;
+        const repoUrl = s.repoUrl || 'https://github.com/KeS1Ke/Antigravity-Background';
+        if (s.currentVersion) {
+            pluginVersion.textContent = 'v' + s.currentVersion;
+            pluginVersion.hidden = false;
+        }
+        githubLink.href = repoUrl;
+        checkUpdateBtn.dataset.hasUpdate = String(s.state === 'available');
+
+        const isCommitUpdate = s.state === 'available' && s.updateReason === 'commit';
+        updateStatusText.textContent = isCommitUpdate ? '发现最新提交' : (UPDATE_STATUS_TEXT[s.state] || UPDATE_STATUS_TEXT.error);
+        updateModal.setAttribute('aria-busy', String(['checking', 'installing', 'reloading'].includes(s.state)));
+
+        if (s.sourceKind === 'release') {
+            updateSourceBadge.textContent = 'Release';
+            updateSourceBadge.hidden = false;
+        } else if (s.sourceKind === 'main') {
+            updateSourceBadge.textContent = 'main 分支';
+            updateSourceBadge.hidden = false;
+        } else {
+            updateSourceBadge.hidden = true;
+        }
+
+        renderUpdateProgress();
+
+        updateCurrentVersion.textContent = formatVersionWithCommit(s.currentVersion, s.currentCommitShort);
+        updateLatestVersion.textContent = formatVersionWithCommit(s.latestVersion, s.latestCommitShort);
+
+        const targetUrl = s.releaseUrl || s.commitUrl || repoUrl;
+        updateGithubLink.href = targetUrl;
+        updateGithubLinkLabel.textContent = s.releaseUrl
+            ? '前往 GitHub Release 发布页'
+            : (s.commitUrl ? '在 GitHub 查看最新提交' : '在 GitHub 查看仓库');
+
+        const showNotes = Boolean(s.notes) && ['available', 'current'].includes(s.state);
+        updateNotesWrap.hidden = !showNotes;
+        if (showNotes) {
+            updateNotesLabel.textContent = s.sourceKind === 'main' ? '最新提交说明' : '更新内容';
+            updateNotes.textContent = String(s.notes).split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 6).join('\n');
+        } else {
+            updateNotes.textContent = '';
+        }
+
+        let feedback = '';
+        let feedbackError = false;
+        if (s.state === 'error') {
+            feedbackError = true;
+            feedback = UPDATE_ERROR_DETAIL[s.errorDetail] || UPDATE_ERROR_TEXT[s.error] || UPDATE_ERROR_TEXT.network;
+        } else if (s.state === 'available') {
+            if (!s.canApply) {
+                feedback = UPDATE_ERROR_DETAIL[s.applyDisabledReason] || UPDATE_ERROR_DETAIL['install-location'];
+            } else {
+                feedback = '现有壁纸、透明度和外观设置将保留';
+            }
+        } else if (s.state === 'installed') {
+            feedback = s.persistenceUpdated
+                ? '含启动持久化脚本变更，后续退出 Antigravity 时可重跑 manage.cjs install'
+                : '请点击「重新加载插件」以启用新版本';
+        } else if (s.state === 'reloading') {
+            feedback = 'Sidecar 正在重启；若未自动刷新，请关闭后重新打开本面板';
+        } else if (s.state === 'current' && s.sourceKind === 'main' && !s.currentCommit) {
+            feedback = '版本一致；通过 manage.cjs install 安装后可追踪同版本新提交';
+        }
+        updateFeedback.textContent = feedback;
+        updateFeedback.classList.toggle('error', feedbackError);
+
+        const canShowAction = (s.state === 'available' && s.canApply) || ['installed', 'error'].includes(s.state);
+        updateActionBtn.hidden = !canShowAction;
+        updateActionBtn.disabled = updateBusy;
+        updateActionBtn.textContent = s.state === 'installed'
+            ? '重新加载插件'
+            : (s.state === 'error' ? '重试' : '一键更新');
+    }
+
+    async function callUpdateApi(action) {
+        const ticket = ++updateEpoch;
+        clearTimeout(updatePollTimer);
+        updateBusy = true;
+        if (action === 'check') {
+            updateState = { ...updateState, state: 'checking', error: undefined, errorDetail: undefined, progress: { phase: 'check' } };
+        } else if (action === 'apply') {
+            updateState = { ...updateState, state: 'installing', error: undefined, errorDetail: undefined, progress: { phase: 'verify' } };
+        }
+        renderUpdateState();
+        try {
+            let next;
+            if (action === 'status') {
+                next = await request('GET', undefined, '/api/update');
+            } else if (action === 'check') {
+                next = await request('POST', {}, '/api/update/check');
+            } else if (action === 'apply') {
+                next = await request('POST', { version: updateState.latestVersion, commit: updateState.latestCommit }, '/api/update/apply');
+            } else if (action === 'reload') {
+                next = await request('POST', {}, '/api/update/reload');
+            }
+            if (ticket !== updateEpoch) return;
+            updateState = next;
+        } catch {
+            if (ticket !== updateEpoch) return;
+            if (action === 'reload' || updateState.state === 'reloading') {
+                updateState = { ...updateState, state: 'reloading' };
+            } else {
+                updateState = { ...updateState, state: 'error', error: 'network', errorDetail: 'connection' };
+            }
+        } finally {
+            if (ticket === updateEpoch) {
+                updateBusy = false;
+                renderUpdateState();
+                if (!updateModal.hidden && ['checking', 'installing'].includes(updateState.state)) {
+                    updatePollTimer = setTimeout(() => void callUpdateApi('status'), 500);
+                } else if (action === 'reload') {
+                    updatePollTimer = setTimeout(async () => {
+                        try {
+                            const probe = await request('GET', undefined, '/api/update');
+                            if (probe && probe.state !== 'reloading') location.reload();
+                        } catch {
+                            updateFeedback.textContent = '插件重启已完成，请关闭并重新打开右侧 Antigravity Background 面板以加载新版本。';
+                        }
+                    }, 1500);
+                }
+            }
+        }
+    }
+
+    function openUpdateDialog() {
+        updateModal.hidden = false;
+        renderUpdateState();
+        closeUpdateModalBtn.focus();
+        if (['installed', 'reloading'].includes(updateState.state)) return;
+        if (['checking', 'installing'].includes(updateState.state)) {
+            void callUpdateApi('status');
+            return;
+        }
+        void callUpdateApi('check');
+    }
+
+    function closeUpdateDialog() {
+        if (updateModal.hidden) return;
+        const restoreFocus = updateModal.contains(document.activeElement);
+        clearTimeout(updatePollTimer);
+        updateModal.hidden = true;
+        if (restoreFocus) checkUpdateBtn.focus();
+    }
+
+    checkUpdateBtn.addEventListener('click', openUpdateDialog);
+    closeUpdateModalBtn.addEventListener('click', closeUpdateDialog);
+    updateModal.addEventListener('click', event => {
+        if (event.target === updateModal) closeUpdateDialog();
+    });
+    updateActionBtn.addEventListener('click', () => {
+        const action = updateState.state === 'installed' ? 'reload' : (updateState.state === 'error' ? 'check' : 'apply');
+        void callUpdateApi(action);
+    });
+    copyGithubLinkBtn.addEventListener('click', async () => {
+        const url = updateGithubLink.href;
+        try {
+            await navigator.clipboard.writeText(url);
+        } catch {
+            const box = document.createElement('textarea');
+            box.value = url;
+            box.style.position = 'fixed';
+            box.style.opacity = '0';
+            document.body.append(box);
+            box.select();
+            document.execCommand('copy');
+            box.remove();
+        }
+        copyGithubLinkBtn.textContent = '已复制';
+        clearTimeout(updateCopyTimer);
+        updateCopyTimer = setTimeout(() => { copyGithubLinkBtn.textContent = '复制链接'; }, 1500);
     });
     dragPreviewMask.addEventListener('change', event => {
         dragStage.dataset.hideMask = String(!event.target.checked);
@@ -861,6 +1186,10 @@
     async function initialize() {
         updateHostTheme();
         render();
+        renderUpdateState();
+        void request('GET', undefined, '/api/update')
+            .then(info => { updateState = info; renderUpdateState(); })
+            .catch(() => {});
         await syncFromServer({ initial: true });
     }
     void initialize();
