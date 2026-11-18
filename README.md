@@ -6,6 +6,8 @@ Windows 版 Antigravity 的背景自定义插件。
 
 退出 Antigravity，运行 Antigravity-UI.cmd 并选择 1。安装需要 Node.js 22 或更高版本。
 
+使用自定义安装目录时，可运行 `node manage.cjs install "D:\Antigravity"`。卸载时用 `uninstall` 替换 `install`。
+
 安装位置为 ~/.gemini/config/plugins/antigravity-ui，安装器在 ~/.gemini/config/config.json 中启用插件和 antigravity-ui/panel Sidecar，并保留其他配置。
 
 重启后可在「Customizations → Installed」看到 Antigravity Background。在会话右侧打开侧边栏，通过「Extensions → Antigravity Background」进入设置页面。
@@ -13,7 +15,7 @@ Windows 版 Antigravity 的背景自定义插件。
 ## 图片和主题
 
 - 本地选择 PNG、JPG 或 WebP 图片；修改布局、滑块、颜色和开关会实时应用到主界面。点击「保存设置」才长期保存。
-- 实时预览不写入配置。刷新设置页或重启应用会恢复已保存值；仅关闭侧栏不会丢弃当前预览。
+- 实时预览只在运行期间保留。关闭侧栏或刷新设置页后可继续调整。点击「还原」、重启应用或重启 Sidecar 均可恢复已保存配置。
 - 填充按比例铺满并裁切超出部分。拉伸铺满整个窗口。适应完整显示图片并保留比例。平铺按图片尺寸重复排列。
 - 提供位置、缩放、模糊、不透明度、亮度和左侧渐隐调整；顶部「图片预览」实时按当前 Antigravity 窗口宽高比及分栏宽度等比呈现（不可直接误触拖动），在「壁纸调整 → 打开预览」弹窗内支持自由拖拽位置与滚轮缩放，并内置边界覆盖保护（非平铺模式缩放不低于 `100%`、位移贴边限位）防止出现未覆盖留白。
 - 设置页可选择深色、浅色或跟随应用。主题选择随背景配置保存。

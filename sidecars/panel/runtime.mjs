@@ -16,8 +16,13 @@ export class Connection {
     async open() {
         this.socket = new WebSocket(this.url);
         this.socket.addEventListener('message', ({ data }) => {
-            const reply = JSON.parse(data);
-            const operation = this.pending.get(reply.id);
+            let reply;
+            try {
+                reply = JSON.parse(data);
+            } catch {
+                return;
+            }
+            const operation = this.pending.get(reply?.id);
             if (!operation) return;
             this.pending.delete(reply.id);
             clearTimeout(operation.timer);
@@ -34,17 +39,24 @@ export class Connection {
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => { this.close(); reject(new Error('界面连接超时。')); }, 3000);
             this.socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-            this.socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('界面连接失败。')); }, { once: true });
+            this.socket.addEventListener('close', () => { clearTimeout(timer); reject(new Error('界面连接已断开。')); }, { once: true });
+            this.socket.addEventListener('error', () => { clearTimeout(timer); this.close(); reject(new Error('界面连接失败。')); }, { once: true });
         });
     }
 
     command(method, params = {}) {
         return new Promise((resolve, reject) => {
-            if (this.socket.readyState !== WebSocket.OPEN) return reject(new Error('界面连接已断开。'));
+            if (this.socket?.readyState !== WebSocket.OPEN) return reject(new Error('界面连接已断开。'));
             const id = ++this.nextId;
             const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('界面命令超时。')); }, 3000);
             this.pending.set(id, { resolve, reject, timer });
-            this.socket.send(JSON.stringify({ id, method, params }));
+            try {
+                this.socket.send(JSON.stringify({ id, method, params }));
+            } catch (error) {
+                this.pending.delete(id);
+                clearTimeout(timer);
+                reject(error);
+            }
         });
     }
 
@@ -83,9 +95,9 @@ export class WallpaperRuntime {
         this.lastDiscoveryAt = 0;
     }
 
-    start() {
-        void this.update(false, true);
-        this.timer = setInterval(() => void this.update(false, true), 1500);
+    start(tick = () => void this.update(false, true)) {
+        tick();
+        this.timer = setInterval(tick, 1500);
     }
 
     update(activate = false, discover = !activate) {
@@ -154,44 +166,62 @@ export class WallpaperRuntime {
         const needImage = Boolean(payload.enabled && payload.css);
         const omitImage = !needImage || (payload.imageHash && connection.lastImageHash === payload.imageHash);
         let value = await this.evaluate(connection, omitImage ? { ...payload, image: undefined } : payload);
+        if (this.stopped) return {};
         if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload);
-        if (value === true || value === 'OK') {
-            connection.lastImageHash = needImage ? payload.imageHash : '';
-            const measured = await connection.command('Runtime.evaluate', {
-                expression: 'window.__antigravityUiRenderer?.layout',
-                returnByValue: true,
-            });
-            if (measured.result?.value) this.lastLayout = measured.result.value;
-            return true;
+        if (this.stopped) return {};
+        if (value === 'IGNORED') {
+            connection.lastImageHash = undefined;
+            return { ignored: true };
         }
-        return false;
+        if (value !== true && value !== 'OK') return {};
+        connection.lastImageHash = needImage ? payload.imageHash : '';
+        if (!payload.enabled) return { applied: true, layout: null };
+        const measured = await connection.command('Runtime.evaluate', {
+            expression: 'window.__antigravityUiRenderer?.layout',
+            returnByValue: true,
+        });
+        return { applied: true, layout: measured.result?.value ?? null };
     }
 
     async apply({ discover = false } = {}) {
         try {
             const didDiscover = discover || this.connections.size === 0 || (Date.now() - this.lastDiscoveryAt >= 250);
             const initialKeys = didDiscover ? [...await this.discoverTargets()] : [...this.connections.keys()];
+            if (this.stopped) return;
             let desired = await this.readDesired();
+            if (this.stopped) return;
             const attempted = new Set();
             let applied = 0;
+            let ignored = 0;
             let hadFailure = false;
             let lastError;
+            let nextLayout;
             const applyKeys = async keys => {
                 const pending = [];
-                for (const key of keys) {
+                for (const key of [...keys].sort()) {
                     if (attempted.has(key)) continue;
                     attempted.add(key);
                     pending.push(key);
                 }
-                await Promise.all(pending.map(async key => {
+                const layouts = new Array(pending.length).fill(null);
+                await Promise.all(pending.map(async (key, index) => {
                     let connection = this.connections.get(key);
                     try {
                         if (!connection) {
                             connection = new Connection(key);
                             await connection.open();
+                            if (this.stopped) {
+                                connection.close();
+                                return;
+                            }
                             this.connections.set(key, connection);
                         }
-                        if (await this.send(connection, desired)) applied++;
+                        const outcome = await this.send(connection, desired);
+                        if (outcome.applied) {
+                            applied++;
+                            layouts[index] = outcome.layout;
+                        }
+                        if (outcome.ignored) ignored++;
                     } catch (error) {
                         connection?.close();
                         this.connections.delete(key);
@@ -199,19 +229,27 @@ export class WallpaperRuntime {
                         lastError = error;
                     }
                 }));
+                nextLayout ??= layouts.find(Boolean);
             };
             await applyKeys(initialKeys);
+            if (this.stopped) return;
             if (!didDiscover && (hadFailure || this.connections.size === 0)) {
                 const live = await this.discoverTargets();
-                if (desired.generation !== this.generation && !this.stopped) desired = await this.readDesired();
+                if (this.stopped) return;
+                if (desired.generation !== this.generation) desired = await this.readDesired();
+                if (this.stopped) return;
                 await applyKeys([...live]);
+                if (this.stopped) return;
             }
+            if (!desired.enabled) this.lastLayout = null;
+            else if (nextLayout) this.lastLayout = nextLayout;
             this.health = {
                 windows: applied,
-                error: applied ? '' : (lastError?.message || '等待 Antigravity 主窗口。'),
+                error: applied || (ignored && !lastError) ? '' : (lastError?.message || '等待 Antigravity 主窗口。'),
                 ...(this.lastLayout ? { layout: this.lastLayout } : {}),
             };
         } catch (error) {
+            if (this.stopped) return;
             this.health = {
                 windows: 0,
                 error: error.message,

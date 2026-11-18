@@ -3,12 +3,15 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import appearance from '../../plugin/appearance.cjs';
 
+export class InvalidSettingsError extends Error {}
+
 export class SettingsStore {
     constructor(directory, legacyProfile) {
         this.directory = directory;
         this.path = join(directory, 'settings.json');
         this.legacyPath = join(legacyProfile, 'antigravity-ui-wallpaper.json');
         this.queue = Promise.resolve();
+        this.settings = appearance.normalize();
         this.signature = undefined;
     }
 
@@ -31,7 +34,11 @@ export class SettingsStore {
                 handle = await open(file, 'r');
                 const info = await handle.stat();
                 const raw = await handle.readFile('utf8');
-                this.settings = appearance.normalize(JSON.parse(raw));
+                try {
+                    this.settings = appearance.normalize(JSON.parse(raw.replace(/^\uFEFF/, '')));
+                } catch (error) {
+                    throw new InvalidSettingsError('背景设置文件已损坏，请保存当前设置以修复。', { cause: error });
+                }
                 this.signature = `${source}:${info.mtimeMs}:${info.size}`;
                 return this.settings;
             } catch (error) {
@@ -68,11 +75,11 @@ export class SettingsStore {
             const temporary = this.path + '.' + randomUUID() + '.tmp';
             try {
                 await writeFile(temporary, JSON.stringify(settings), { flag: 'wx' });
+                const info = await stat(temporary);
                 await rename(temporary, this.path);
+                this.signature = `main:${info.mtimeMs}:${info.size}`;
+                this.settings = settings;
             } finally { await rm(temporary, { force: true }); }
-            this.settings = settings;
-            const info = await stat(this.path);
-            this.signature = `main:${info.mtimeMs}:${info.size}`;
             return settings;
         });
         this.queue = operation.catch(() => {});

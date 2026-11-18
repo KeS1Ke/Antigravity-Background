@@ -39,7 +39,8 @@
   - **Overview 面板层级与独立外观**：将 `[data-testid="overview-panel-overlay-backdrop"]` 与 `[data-testid="overview-panel-host-overlay"]`、`[data-testid="overview-panel-host-gutter"]`、`[data-testid="overview-panel-host-sibling"]`、`[data-testid="battle-overview-dropdown"]` 抬升至 `z-index: 1002 !important`（高于壁纸 `1000` 与对话/输入框 `1001`，低于右上角工具条 `1003`），并应用 `overview*` 填充、模糊与 `border-color`。
 - **多窗口主动发现、`settings.json` 外部重载与多面板同步**：
   - **多窗口发现与并发推送**：`WallpaperRuntime` 记录 `lastDiscoveryAt`，`apply()` 按 `discover || this.connections.size === 0 || (Date.now() - this.lastDiscoveryAt >= 250)` 在交互预览期间以 250ms 节流窗口自动发现新窗口，并在 `POST /api/settings` 与 `POST /api/preview/discard` 时强制 `discover = true` 立即发现；`applyKeys` 通过去重后的 `Promise.all` 并发推送至所有窗口并保持单目标异常隔离。
-  - **外部磁盘变更感知**：`SettingsStore` 新增 `reloadIfChanged()`（经内部操作队列串行比对 `mtimeMs`/`size` 并按需重载），`main.mjs` 的 `syncStore()` 在 `runtime` `style()` 回调及全部 `/api/*` 路由前调用，外部改写 `settings.json` 时清理过期 `draft` 并于 `GET /api/settings` 同步推送宿主窗口。
+  - **外部磁盘变更感知**：Sidecar 的心跳与设置 API 共用一条队列，在读取配置、修改草稿和更新宿主之间保持顺序。`SettingsStore.reloadIfChanged()` 按 `mtimeMs` 和文件大小判断是否重载。有效的外部修改会清理过期草稿，下一次设置页同步会激活宿主更新。损坏的文件保留最近一次有效设置（首次启动时使用默认值），可从面板保存完整配置来修复。
+  - **渲染器升级**：`version` 表示租约协议，`revision` 表示渲染实现。修订号 19 继续使用协议 18，使旧 Sidecar 能按同一租约规则让步。接管时若宿主需要完整图片，当前图层会保留到图片抵达。
   - **同源多面板同步**：`app.js` 使用 `BroadcastChannel('antigravity-ui-panel-sync')`（按 `tabId` 忽略自发消息）在 `changed()` 与预览/还原/保存响应后广播状态，图片未变时省略 `image` 仅传 `imageHash`（接收端按本地缓存、`sha256Hex` 或按需 `syncFromServer()` 补齐），更新状态并直接 `render()` 避免回环请求；同时监听 `visibilitychange`（`!document.hidden`）与 `focus`，在无在途操作（`!saving && !previewInFlight && !previewQueued && !busy && !previewTimer && !syncInFlight`）时刷新宿主主题并调用 `syncFromServer()` 同步最新状态。
 
 ## 6. 侧边栏原生视图（`[data-browser-hole]`）切换时的主内容区堆叠隔离（`renderer` `version = 14`）

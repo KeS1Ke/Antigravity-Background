@@ -1,8 +1,18 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+
+async function writeAtomic(target, content) {
+    const temporary = target + '.' + randomUUID() + '.tmp';
+    try {
+        await writeFile(temporary, content, { flag: 'wx' });
+        await rename(temporary, target);
+    } finally {
+        await rm(temporary, { force: true });
+    }
+}
 
 export async function loadSdk(executable, dataDirectory) {
     try {
@@ -41,7 +51,7 @@ export async function loadSdk(executable, dataDirectory) {
     const digest = createHash('sha256').update(sdk + preload).digest('hex');
     const directory = join(dataDirectory, 'sdk', digest);
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, 'preload.js'), preload);
-    await writeFile(join(directory, 'index.mjs'), sdk);
+    await writeAtomic(join(directory, 'preload.js'), preload);
+    await writeAtomic(join(directory, 'index.mjs'), sdk);
     return import(pathToFileURL(join(directory, 'index.mjs')).href);
 }

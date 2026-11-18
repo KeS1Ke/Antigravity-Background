@@ -44,7 +44,9 @@
     let previewInFlight = false;
     let previewQueued = false;
     let syncInFlight = false;
+    let syncQueued = false;
     let syncToken = 0;
+    let hasRuntimeNotice = false;
     let operations = Promise.resolve();
 
     function syncOverviewFromBubble() {
@@ -78,7 +80,7 @@
     }
 
     function applyRuntimeLayout(runtime) {
-        if (runtime?.layout) hostLayout = runtime.layout;
+        if (runtime) hostLayout = runtime.layout;
     }
 
     function syncServerImage(result) {
@@ -105,7 +107,7 @@
     }
 
     function schedulePreview() {
-        if (previewInFlight) {
+        if (saving || previewInFlight) {
             previewQueued = true;
             return;
         }
@@ -117,6 +119,8 @@
     }
 
     function flushPreview() {
+        clearTimeout(previewTimer);
+        previewTimer = undefined;
         if (previewInFlight) {
             previewQueued = true;
             return;
@@ -133,11 +137,13 @@
             if (submitted !== revision || saving) return;
             hasDraft = result.hasDraft;
             render();
+            const runtimeError = Boolean(result.runtime.error);
             message(
-                result.runtime.error
+                runtimeError
                     ? '实时预览失败：' + result.runtime.error
                     : (hasDraft ? '实时预览 · 未保存' : ''),
-                Boolean(result.runtime.error)
+                runtimeError,
+                runtimeError
             );
             broadcastState();
         }).catch(error => {
@@ -155,7 +161,8 @@
     }
     window.addEventListener('pagehide', () => clearTimeout(previewTimer));
 
-    function message(text = '', error = false) {
+    function message(text = '', error = false, runtimeNotice = false) {
+        hasRuntimeNotice = runtimeNotice;
         status.textContent = text;
         status.classList.toggle('error', error);
     }
@@ -171,6 +178,7 @@
             hostLayout,
             statusText: status.textContent,
             statusError: status.classList.contains('error'),
+            hasRuntimeNotice,
         });
     }
 
@@ -178,7 +186,8 @@
         clearTimeout(previewTimer);
         previewTimer = undefined;
         previewQueued = false;
-        if (msg.hostLayout) hostLayout = msg.hostLayout;
+        syncQueued = false;
+        hostLayout = msg.hostLayout;
         settings = normalize({ ...msg.settings, image: resolvedImage });
         if (msg.serverImageHash === '') {
             serverImage = '';
@@ -189,7 +198,7 @@
         }
         hasDraft = msg.hasDraft;
         revision++;
-        message(msg.statusText, msg.statusError);
+        message(msg.statusText, msg.statusError, Boolean(msg.hasRuntimeNotice));
         render();
     }
 
@@ -207,10 +216,14 @@
             applyIncomingState(msg, serverImage);
             return;
         }
-        if (msg.imageHash && settings.image && (await sha256Hex(settings.image)) === msg.imageHash) {
-            if (token !== syncToken || saving || busy) return;
-            applyIncomingState(msg, settings.image);
-            return;
+        if (msg.imageHash && settings.image) {
+            const startRevision = revision;
+            const matched = (await sha256Hex(settings.image)) === msg.imageHash;
+            if (token !== syncToken || revision !== startRevision || saving || previewInFlight || previewQueued || previewTimer || busy) return;
+            if (matched) {
+                applyIncomingState(msg, settings.image);
+                return;
+            }
         }
         if (token === syncToken) void syncFromServer();
     }
@@ -269,7 +282,8 @@
 
     const minScale = () => settings.mode === 'tile' ? controls.scale.min : 100;
     const effectiveScale = () => settings.mode === 'tile' ? settings.scale : Math.max(100, settings.scale);
-    const canDragWallpaper = () => ready && !busy && settings.enabled && Boolean(settings.image);
+    const canOpenDragPreview = () => ready && !busy && settings.enabled && Boolean(settings.image);
+    const canDragWallpaper = () => canOpenDragPreview() && !dragModal.hidden;
 
     function hostMetrics() {
         const width = hostLayout?.width || 1920;
@@ -278,11 +292,12 @@
         const rightPct = embeddedPanel
             ? +(window.innerWidth / width * 100).toFixed(2)
             : (hostLayout?.rightPct ?? 39.01);
+        const leftPct = Number.isFinite(hostLayout?.leftPct) ? hostLayout.leftPct : 13.33;
         return {
             width,
             height,
             titlebarPct: hostLayout?.titlebarPct ?? 3.39,
-            leftPct: hostLayout?.leftPct ?? 13.33,
+            leftPct: Math.max(0, Math.min(80, leftPct)),
             rightPct: Math.max(0, Math.min(80, rightPct)),
             tabStripPct: hostLayout?.tabStripPct ?? 4.01,
         };
@@ -435,6 +450,7 @@
 
     function changed() {
         if (settings.overviewSync) syncOverviewFromBubble();
+        syncQueued = false;
         hasDraft = true;
         revision++;
         render();
@@ -554,12 +570,13 @@
     }
     find('#remove').addEventListener('click', () => { settings.image = ''; changed(); });
     find('#reset').addEventListener('click', () => {
-        Object.assign(settings, defaults, { mode: 'fit', x: 50, y: 50, scale: 100 });
+        Object.assign(settings, defaults);
         changed();
     });
     function closeModal() {
         if (dragModal.hidden) return;
         const restoreFocus = dragModal.contains(document.activeElement);
+        stopStageDrag();
         dragModal.hidden = true;
         for (const stage of stages) delete stage.dataset.dragging;
         if (restoreFocus && !openDragPreview.disabled) openDragPreview.focus();
@@ -568,8 +585,10 @@
         let drag;
         const stopDrag = () => {
             if (!drag) return;
+            const { pointerId } = drag;
             drag = undefined;
             delete stage.dataset.dragging;
+            if (stage.hasPointerCapture?.(pointerId)) stage.releasePointerCapture?.(pointerId);
         };
         stage.addEventListener('pointerdown', event => {
             if (event.button !== 0 || !canDragWallpaper()) return;
@@ -616,12 +635,14 @@
                 changed();
             }
         }, { passive: false });
+        return stopDrag;
     }
-    bindInteractiveStage(dragStage);
+    const stopStageDrag = bindInteractiveStage(dragStage);
     openDragPreview.addEventListener('click', () => {
-        if (!canDragWallpaper()) return;
+        if (!canOpenDragPreview() || !dragModal.hidden) return;
         dragModal.hidden = false;
         render();
+        closeDragPreview.focus();
     });
     closeDragPreview.addEventListener('click', closeModal);
     dragModal.addEventListener('click', event => {
@@ -661,6 +682,7 @@
                 });
             } finally { bitmap.close(); }
             busy = false;
+            message('');
             changed();
         } catch (error) { message(error.message, true); }
         finally {
@@ -673,6 +695,7 @@
         clearTimeout(previewTimer);
         previewTimer = undefined;
         previewQueued = false;
+        syncQueued = false;
         busy = true;
         saving = true;
         actionRevision = revision;
@@ -687,7 +710,7 @@
             hasDraft = result.hasDraft;
             applyRuntimeLayout(result.runtime);
             revision++;
-            message('已还原已保存设置。' + (result.runtime.error ? ' 背景连接提示：' + result.runtime.error : ''));
+            message('已还原已保存设置。' + (result.runtime.error ? ' 背景连接提示：' + result.runtime.error : ''), false, Boolean(result.runtime.error));
             synced = true;
         } catch (error) { message('还原失败：' + error.message, true); }
         finally {
@@ -703,6 +726,7 @@
         clearTimeout(previewTimer);
         previewTimer = undefined;
         previewQueued = false;
+        syncQueued = false;
         saving = true;
         actionRevision = submitted;
         render();
@@ -717,9 +741,9 @@
                 hasDraft = result.hasDraft;
             }
             const hint = submitted === revision ? '已保存。' : '已保存，当前还有新的调整。';
-            message(hint + (result.runtime.error ? ' 背景连接提示：' + result.runtime.error : ' 背景已应用。'));
+            message(hint + (result.runtime.error ? ' 背景连接提示：' + result.runtime.error : ' 背景已应用。'), false, Boolean(result.runtime.error));
             synced = true;
-            if (submitted !== revision) schedulePreview();
+            if (submitted !== revision) previewQueued = true;
         } catch (error) { message(error.message, true); }
         finally {
             saving = false;
@@ -733,7 +757,10 @@
     });
 
     async function syncFromServer({ initial = false } = {}) {
-        if (syncInFlight) return;
+        if (syncInFlight) {
+            syncQueued = true;
+            return;
+        }
         syncInFlight = true;
         const startRevision = revision;
         const token = ++syncToken;
@@ -752,30 +779,45 @@
             serverImageHash = result.imageHash;
             hasDraft = nextHasDraft;
             ready = true;
+            const runtimeError = Boolean(result.runtime.error);
             if (stateChanged) {
                 revision++;
                 if (hasDraft) {
-                    message('实时预览 · 未保存' + (result.runtime.error ? '（' + result.runtime.error + '）' : ''), Boolean(result.runtime.error));
-                } else if (result.runtime.error) {
-                    message(result.runtime.error);
+                    message('实时预览 · 未保存' + (runtimeError ? '（' + result.runtime.error + '）' : ''), runtimeError, runtimeError);
+                } else if (runtimeError) {
+                    message(result.runtime.error, false, true);
                 } else if (!initial) {
                     message('');
                 }
-            } else if (!initial && !hasDraft && !result.runtime.error && status.classList.contains('error')) {
-                message('');
+            } else if (!initial) {
+                if (runtimeError) {
+                    if (hasDraft) {
+                        message('实时预览 · 未保存（' + result.runtime.error + '）', true, true);
+                    } else if (hasRuntimeNotice || !status.textContent) {
+                        message(result.runtime.error, false, true);
+                    }
+                } else if (hasRuntimeNotice || status.classList.contains('error')) {
+                    message(hasDraft ? '实时预览 · 未保存' : '');
+                }
             }
         } catch (error) {
             if (initial) message('读取失败：' + error.message, true);
         } finally {
             syncInFlight = false;
             render();
+            if (syncQueued) {
+                syncQueued = false;
+                if (ready && !saving && !previewInFlight && !previewQueued && !busy && !previewTimer) {
+                    void syncFromServer();
+                }
+            }
         }
     }
 
     function handleActivation() {
         updateHostTheme();
         applyTheme();
-        if (!ready || saving || previewInFlight || previewQueued || busy || previewTimer || syncInFlight) return;
+        if (!ready || saving || previewInFlight || previewQueued || busy || previewTimer) return;
         void syncFromServer();
     }
     document.addEventListener('visibilitychange', () => {

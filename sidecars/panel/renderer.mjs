@@ -4,13 +4,14 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
+    // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
+    const revision = 19;
     const active = window[key];
-    if (active?.version === version && (
-        active.generation > generation ||
-        (active.generation === generation && active.owner > owner)
-    )) return true;
-    if (active && active.version !== version) await active.dispose();
+    if (active && (
+        active.version > version || (active.version === version && active.revision > revision) ||
+        active.generation > generation || (active.generation === generation && active.owner > owner)
+    )) return 'IGNORED';
     if (window.__antigravityUiWallpaper) {
         document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== window.__antigravityUiWallpaper);
         delete window.__antigravityUiWallpaper;
@@ -26,7 +27,7 @@ export async function installWallpaper(payload = {}) {
         return alpha >= 1 ? `rgb(${rgb})` : `rgba(${rgb}, ${alpha})`;
     };
     const shellColors = () => {
-        const style = getComputedStyle(document.querySelector('.agy-shell') || document.body);
+        const style = getComputedStyle(document.querySelector('.agy-shell') || document.body || document.documentElement);
         return { color: normalizeColor(style.backgroundColor), symbolColor: normalizeColor(style.color) };
     };
     const themeSignature = () => {
@@ -49,7 +50,7 @@ export async function installWallpaper(payload = {}) {
         // Keep ownership while disabled so a standby heartbeat cannot restore stale settings.
         let lease;
         const state = {
-            version, owner, generation, empty: true,
+            version, revision, owner, generation, empty: true,
             dispose() {
                 clearTimeout(lease);
                 if (window[key] === state) delete window[key];
@@ -59,11 +60,11 @@ export async function installWallpaper(payload = {}) {
         lease = setTimeout(() => state.dispose(), 6500);
         return true;
     }
-    const current = window[key]?.empty ? undefined : window[key];
+    const current = active?.version === version && active.revision === revision && !active.empty ? active : undefined;
     if (css && image === undefined && imageHash && current?.imageHash !== imageHash) {
         return 'NEED_IMAGE';
     }
-    if (window[key]?.empty) await window[key].dispose();
+    if (active && !current) await active.dispose();
     if (!window[key]) {
         const layer = document.createElement('div');
         layer.id = 'antigravity-ui-background';
@@ -79,8 +80,10 @@ export async function installWallpaper(payload = {}) {
         let currentCss;
         let currentSurfaces;
         let lease;
+        let bodyObserved = false;
         const state = {
             version,
+            revision,
             owner,
             generation,
             empty: false,
@@ -94,19 +97,22 @@ export async function installWallpaper(payload = {}) {
                 const h = window.innerHeight;
                 if (w <= 0 || h <= 0) return;
                 const inset = document.querySelector('.agy-inset-shell')?.getBoundingClientRect();
-                const leftNav = document.querySelector('.agy-inset-shell > [data-split-root] > :first-child')?.getBoundingClientRect();
+                const firstSplitChild = document.querySelector('.agy-inset-shell > [data-split-root] > :first-child');
+                const noLeftNav = Boolean(firstSplitChild?.matches('.agy-sheet'));
+                const leftNav = firstSplitChild && !noLeftNav ? firstSplitChild.getBoundingClientRect() : null;
                 const sidePane = (document.querySelector('[data-side-panel-body]') || document.querySelector('.agy-sheet > .outline-none > :nth-child(3)'))?.getBoundingClientRect();
                 const strip = document.querySelector('[data-side-panel-strip]')?.getBoundingClientRect();
                 state.layout = {
                     width: w,
                     height: h,
-                    titlebarPct: inset && inset.top > 0 ? +(inset.top / h * 100).toFixed(2) : 3.39,
-                    leftPct: leftNav && leftNav.width >= 0 ? +(leftNav.width / w * 100).toFixed(2) : 13.33,
+                    titlebarPct: inset && inset.top >= 0 ? +(inset.top / h * 100).toFixed(2) : 3.39,
+                    leftPct: noLeftNav ? 0 : (leftNav && leftNav.width >= 0 ? +(leftNav.width / w * 100).toFixed(2) : 13.33),
                     rightPct: sidePane && sidePane.width >= 0 ? +(sidePane.width / w * 100).toFixed(2) : 0,
-                    tabStripPct: strip && strip.height > 0 ? +(strip.height / h * 100).toFixed(2) : 3.88,
+                    tabStripPct: strip && strip.height > 0 ? +(strip.height / h * 100).toFixed(2) : 4.01,
                 };
             },
             update({ css: nextCss, image: nextImage, imageHash: nextImageHash, surfaces: options }) {
+                observeBody();
                 state.measureLayout();
                 state.hasCss = Boolean(nextCss);
                 if (nextCss) {
@@ -172,7 +178,7 @@ export async function installWallpaper(payload = {}) {
                         '.agy-sheet > .outline-none > :nth-child(3) { position:relative; z-index:auto !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) > .h-full.w-full { z-index:auto !important; }' +
                         // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
-                        '.agy-sheet > .outline-none > :nth-child(3) .flex-grow.overflow-hidden:not([data-has-browser-hole="true"]) { position:relative; z-index:1001;' +
+                        '.agy-sheet > .outline-none > :nth-child(3) [data-side-panel-body]:not([data-has-browser-hole="true"]) { position:relative; z-index:1001;' +
                         surfaceBg(sidebarCover, '', sidebarOpacity, sidebarBlur, 'var(--background,#131313)') + ' }' +
                         '[data-side-panel-body][data-has-browser-hole="true"] { background:transparent !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important; }' +
                         '.agy-sheet > .outline-none > :nth-child(3) .browser-hole-ancestor { background:transparent !important; }' +
@@ -225,13 +231,23 @@ export async function installWallpaper(payload = {}) {
         };
         let currentTheme = themeSignature();
         const observer = new MutationObserver(() => {
+            observeBody();
             const nextTheme = themeSignature();
             if (nextTheme === currentTheme) return;
             currentTheme = nextTheme;
             if (window[key] === state && state.hasCss) void state.syncTitlebar(true);
         });
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme'] });
-        if (document.body) observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme'] });
+        const observeBody = () => {
+            if (bodyObserved || !document.body) return;
+            observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme'] });
+            bodyObserved = true;
+        };
+        observer.observe(document.documentElement, {
+            childList: !document.body,
+            attributes: true,
+            attributeFilter: ['style', 'class', 'data-theme'],
+        });
+        observeBody();
         window[key] = state;
     }
     const activeState = window[key];

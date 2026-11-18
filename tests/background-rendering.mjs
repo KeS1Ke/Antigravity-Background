@@ -4,9 +4,11 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Connection, WallpaperRuntime } from '../sidecars/panel/runtime.mjs';
+import { installWallpaper } from '../sidecars/panel/renderer.mjs';
 import { SettingsStore } from '../sidecars/panel/store.mjs';
 import appearance from '../plugin/appearance.cjs';
 
@@ -57,7 +59,7 @@ assert.throws(() => appearance.normalize({ composerInnerColor: 123 }), /颜色/)
 assert.throws(() => appearance.normalize({ bubbleOuterColor: 'red' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜色/);
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
-await writeFile(join(data, 'settings.json'), JSON.stringify(settings));
+await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify(settings));
 
 const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-inset-shell{position:absolute;inset:35px 0 0}.agy-sheet{height:100%;position:relative;z-index:0}.outline-none{display:flex;height:100%}.main{flex:1;position:relative;display:flex;flex-direction:column}.pane{width:300px;height:100%;background:#121315}.closed .pane{width:0;overflow:hidden}.surface-composer-card{backdrop-filter:none!important}.z-\\[1\\]{z-index:1}[data-testid="autoscroll-viewport"]{width:100%;height:160px;overflow:auto;isolation:isolate;mask-image:linear-gradient(to bottom,transparent,black 24px);-webkit-mask-image:linear-gradient(to bottom,transparent,black 24px)}[data-testid="overview-panel-overlay-backdrop"]{position:absolute;top:8px;right:8px;width:230px;height:100px;z-index:40}[data-testid="overview-panel-host-overlay"]{position:absolute;top:8px;right:8px;width:220px;height:90px;background:white;border:1px solid rgba(128,128,128,0.22);z-index:50}body[data-has-browser-hole="true"] .agy-sheet[data-sheet-inset] :is([data-main-content-body], [data-side-panel-body]){box-shadow:0 0 0 20px #121315;clip-path:inset(0 0 -8px 0)}body[data-has-browser-hole="true"] [data-split-sash]{background:#444343;background-image:linear-gradient(#ffffff,#ffffff)}body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"]){clip-path:inset(0%)}</style>' +
     '<script>window.electronNative={setTitleBarOverlay:async options=>{window.titlebarOptions=options;}};window.__installLog=[];Object.defineProperty(window,"nativeStorage",{configurable:true,get(){window.__installLog.push({hasRenderer:Boolean(window.__antigravityUiRenderer),hasLayer:Boolean(document.querySelector("#antigravity-ui-background"))});return {};}});window.testRoots=new WeakMap();const original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(o){const r=original.call(this,o);window.testRoots.set(this,r);return r;};</script>' +
@@ -94,6 +96,8 @@ const embedUrl = 'http://localhost:' + embedServer.address().port + '/';
 
 const environment = {
     ...process.env,
+    USERPROFILE: join(directory, 'user'),
+    AG_UI_RESOURCES: process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'resources'),
     AG_UI_PROFILE: profile,
     ANTIGRAVITY_LS_ADDRESS: host,
     ANTIGRAVITY_CSRF_TOKEN: 'test',
@@ -120,7 +124,7 @@ async function until(read, hint) {
     throw new Error(hint + ' ' + errors.slice(-300));
 }
 
-const browser = spawn('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', [
+const browser = spawn(process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', [
     '--headless', '--disable-gpu', '--disable-background-networking', '--no-first-run',
     '--remote-debugging-port=0', '--window-size=1000,750', '--user-data-dir=' + profile, host,
 ], { windowsHide: true, stdio: 'ignore' });
@@ -152,6 +156,23 @@ try {
     assert(painted.background.startsWith('url("data:image/png;base64,'), 'Wallpaper must have an image in the rendered element');
     assert.equal(painted.opacity, '1');
     assert(painted.width > 0 && painted.height > 0);
+
+    const settingsUrl = 'http://127.0.0.1:' + webPort + '/api/settings';
+    await writeFile(join(data, 'settings.json'), '{broken');
+    const damaged = await fetch(settingsUrl).then(reply => reply.json());
+    assert.match(damaged.runtime.error, /设置文件已损坏/);
+    assert.deepEqual(damaged.settings, settings);
+    const repair = input => fetch(settingsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-sidecar-token': 'test' },
+        body: JSON.stringify(input),
+    });
+    assert.equal((await repair({ opacity: 50 })).status, 400);
+    assert.equal(await readFile(join(data, 'settings.json'), 'utf8'), '{broken');
+    const repaired = await repair({ ...damaged.settings, image: undefined, imageHash: damaged.imageHash });
+    assert.equal(repaired.status, 200);
+    assert.equal((await repaired.json()).runtime.error, '');
+    assert.deepEqual(JSON.parse(await readFile(join(data, 'settings.json'), 'utf8')), settings);
 
     const nextProbe = createServer();
     await new Promise(resolve => nextProbe.listen(0, '127.0.0.1', resolve));
@@ -444,11 +465,35 @@ try {
     assert.equal(await panel("document.querySelector('#composerInnerColor').disabled"), true);
     assert.equal(await panel("document.querySelector('[data-reset-color=composerInnerColor]').disabled"), true);
 
-    await panel("(()=>{const transport=window.sidecar||window;const original=transport.fetch.bind(transport);transport.fetch=async(path,options)=>{if(path==='/api/preview'){window.previewStarted=true;await new Promise(r=>setTimeout(r,200));}return original(path,options);};const input=document.querySelector('#wallpaper-opacity');input.value=61;input.dispatchEvent(new Event('input'));})()");
-    await until(() => panel('window.previewStarted'), 'Delayed preview did not start');
+    await panel(`(() => {
+        const transport = window.sidecar || window;
+        const original = transport.fetch.bind(transport);
+        window.previewCount = 0;
+        transport.fetch = async (path, options) => {
+            if (path === '/api/preview') {
+                window.previewCount++;
+                if (window.previewCount === 1) await new Promise(resolve => { window.releasePreview = resolve; });
+            }
+            return original(path, options);
+        };
+        const input = document.querySelector('#wallpaper-opacity');
+        input.value = 61;
+        input.dispatchEvent(new Event('input'));
+    })()`);
+    await until(() => panel('Boolean(window.releasePreview)'), 'Delayed preview did not start');
     await panel("(()=>{const input=document.querySelector('#wallpaper-opacity');input.value=79;input.dispatchEvent(new Event('input'));document.querySelector('#save').click();})()");
-    await until(() => panel("document.querySelector('#status').textContent.includes('已保存')"), 'Save did not follow pending preview');
+    await panel(`(() => {
+        const input = document.querySelector('#wallpaper-opacity');
+        input.value = 76;
+        input.dispatchEvent(new Event('input'));
+        window.releasePreview();
+    })()`);
+    await until(() => panel("document.querySelector('#status').textContent.includes('实时预览 · 未保存')"), 'Post-save edit did not preview');
     assert.equal(JSON.parse(await readFile(join(data, 'settings.json'), 'utf8')).opacity, 79);
+    await delay(100);
+    assert.equal(await panel('window.previewCount'), 2, 'Edits during save should post one follow-up preview');
+    await panel("document.querySelector('#discard').click()");
+    await waitDiscard();
     await delay(1800);
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '0.79', 'Delayed preview must not overwrite saved values');
 
@@ -485,6 +530,7 @@ try {
     assert.equal(await panel("document.querySelector('#open-drag-preview').closest('details').open"), true);
     await panel("document.querySelector('#open-drag-preview').click()");
     await until(() => panel("!document.querySelector('#drag-preview-modal').hidden&&document.querySelector('#drag-preview-stage').clientWidth>0"), 'Drag preview modal did not open');
+    assert.equal(await panel('document.activeElement.id'), 'close-drag-preview');
     assert.equal(await panel("document.querySelector('#drag-preview-stage').style.getPropertyValue('--ag-host-aspect').trim()"), `${hostDims.w} / ${hostDims.h}`);
     assert.equal(await panel("document.querySelector('#drag-preview-stage').dataset.draggable"), 'true');
     await panel("(()=>{const m=document.querySelector('#drag-preview-mask');m.click();})()");
@@ -526,6 +572,38 @@ try {
     assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '100');
     await panel("document.querySelector('#close-drag-preview').click()");
     assert.equal(await panel("document.querySelector('#drag-preview-modal').hidden"), true);
+    assert.equal(await panel('document.activeElement.id'), 'open-drag-preview');
+    await panel("document.querySelector('#open-drag-preview').click();window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))");
+    assert.equal(await panel("document.querySelector('#drag-preview-modal').hidden"), true);
+    await panel("document.querySelector('#open-drag-preview').click();document.querySelector('#drag-preview-modal').click()");
+    assert.equal(await panel("document.querySelector('#drag-preview-modal').hidden"), true);
+
+    await panel(`(() => {
+        document.querySelector('[data-mode="tile"]').click();
+        document.querySelector('#open-drag-preview').click();
+        document.querySelector('#drag-preview-stage').dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    })()`);
+    assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '95');
+    await panel("document.querySelector('#close-drag-preview').click();document.querySelector('#reset').click()");
+    assert.equal(await panel("document.querySelector('[data-mode=tile]').getAttribute('aria-pressed')"), 'true');
+    assert.equal(await panel("document.querySelector('#wallpaper-x').value"), '78');
+
+    await panel(`(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 3200;
+        canvas.height = 1600;
+        canvas.getContext('2d').fillRect(0, 0, canvas.width, canvas.height);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], 'wallpaper.png', { type: 'image/png' }));
+        const input = document.querySelector('#image');
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change'));
+    })()`);
+    await until(async () => {
+        const { settings: resized } = await fetch(settingsUrl).then(reply => reply.json());
+        return resized.imageWidth === 2560 && resized.imageHeight === 1280 && resized.image.startsWith('data:image/webp;');
+    }, 'Local PNG upload did not preserve its aspect ratio when resized to WebP');
 
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
@@ -824,6 +902,33 @@ try {
     await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='47'&&document.querySelector('#discard').disabled&&document.querySelector('#status').textContent.includes('已还原已保存设置')"), 'BroadcastChannel discard did not sync to Panel 2');
     assert.equal(await panel2('window.__fetchLog.length'), 0, 'BroadcastChannel discard sync must not trigger loopback requests on Panel 2');
 
+    await panel2(`(() => {
+        const transport = window.sidecar || window;
+        const fetchSettings = transport.fetch.bind(transport);
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        crypto.subtle.digest = (...args) => {
+            window.broadcastDigest = true;
+            return digest(...args);
+        };
+        transport.fetch = async (path, options) => {
+            if (path === '/api/settings' && options.method === 'GET' && !window.releaseSync) {
+                await new Promise(resolve => { window.releaseSync = resolve; });
+            }
+            return fetchSettings(path, options);
+        };
+        window.dispatchEvent(new Event('focus'));
+    })()`);
+    await until(() => panel2('Boolean(window.releaseSync)'), 'Settings sync did not enter the fetch gate');
+    await panel(`(() => {
+        const channel = new BroadcastChannel('antigravity-ui-panel-sync');
+        channel.postMessage({ source: 'cache-miss-test', settings: { opacity: 99 }, imageHash: 'uncached' });
+        channel.close();
+    })()`);
+    await until(() => panel2('window.broadcastDigest'), 'Panel 2 did not try matching the broadcast image locally');
+    await panel2('window.releaseSync()');
+    await until(() => panel2("window.__fetchLog.filter(entry => entry.method === 'GET').length >= 2"), 'A cache miss during an existing sync must queue a fresh GET');
+    assert.equal(await panel2("document.querySelector('#wallpaper-opacity').value"), '47');
+
     // Second host window: 250ms preview discovery window + 0ms save/discard immediate discovery
     await panel("document.querySelector('#save').click()");
     await until(() => panel("document.querySelector('#status').textContent.includes('已保存')"), 'Baseline save before Host 2 failed');
@@ -963,6 +1068,15 @@ try {
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
     assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 19);
+    const activeGeneration = await evaluate('window.__antigravityUiRenderer.generation');
+    const installInHost = payload => evaluate(`(${installWallpaper.toString()})(${JSON.stringify(payload)})`);
+    await evaluate("window.oldLayer = document.querySelector('#antigravity-ui-background'); delete window.__antigravityUiRenderer.revision");
+    assert.equal(await installInHost({ enabled: false, generation: activeGeneration - 1 }), 'IGNORED');
+    assert.equal(await installInHost({ enabled: true, css: 'color:red', imageHash: expectedImageHash, generation: activeGeneration + 1 }), 'NEED_IMAGE');
+    assert.equal(await evaluate("window.oldLayer === document.querySelector('#antigravity-ui-background') && window.titlebarOptions.color === '#00000000'"), true);
+    await runtime.update(true, false);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 19);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{

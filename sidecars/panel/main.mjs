@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadSdk } from './sdk.mjs';
 import { WallpaperRuntime } from './runtime.mjs';
-import { SettingsStore } from './store.mjs';
+import { InvalidSettingsError, SettingsStore } from './store.mjs';
 import appearance from '../../plugin/appearance.cjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -15,12 +15,16 @@ const data = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR ||
 const resources = process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'resources');
 const { SidecarApp, Response } = await loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 const store = new SettingsStore(data, profile);
-await store.load();
 const configPath = join(homedir(), '.gemini', 'config', 'config.json');
 const enabled = async () => {
-    const configuration = JSON.parse((await readFile(configPath, 'utf8')).replace(/^\uFEFF/, ''));
-    return configuration.plugins?.['antigravity-ui']?.enabled !== false &&
-        configuration.sidecars?.['antigravity-ui/panel']?.enabled !== false;
+    try {
+        const configuration = JSON.parse((await readFile(configPath, 'utf8')).replace(/^\uFEFF/, ''));
+        return configuration.plugins?.['antigravity-ui']?.enabled !== false &&
+            configuration.sidecars?.['antigravity-ui/panel']?.enabled !== false;
+    } catch (error) {
+        if (error.code === 'ENOENT') return true;
+        throw error;
+    }
 };
 const lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS;
 const hostPort = new URL(lsAddress.includes('://') ? lsAddress : 'https://' + lsAddress).port;
@@ -43,7 +47,7 @@ function sameSettings(a, b, ignoreTheme = false) {
     return true;
 }
 function resolveImage(input, saved) {
-    if (input.image !== undefined || typeof input.imageHash !== 'string') return input;
+    if (input?.image !== undefined || typeof input?.imageHash !== 'string') return input;
     for (const candidate of [draft?.image, saved.image]) {
         if (candidate !== undefined && imageDigest(candidate) === input.imageHash) {
             return { ...input, image: candidate };
@@ -55,9 +59,25 @@ function jsonResponse(status, body) {
     return new Response(JSON.stringify(body), { contentType: 'application/json', status });
 }
 let draft;
+let settingsError;
 let pendingActivate = false;
+let requests = Promise.resolve();
+function enqueueRequest(task) {
+    const operation = requests.then(task);
+    requests = operation.catch(() => {});
+    return operation;
+}
 async function syncStore() {
-    if (!await store.reloadIfChanged()) return false;
+    let reloaded;
+    try {
+        reloaded = await store.reloadIfChanged();
+        settingsError = undefined;
+    } catch (error) {
+        if (!(error instanceof InvalidSettingsError)) throw error;
+        settingsError = error.message;
+        return false;
+    }
+    if (!reloaded) return false;
     draft = undefined;
     pendingActivate = true;
     return true;
@@ -66,8 +86,17 @@ async function activateRuntime(discover) {
     pendingActivate = false;
     await runtime.update(true, discover);
 }
-const runtime = new WallpaperRuntime(profile, async () => {
-    await syncStore();
+function stateResponse(extra = {}) {
+    const active = draft || store.settings;
+    return {
+        settings: active,
+        ...extra,
+        hasDraft: Boolean(draft),
+        imageHash: imageDigest(active.image),
+        runtime: settingsError ? { ...runtime.health, error: settingsError } : runtime.health,
+    };
+}
+const runtime = new WallpaperRuntime(profile, () => {
     const settings = draft || store.settings;
     const {
         sidebarCover, sidebarOpacity, sidebarBlur,
@@ -101,24 +130,16 @@ for (const [route, [path, type]] of Object.entries(files)) {
         headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
     }), 'GET');
 }
-app.api('/api/settings', async () => {
+app.api('/api/settings', () => enqueueRequest(async () => {
     const reloaded = await syncStore();
     if (reloaded || pendingActivate) await activateRuntime(true);
-    const saved = store.settings;
-    const active = draft || saved;
-    return {
-        settings: active,
-        saved,
-        hasDraft: Boolean(draft),
-        imageHash: imageDigest(active.image),
-        runtime: runtime.health,
-    };
-}, 'GET');
-app.api('/api/preview', async input => {
+    return stateResponse({ saved: store.settings });
+}), 'GET');
+app.api('/api/preview', input => enqueueRequest(async () => {
     const reloaded = await syncStore();
     const saved = store.settings;
     const resolved = resolveImage(input, saved);
-    if (!resolved) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+    if (resolved === null && input !== null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
     let next;
     try {
         next = appearance.normalize(resolved);
@@ -130,14 +151,9 @@ app.api('/api/preview', async input => {
     if (reloaded || pendingActivate || !sameSettings(previous, next, true) || runtime.dirty) {
         await activateRuntime(reloaded || pendingActivate);
     }
-    return {
-        settings: next,
-        hasDraft: Boolean(draft),
-        imageHash: imageDigest(next.image),
-        runtime: runtime.health,
-    };
-}, 'POST');
-app.api('/api/preview/discard', async () => {
+    return stateResponse();
+}), 'POST');
+app.api('/api/preview/discard', () => enqueueRequest(async () => {
     const previous = draft || store.settings;
     const reloaded = await syncStore();
     const saved = store.settings;
@@ -145,33 +161,38 @@ app.api('/api/preview/discard', async () => {
     if (reloaded || pendingActivate || !sameSettings(previous, saved, true) || runtime.dirty) {
         await activateRuntime(true);
     }
-    return {
-        settings: saved,
-        hasDraft: false,
-        imageHash: imageDigest(saved.image),
-        runtime: runtime.health,
-    };
-}, 'POST');
-app.api('/api/settings', async input => {
+    return stateResponse();
+}), 'POST');
+app.api('/api/settings', input => enqueueRequest(async () => {
     await syncStore();
     const resolved = resolveImage(input, store.settings);
-    if (!resolved) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+    if (resolved === null && input !== null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+    if (settingsError && (!resolved || !Object.keys(store.settings).every(key => Object.hasOwn(resolved, key)))) {
+        return jsonResponse(400, { error: settingsError });
+    }
     try {
-        const settings = await store.save(resolved);
+        await store.save(resolved);
+        settingsError = undefined;
         draft = undefined;
         await activateRuntime(true);
-        return {
-            settings,
-            hasDraft: false,
-            imageHash: imageDigest(settings.image),
-            runtime: runtime.health,
-        };
+        return stateResponse();
     } catch (error) {
         return jsonResponse(400, { error: error.message });
     }
-}, 'POST');
+}), 'POST');
+await syncStore();
 await app.run();
-runtime.start();
+let heartbeatPending = false;
+runtime.start(() => {
+    if (heartbeatPending) return;
+    heartbeatPending = true;
+    void enqueueRequest(async () => {
+        await syncStore();
+        await runtime.update(false, true);
+    }).catch(error => {
+        runtime.health = { ...runtime.health, error: error.message };
+    }).finally(() => { heartbeatPending = false; });
+});
 let exiting = false;
 async function shutdown() {
     if (exiting) return;
