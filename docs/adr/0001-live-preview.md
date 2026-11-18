@@ -41,3 +41,11 @@
   - **多窗口发现与并发推送**：`WallpaperRuntime` 记录 `lastDiscoveryAt`，`apply()` 按 `discover || this.connections.size === 0 || (Date.now() - this.lastDiscoveryAt >= 250)` 在交互预览期间以 250ms 节流窗口自动发现新窗口，并在 `POST /api/settings` 与 `POST /api/preview/discard` 时强制 `discover = true` 立即发现；`applyKeys` 通过去重后的 `Promise.all` 并发推送至所有窗口并保持单目标异常隔离。
   - **外部磁盘变更感知**：`SettingsStore` 新增 `reloadIfChanged()`（经内部操作队列串行比对 `mtimeMs`/`size` 并按需重载），`main.mjs` 的 `syncStore()` 在 `runtime` `style()` 回调及全部 `/api/*` 路由前调用，外部改写 `settings.json` 时清理过期 `draft` 并于 `GET /api/settings` 同步推送宿主窗口。
   - **同源多面板同步**：`app.js` 使用 `BroadcastChannel('antigravity-ui-panel-sync')`（按 `tabId` 忽略自发消息）在 `changed()` 与预览/还原/保存响应后广播状态，图片未变时省略 `image` 仅传 `imageHash`（接收端按本地缓存、`sha256Hex` 或按需 `syncFromServer()` 补齐），更新状态并直接 `render()` 避免回环请求；同时监听 `visibilitychange`（`!document.hidden`）与 `focus`，在无在途操作（`!saving && !previewInFlight && !previewQueued && !busy && !previewTimer && !syncInFlight`）时刷新宿主主题并调用 `syncFromServer()` 同步最新状态。
+
+## 6. 侧边栏原生视图（`[data-browser-hole]`）切换时的主内容区堆叠隔离（`renderer` `version = 14`）
+
+- 当右侧边栏切换至包含 `[data-browser-hole]` 的原生视图标签页时，Antigravity 会沿祖先链向 `body` / `html` 写入 `data-has-browser-hole="true"`（以及 `data-has-three-layer-browser-hole="true"` / `data-split-transition`），触发宿主在 `[data-main-content-body]` 上设置 `clip-path` 与 `box-shadow`，并在三层分栏 `[data-split-fill-edge]:not([data-has-browser-hole="true"])` 上设置 `clip-path: inset(0%)`。由于主内容区祖先保持 `z-index: auto`，非 `none` 的 `clip-path` 会建立根级 `z-index: 0` 层叠上下文与 Backdrop Root，将内部 `z-index: 1001/1002` 的对话区、用户气泡、输入框及 Overview 面板压入 `#antigravity-ui-background`（`z-index: 1000`）之下。
+- `renderer` `version = 14` 在 `layout.replaceSync(...)` 追加两条规则，清除非 hole `[data-main-content-body]` 的 `clip-path` 与 `box-shadow`，并清除非 hole 且非 `[data-split-overlaid="true"]` 的 `[data-split-fill-edge]` 的 `clip-path`：
+  - `[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }`
+  - `[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }`
+  既防止侧边栏原生视图切换导致主对话区跌入壁纸层下方，又保留显式 `[data-has-browser-hole="true"]` / `[data-split-overlaid="true"]` 元素的原生裁切与阴影语义。

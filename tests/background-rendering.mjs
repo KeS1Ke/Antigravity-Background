@@ -54,9 +54,9 @@ assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /é¢œè‰
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
 await writeFile(join(data, 'settings.json'), JSON.stringify(settings));
 
-const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-inset-shell{position:absolute;inset:35px 0 0}.agy-sheet{height:100%;position:relative;z-index:0}.outline-none{display:flex;height:100%}.main{flex:1;position:relative;display:flex;flex-direction:column}.pane{width:300px;height:100%;background:#121315}.closed .pane{width:0;overflow:hidden}.surface-composer-card{backdrop-filter:none!important}.z-\\[1\\]{z-index:1}[data-testid="autoscroll-viewport"]{width:400px;height:160px;overflow:auto;isolation:isolate;mask-image:linear-gradient(to bottom,transparent,black 24px);-webkit-mask-image:linear-gradient(to bottom,transparent,black 24px)}[data-testid="overview-panel-overlay-backdrop"]{position:absolute;top:8px;right:8px;width:230px;height:100px;z-index:40}[data-testid="overview-panel-host-overlay"]{position:absolute;top:8px;right:8px;width:220px;height:90px;background:white;border:1px solid rgba(128,128,128,0.22);z-index:50}</style>' +
+const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-inset-shell{position:absolute;inset:35px 0 0}.agy-sheet{height:100%;position:relative;z-index:0}.outline-none{display:flex;height:100%}.main{flex:1;position:relative;display:flex;flex-direction:column}.pane{width:300px;height:100%;background:#121315}.closed .pane{width:0;overflow:hidden}.surface-composer-card{backdrop-filter:none!important}.z-\\[1\\]{z-index:1}[data-testid="autoscroll-viewport"]{width:400px;height:160px;overflow:auto;isolation:isolate;mask-image:linear-gradient(to bottom,transparent,black 24px);-webkit-mask-image:linear-gradient(to bottom,transparent,black 24px)}[data-testid="overview-panel-overlay-backdrop"]{position:absolute;top:8px;right:8px;width:230px;height:100px;z-index:40}[data-testid="overview-panel-host-overlay"]{position:absolute;top:8px;right:8px;width:220px;height:90px;background:white;border:1px solid rgba(128,128,128,0.22);z-index:50}body[data-has-browser-hole="true"] .agy-sheet[data-sheet-inset] :is([data-main-content-body], [data-side-panel-body]){box-shadow:0 0 0 20px #121315;clip-path:inset(0 0 -8px 0)}body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"]){clip-path:inset(0%)}</style>' +
     '<script>window.electronNative={setTitleBarOverlay:async options=>{window.titlebarOptions=options;}};window.__installLog=[];Object.defineProperty(window,"nativeStorage",{configurable:true,get(){window.__installLog.push({hasRenderer:Boolean(window.__antigravityUiRenderer),hasLayer:Boolean(document.querySelector("#antigravity-ui-background"))});return {};}});window.testRoots=new WeakMap();const original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(o){const r=original.call(this,o);window.testRoots.set(this,r);return r;};</script>' +
-    '<div class="agy-inset-shell"><div class="agy-sheet"><div class="outline-none"><div class="main">' +
+    '<div class="agy-inset-shell"><div class="agy-sheet" data-sheet-inset="true"><div class="outline-none" data-split-root="true" data-split-three-layer-slide="true"><div data-split-fill-edge="right" style="flex:1;display:flex;min-width:0"><div class="main" data-main-content-body="true">' +
     '<div data-testid="autoscroll-viewport"><div style="height:260px;padding:12px">' +
     '<div class="agy-user-bubble-frame" id="regular-bubble-frame" style="background:white;padding:1px;border-radius:12px;margin-bottom:8px"><div data-testid="user-message-bubble" class="agy-user-bubble" id="regular-bubble" style="background:white;box-shadow:0 0 0 1px rgba(255,255,255,0.25);padding:8px 12px">User message</div></div>' +
     '<div class="agy-user-bubble-frame" id="proceeded-bubble-frame" style="background:white;padding:1px;border-radius:12px"><div class="agy-user-bubble" id="proceeded-bubble" style="background:white;box-shadow:0 0 0 1px rgba(255,255,255,0.25);padding:8px 12px">Proceeded with command</div></div>' +
@@ -65,7 +65,7 @@ const fixture = '<!doctype html><style>body{margin:0;background:#18191c}.agy-ins
     '<div class="z-[1]" style="margin-top:16px"><div data-testid="agent-input-box"><div class="surface-composer" id="home-composer" style="background:rgba(20,20,24,0.8)"><div data-testid="input-box-bottom-toolbar" style="padding:6px 10px">Temp | Local Checkout</div><div class="surface-composer-card" id="home-composer-card" style="background:white;box-shadow:0 0 0 1px rgba(255,255,255,0.25);padding:12px"><div contenteditable="true" id="home-editor">Home draft</div></div></div></div></div>' +
     '<div data-testid="overview-panel-overlay-backdrop"></div>' +
     '<div data-testid="overview-panel-host-overlay">Overview</div>' +
-    '</div><div></div><div class="pane"><div class="h-full w-full" style="position:absolute;inset:0;z-index:10"><div class="browser-hole-ancestor"><div id="tabs" style="height:40px"><button id="tab">README.md</button></div><div class="flex-grow overflow-hidden" style="height:calc(100% - 40px)"></div></div></div></div></div></div>' +
+    '</div></div><div></div><div class="pane"><div class="h-full w-full" style="position:absolute;inset:0;z-index:10"><div class="browser-hole-ancestor"><div id="tabs" style="height:40px"><button id="tab">README.md</button></div><div class="flex-grow overflow-hidden" data-side-panel-body="true" style="height:calc(100% - 40px)"></div></div></div></div></div></div>' +
     '<div class="absolute right-0" style="position:absolute;right:0;top:0;z-index:50"><div id="window-tools" style="background:black"><div class="right-full" style="background:linear-gradient(to right,transparent,black)"></div><button id="toggle-side" style="width:40px;height:32px" onclick="document.querySelector(\'.outline-none\').classList.toggle(\'closed\')">Toggle</button></div></div></div>';
 
 const server = createServer((request, response) => {
@@ -884,6 +884,101 @@ try {
     const reloadInstallLog = await evaluate('window.__installLog');
     assert.deepEqual(reloadInstallLog.slice(0, 2), [{ hasRenderer: false, hasLayer: false }, { hasRenderer: false, hasLayer: false }]);
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '1');
+
+    // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
+    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 14);
+    await client.command('Page.bringToFront');
+    await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    const beforeHoleShot = await client.command('Page.captureScreenshot', { format: 'png' });
+    const holeState = await evaluate(`(async()=>{
+        document.documentElement.dataset.hasBrowserHole='true';
+        document.body.dataset.hasBrowserHole='true';
+        document.body.dataset.hasThreeLayerBrowserHole='true';
+        const sheet=document.querySelector('.agy-sheet');
+        const outline=document.querySelector('.outline-none');
+        const pane=document.querySelector('.pane');
+        const sideBody=document.querySelector('.pane .flex-grow');
+        sheet.dataset.hasBrowserHole='true';
+        outline.dataset.hasBrowserHole='true';
+        outline.dataset.splitTransition='true';
+        pane.dataset.hasBrowserHole='true';
+        sideBody.dataset.hasBrowserHole='true';
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        const mainBody=document.querySelector('[data-main-content-body]');
+        const splitEdge=document.querySelector('[data-split-fill-edge="right"]');
+        const mainStyle=getComputedStyle(mainBody);
+        const splitStyle=getComputedStyle(splitEdge);
+        const sideStyle=getComputedStyle(sideBody);
+        const hit=sel=>{const el=document.querySelector(sel),b=el.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===el};
+        const rect=mainBody.getBoundingClientRect();
+        return{
+            mainClip:mainStyle.clipPath,
+            mainShadow:mainStyle.boxShadow,
+            splitClip:splitStyle.clipPath,
+            sideClip:sideStyle.clipPath,
+            mainHasHoleAttr:mainBody.hasAttribute('data-has-browser-hole'),
+            splitHasHoleAttr:splitEdge.hasAttribute('data-has-browser-hole'),
+            splitMatchedHostRule:splitEdge.matches('body[data-has-three-layer-browser-hole="true"] [data-split-root="true"][data-split-three-layer-slide="true"][data-has-browser-hole="true"][data-split-transition] > [data-split-fill-edge]:not([data-has-browser-hole="true"])'),
+            hits:{bubble:hit('#regular-bubble'),editor:hit('#editor'),overview:hit('[data-testid="overview-panel-host-overlay"]')},
+            rect:{left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom},
+        };
+    })()`);
+    assert.equal(holeState.mainHasHoleAttr, false);
+    assert.equal(holeState.splitHasHoleAttr, false);
+    assert.notEqual(holeState.sideClip, 'none', 'Host browser-hole rule must activate on [data-side-panel-body]');
+    assert.equal(holeState.splitMatchedHostRule, true, 'Host three-layer split rule must match [data-split-fill-edge="right"]');
+    assert.equal(holeState.mainClip, 'none');
+    assert.equal(holeState.mainShadow, 'none');
+    assert.equal(holeState.splitClip, 'none');
+    assert.deepEqual(holeState.hits, { bubble: true, editor: true, overview: true });
+    const afterHoleShot = await client.command('Page.captureScreenshot', { format: 'png' });
+    const changedPixels = await evalOn(client, `(async()=>{
+        const load=b64=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src='data:image/png;base64,'+b64;});
+        const [beforeImg,afterImg]=await Promise.all([load(${JSON.stringify(beforeHoleShot.data)}),load(${JSON.stringify(afterHoleShot.data)})]);
+        const w=beforeImg.naturalWidth,h=beforeImg.naturalHeight;
+        if(afterImg.naturalWidth!==w||afterImg.naturalHeight!==h)throw new Error('Screenshot size mismatch');
+        const draw=img=>{const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');g.drawImage(img,0,0);return g.getImageData(0,0,w,h).data;};
+        const a=draw(beforeImg),b=draw(afterImg);
+        const sx=w/window.innerWidth,sy=h/window.innerHeight;
+        const r=${JSON.stringify(holeState.rect)};
+        const x0=Math.max(0,Math.ceil(r.left*sx)),y0=Math.max(0,Math.ceil(r.top*sy));
+        const x1=Math.min(w,Math.floor(r.right*sx)),y1=Math.min(h,Math.floor(r.bottom*sy));
+        let changed=0;
+        for(let y=y0;y<y1;y++){
+            for(let x=x0;x<x1;x++){
+                const i=(y*w+x)*4;
+                if(a[i]!==b[i]||a[i+1]!==b[i+1]||a[i+2]!==b[i+2]||a[i+3]!==b[i+3])changed++;
+            }
+        }
+        return{changed,width:x1-x0,height:y1-y0};
+    })()`, 'Compare browser-hole screenshots');
+    assert(changedPixels.width > 0 && changedPixels.height > 0);
+    assert.equal(changedPixels.changed, 0, 'Switching side panel to [data-browser-hole] must not change any pixel inside [data-main-content-body]');
+    const cleanedHole = await evaluate(`(async()=>{
+        delete document.documentElement.dataset.hasBrowserHole;
+        delete document.body.dataset.hasBrowserHole;
+        delete document.body.dataset.hasThreeLayerBrowserHole;
+        const sheet=document.querySelector('.agy-sheet');
+        const outline=document.querySelector('.outline-none');
+        const pane=document.querySelector('.pane');
+        const sideBody=document.querySelector('.pane .flex-grow');
+        delete sheet.dataset.hasBrowserHole;
+        delete outline.dataset.hasBrowserHole;
+        delete outline.dataset.splitTransition;
+        delete pane.dataset.hasBrowserHole;
+        delete sideBody.dataset.hasBrowserHole;
+        await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+        return{
+            attrs:[document.documentElement,document.body,sheet,outline,pane,sideBody].every(el=>!el.hasAttribute('data-has-browser-hole'))&&!document.body.hasAttribute('data-has-three-layer-browser-hole')&&!outline.hasAttribute('data-split-transition'),
+            sideClip:getComputedStyle(sideBody).clipPath,
+            mainClip:getComputedStyle(document.querySelector('[data-main-content-body]')).clipPath,
+            splitClip:getComputedStyle(document.querySelector('[data-split-fill-edge="right"]')).clipPath,
+        };
+    })()`);
+    assert.equal(cleanedHole.attrs, true, 'Browser-hole simulation attributes must be cleaned up');
+    assert.equal(cleanedHole.sideClip, 'none');
+    assert.equal(cleanedHole.mainClip, 'none');
+    assert.equal(cleanedHole.splitClip, 'none');
     await runtime.stop();
 
     const storeTestDir = join(directory, 'store-reload-check');

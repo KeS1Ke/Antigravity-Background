@@ -4,7 +4,7 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
-    const version = 13;
+    const version = 14;
     const active = window[key];
     if (active?.version === version && (
         active.generation > generation ||
@@ -142,7 +142,9 @@ export async function installWallpaper(payload = {}) {
                         '.agy-user-bubble {' + bubbleFill + 'box-shadow:none !important; }' +
                         '[data-testid="overview-panel-overlay-backdrop"] { z-index:1002 !important; }' +
                         '[data-testid="overview-panel-host-overlay"],[data-testid="overview-panel-host-gutter"],[data-testid="overview-panel-host-sibling"],[data-testid="battle-overview-dropdown"] { z-index:1002 !important;' +
-                        overviewFill + 'border-color:' + overviewOuter + ' !important; }'
+                        overviewFill + 'border-color:' + overviewOuter + ' !important; }' +
+                        '[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }' +
+                        '[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }'
                     );
                     currentSurfaces = signature;
                 }
