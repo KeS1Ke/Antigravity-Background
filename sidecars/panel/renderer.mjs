@@ -4,7 +4,7 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
-    const version = 14;
+    const version = 15;
     const active = window[key];
     if (active?.version === version && (
         active.generation > generation ||
@@ -57,9 +57,12 @@ export async function installWallpaper(payload = {}) {
             owner,
             generation,
             empty: false,
+            hasCss: false,
             imageHash: '',
             titlebar: null,
+            titlebarAt: 0,
             update({ css: nextCss, image: nextImage, imageHash: nextImageHash, surfaces: options }) {
+                state.hasCss = Boolean(nextCss);
                 if (nextCss) {
                     if (nextImage !== undefined && (nextImageHash !== state.imageHash || !imageEl.style.getPropertyValue('--ag-ui-image'))) {
                         imageEl.style.setProperty('--ag-ui-image', 'url("' + nextImage + '")');
@@ -151,8 +154,20 @@ export async function installWallpaper(payload = {}) {
                 clearTimeout(lease);
                 lease = setTimeout(() => state.dispose(), 6500);
             },
+            syncTitlebar(force = false) {
+                const style = shellStyle();
+                const overlay = { color: state.hasCss ? '#00000000' : style.backgroundColor, symbolColor: style.color };
+                if (!force &&
+                    state.titlebar?.color === overlay.color &&
+                    state.titlebar?.symbolColor === overlay.symbolColor &&
+                    Date.now() - state.titlebarAt < 1000) return;
+                state.titlebar = overlay;
+                state.titlebarAt = Date.now();
+                return window.electronNative.setTitleBarOverlay?.(overlay);
+            },
             dispose() {
                 clearTimeout(lease);
+                observer.disconnect();
                 layer.remove();
                 document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== layout);
                 if (window[key] === state) delete window[key];
@@ -160,17 +175,16 @@ export async function installWallpaper(payload = {}) {
                 return window.electronNative.setTitleBarOverlay?.({ color: style.backgroundColor, symbolColor: style.color });
             },
         };
+        const observer = new MutationObserver(() => {
+            if (window[key] === state && state.hasCss) void state.syncTitlebar(true);
+        });
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme'] });
         window[key] = state;
     }
     const activeState = window[key];
     activeState.owner = owner;
     activeState.generation = generation;
     activeState.update({ css, image, imageHash, surfaces });
-    const style = shellStyle();
-    const overlay = { color: css ? '#00000000' : style.backgroundColor, symbolColor: style.color };
-    if (activeState.titlebar?.color !== overlay.color || activeState.titlebar?.symbolColor !== overlay.symbolColor) {
-        await window.electronNative.setTitleBarOverlay?.(overlay);
-        activeState.titlebar = overlay;
-    }
+    await activeState.syncTitlebar();
     return 'OK';
 }

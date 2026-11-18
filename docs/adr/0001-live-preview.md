@@ -49,3 +49,10 @@
   - `[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }`
   - `[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }`
   既防止侧边栏原生视图切换导致主对话区跌入壁纸层下方，又保留显式 `[data-has-browser-hole="true"]` / `[data-split-overlaid="true"]` 元素的原生裁切与阴影语义。
+
+## 7. 宿主主题重算覆盖 `titleBarOverlay` 防护（`renderer` `version = 15`）
+
+- Antigravity 在语言服务配置下发、主题预设初始化或对比度/主题切换时，会重算 `document.documentElement.style` 并同步调用 `window.electronNative.setTitleBarOverlay({ color: F7b("--sidebar"), symbolColor: F7b("--foreground") })`，把原生右上角窗口控制栏（`136×30px`）重新涂成不透明底色（如 `#444343`）。仅在前端内存中永久缓存 `activeState.titlebar` 会导致后续 1500ms 心跳误判状态一致而长期残留深色矩形。
+- `renderer` `version = 15` 在 `state` 上维护 `hasCss` 与 `titlebarAt`：
+  - 通过 `MutationObserver` 监听 `document.documentElement` 的 `style`、`class`、`data-theme` 变更，在 `state.hasCss` 为真时于微任务中立即调用 `syncTitlebar(true)` 将 `titleBarOverlay` 恢复为 `#00000000`；在 `dispose()` 时断开监听。
+  - 将常规 `syncTitlebar()` 的缓存有效期收窄为 `1000ms`：16ms 滑块连续拖动期间仍走缓存不阻塞 IPC，同时每次 1500ms 周期心跳可自动重申透明标题栏，兜底非 DOM 属性触发的宿主覆盖。

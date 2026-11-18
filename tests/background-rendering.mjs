@@ -886,7 +886,7 @@ try {
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '1');
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
-    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 14);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 15);
     await client.command('Page.bringToFront');
     await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     const beforeHoleShot = await client.command('Page.captureScreenshot', { format: 'png' });
@@ -979,6 +979,19 @@ try {
     assert.equal(cleanedHole.sideClip, 'none');
     assert.equal(cleanedHole.mainClip, 'none');
     assert.equal(cleanedHole.splitClip, 'none');
+
+    // Regression: host theme recompute or direct setTitleBarOverlay overwrite must restore transparent titlebar
+    await evaluate(`(()=>{
+        document.documentElement.style.setProperty('--sidebar', '#444343');
+        void window.electronNative.setTitleBarOverlay({ color: '#444343', symbolColor: '#ffffff' });
+    })()`);
+    await until(async () => (await evaluate('window.titlebarOptions?.color')) === '#00000000', 'MutationObserver did not immediately restore transparent titlebar overlay');
+    await evaluate(`document.documentElement.style.removeProperty('--sidebar')`);
+    await delay(1050);
+    await evaluate(`void window.electronNative.setTitleBarOverlay({ color: '#444343', symbolColor: '#ffffff' })`);
+    assert.equal(await evaluate('window.titlebarOptions.color'), '#444343');
+    runtime.start();
+    await until(async () => (await evaluate('window.titlebarOptions?.color')) === '#00000000', 'Periodic heartbeat did not restore transparent titlebar overlay');
     await runtime.stop();
 
     const storeTestDir = join(directory, 'store-reload-check');
