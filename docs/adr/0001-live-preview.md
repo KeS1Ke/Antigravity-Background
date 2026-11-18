@@ -56,3 +56,8 @@
 - `renderer` `version = 15` 在 `state` 上维护 `hasCss` 与 `titlebarAt`：
   - 通过 `MutationObserver` 监听 `document.documentElement` 的 `style`、`class`、`data-theme` 变更，在 `state.hasCss` 为真时于微任务中立即调用 `syncTitlebar(true)` 将 `titleBarOverlay` 恢复为 `#00000000`；在 `dispose()` 时断开监听。
   - 将常规 `syncTitlebar()` 的缓存有效期收窄为 `1000ms`：16ms 滑块连续拖动期间仍走缓存不阻塞 IPC，同时每次 1500ms 周期心跳可自动重申透明标题栏，兜底非 DOM 属性触发的宿主覆盖。
+
+## 8. 分栏拖拽分隔条层级提升（`renderer` `version = 16`）
+
+- 将对话滚动区 `[data-testid="autoscroll-viewport"]` 与右侧栏内容区 `[data-side-panel-body]` 抬升至 `z-index: 1001`（及 Sidecar 容器 `1002`）后，原生 `z-index: 30` 的 `[data-split-sash]`（含左侧边栏与右侧边栏 8px 宽拖拽手柄 `[data-sash-handle]`）以及 `z-index: 46` 的分栏条 `[data-testid="tiling-splitter"]` 与左边缘高亮指示线会被遮挡，导致无法通过鼠标拖拽调整侧边栏宽度。
+- `renderer` `version = 16` 将 `[data-split-sash]` 与 `[data-testid="tiling-splitter"]` 抬升至 `z-index: 1003 !important`，并将 `[data-main-content-body]::before` 等左边缘悬停跟踪高亮提升至 `z-index: 1002 !important`，在不影响两侧面板显示的前提下恢复左右侧边栏与分栏拖拽交互。

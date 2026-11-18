@@ -4,7 +4,7 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
-    const version = 15;
+    const version = 16;
     const active = window[key];
     if (active?.version === version && (
         active.generation > generation ||
@@ -147,7 +147,9 @@ export async function installWallpaper(payload = {}) {
                         '[data-testid="overview-panel-host-overlay"],[data-testid="overview-panel-host-gutter"],[data-testid="overview-panel-host-sibling"],[data-testid="battle-overview-dropdown"] { z-index:1002 !important;' +
                         overviewFill + 'border-color:' + overviewOuter + ' !important; }' +
                         '[data-main-content-body]:not([data-has-browser-hole="true"]) { clip-path:none !important;box-shadow:none !important; }' +
-                        '[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }'
+                        '[data-split-fill-edge]:not([data-has-browser-hole="true"]):not([data-split-overlaid="true"]) { clip-path:none !important; }' +
+                        '[data-split-sash],[data-testid="tiling-splitter"] { z-index:1003 !important; }' +
+                        ':is(.agy-sheet[data-sheet-inset] [data-main-content-body],[data-split-panes] .agy-sheet[data-sheet-inset] [data-tiling-pane][data-edge-left],.agy-sheet[data-side-panel-maximized] [data-side-panel-body])::before { z-index:1002 !important; }'
                     );
                     currentSurfaces = signature;
                 }
