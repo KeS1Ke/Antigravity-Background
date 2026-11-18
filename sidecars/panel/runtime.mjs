@@ -73,6 +73,7 @@ export class WallpaperRuntime {
         this.enabled = enabled;
         this.hostPort = hostPort;
         this.connections = new Map();
+        this.lastLayout = null;
         this.health = { windows: 0, error: '等待 Antigravity 界面连接。' };
         this.stopped = false;
         this.owner = randomUUID();
@@ -156,6 +157,11 @@ export class WallpaperRuntime {
         if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload);
         if (value === true || value === 'OK') {
             connection.lastImageHash = needImage ? payload.imageHash : '';
+            const measured = await connection.command('Runtime.evaluate', {
+                expression: 'window.__antigravityUiRenderer?.layout',
+                returnByValue: true,
+            });
+            if (measured.result?.value) this.lastLayout = measured.result.value;
             return true;
         }
         return false;
@@ -200,9 +206,17 @@ export class WallpaperRuntime {
                 if (desired.generation !== this.generation && !this.stopped) desired = await this.readDesired();
                 await applyKeys([...live]);
             }
-            this.health = { windows: applied, error: applied ? '' : (lastError?.message || '等待 Antigravity 主窗口。') };
+            this.health = {
+                windows: applied,
+                error: applied ? '' : (lastError?.message || '等待 Antigravity 主窗口。'),
+                ...(this.lastLayout ? { layout: this.lastLayout } : {}),
+            };
         } catch (error) {
-            this.health = { windows: 0, error: error.message };
+            this.health = {
+                windows: 0,
+                error: error.message,
+                ...(this.lastLayout ? { layout: this.lastLayout } : {}),
+            };
         }
     }
 

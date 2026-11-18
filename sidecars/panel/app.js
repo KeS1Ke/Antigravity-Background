@@ -34,6 +34,7 @@
     let actionRevision = 0;
     let hostTheme;
     let hostThemeColor;
+    let hostLayout;
     let previewImage;
     let naturalWidth = 0;
     let naturalHeight = 0;
@@ -76,9 +77,14 @@
         return result;
     }
 
+    function applyRuntimeLayout(runtime) {
+        if (runtime?.layout) hostLayout = runtime.layout;
+    }
+
     function syncServerImage(result) {
         serverImage = result.settings.image;
         serverImageHash = result.imageHash;
+        applyRuntimeLayout(result.runtime);
     }
 
     async function postSettings(path, snapshot) {
@@ -162,6 +168,7 @@
             imageHash: canOmitImage ? serverImageHash : undefined,
             hasDraft,
             serverImageHash,
+            hostLayout,
             statusText: status.textContent,
             statusError: status.classList.contains('error'),
         });
@@ -171,6 +178,7 @@
         clearTimeout(previewTimer);
         previewTimer = undefined;
         previewQueued = false;
+        if (msg.hostLayout) hostLayout = msg.hostLayout;
         settings = normalize({ ...msg.settings, image: resolvedImage });
         if (msg.serverImageHash === '') {
             serverImage = '';
@@ -263,9 +271,27 @@
     const effectiveScale = () => settings.mode === 'tile' ? settings.scale : Math.max(100, settings.scale);
     const canDragWallpaper = () => ready && !busy && settings.enabled && Boolean(settings.image);
 
+    function hostMetrics() {
+        const width = hostLayout?.width || 1920;
+        const height = hostLayout?.height || 1032;
+        const embeddedPanel = window.parent !== window && window.innerWidth > 0 && window.innerWidth < width * 0.9;
+        const rightPct = embeddedPanel
+            ? +(window.innerWidth / width * 100).toFixed(2)
+            : (hostLayout?.rightPct ?? 39.01);
+        return {
+            width,
+            height,
+            titlebarPct: hostLayout?.titlebarPct ?? 3.39,
+            leftPct: hostLayout?.leftPct ?? 13.33,
+            rightPct: Math.max(0, Math.min(80, rightPct)),
+            tabStripPct: hostLayout?.tabStripPct ?? 4.01,
+        };
+    }
+
     function dragSpan(stage) {
+        const metrics = hostMetrics();
         const w = stage.clientWidth;
-        const h = stage.clientHeight;
+        const h = stage.clientHeight || (w * metrics.height / metrics.width);
         if (!w || !h) return { dx: 0, dy: 0 };
         const iw = naturalWidth || settings.imageWidth || 512;
         const ih = naturalHeight || settings.imageHeight || 512;
@@ -280,7 +306,7 @@
             w0 = Math.min(w, h * ri);
             h0 = Math.min(h, w / ri);
         } else if (settings.mode === 'tile') {
-            const ratio = w / 1600;
+            const ratio = w / metrics.width;
             w0 = iw * ratio;
             h0 = ih * ratio;
         }
@@ -359,6 +385,7 @@
                     if (previewImage === captured) {
                         naturalWidth = img.naturalWidth;
                         naturalHeight = img.naturalHeight;
+                        if (!dragModal.hidden) render();
                     }
                 };
                 img.src = captured;
@@ -371,12 +398,20 @@
             frame.style.setProperty(outerVar, (!settings.enabled || !cover || !outerColor) ? 'var(--ag-ui-border)' : mix(outerColor, alpha));
             frame.style.setProperty(blurVar, ((settings.enabled && cover ? blur : 0) * ratio) + 'px');
         };
+        const metrics = hostMetrics();
+        const aspect = metrics.width + ' / ' + metrics.height;
+        const aspectNum = String(metrics.width / metrics.height);
         const rules = [];
         for (const frame of stages) {
-            frame.dataset.draggable = String(draggable);
+            frame.style.setProperty('--ag-host-aspect', aspect);
+            frame.style.setProperty('--ag-host-aspect-num', aspectNum);
+            frame.style.setProperty('--ag-host-titlebar', metrics.titlebarPct + '%');
+            frame.style.setProperty('--ag-host-left', metrics.leftPct + '%');
+            frame.style.setProperty('--ag-host-right', metrics.rightPct + '%');
+            frame.style.setProperty('--ag-host-tab-strip', metrics.tabStripPct + '%');
             const width = frame.clientWidth;
             if (!width) continue;
-            const ratio = width / 1600;
+            const ratio = width / metrics.width;
             frame.style.setProperty('--preview-sidebar', mix('var(--ag-ui-page)', sidebarAlpha));
             frame.style.setProperty('--preview-sidebar-blur', ((settings.enabled && settings.sidebarCover ? settings.sidebarBlur : 0) * ratio) + 'px');
             setSurfacePreview(frame, ratio, settings.composerCover, settings.composerOpacity, settings.composerBlur, settings.composerOuterColor, settings.composerInnerColor, 'var(--ag-ui-page)', '--preview-outer', '--preview-inner', '--preview-composer-blur');
@@ -385,8 +420,13 @@
             const css = wallpaperStyle({ ...settings, blur: settings.blur * ratio, imageWidth: settings.imageWidth * ratio, imageHeight: settings.imageHeight * ratio }, 'var(--image)');
             if (css) rules.push('#' + frame.id + ' .wallpaper {' + css + ' position: absolute; }');
         }
+        dragStage.dataset.draggable = String(draggable);
         previewSheet.replaceSync(rules.join('\n'));
-        dragPreviewMeta.textContent = '水平 ' + settings.x + '% · 垂直 ' + settings.y + '% · 缩放 ' + effectiveScale() + '%';
+        const span = !dragModal.hidden ? dragSpan(dragStage) : null;
+        const lockedHint = span && (Math.abs(span.dx) <= 0.5 || Math.abs(span.dy) <= 0.5)
+            ? ' · 滚轮放大可多向拖动'
+            : '';
+        dragPreviewMeta.textContent = '水平 ' + settings.x + '% · 垂直 ' + settings.y + '% · 缩放 ' + effectiveScale() + '%' + lockedHint;
         applyTheme();
     }
 
@@ -577,7 +617,7 @@
             }
         }, { passive: false });
     }
-    for (const stage of stages) bindInteractiveStage(stage);
+    bindInteractiveStage(dragStage);
     openDragPreview.addEventListener('click', () => {
         if (!canDragWallpaper()) return;
         dragModal.hidden = false;
@@ -645,6 +685,7 @@
             serverImage = settings.image;
             serverImageHash = result.imageHash;
             hasDraft = result.hasDraft;
+            applyRuntimeLayout(result.runtime);
             revision++;
             message('已还原已保存设置。' + (result.runtime.error ? ' 背景连接提示：' + result.runtime.error : ''));
             synced = true;
@@ -703,6 +744,7 @@
             if (!initial && (token !== syncToken || revision !== startRevision || saving || previewInFlight || previewQueued || busy || previewTimer)) {
                 return;
             }
+            applyRuntimeLayout(result.runtime);
             const stateChanged = initial || !sameValues(settings, nextSettings) || hasDraft !== nextHasDraft ||
                 serverImageHash !== result.imageHash;
             settings = nextSettings;

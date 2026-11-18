@@ -4,7 +4,7 @@ export async function installWallpaper(payload = {}) {
     if (window !== window.top || !window.electronNative || !window.nativeStorage) return false;
     const { enabled = false, css = '', image, imageHash = '', owner = '', generation = 0, surfaces = {} } = payload;
     const key = '__antigravityUiRenderer';
-    const version = 17;
+    const version = 18;
     const active = window[key];
     if (active?.version === version && (
         active.generation > generation ||
@@ -86,9 +86,28 @@ export async function installWallpaper(payload = {}) {
             empty: false,
             hasCss: false,
             imageHash: '',
+            layout: null,
             titlebar: null,
             titlebarAt: 0,
+            measureLayout() {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                if (w <= 0 || h <= 0) return;
+                const inset = document.querySelector('.agy-inset-shell')?.getBoundingClientRect();
+                const leftNav = document.querySelector('.agy-inset-shell > [data-split-root] > :first-child')?.getBoundingClientRect();
+                const sidePane = (document.querySelector('[data-side-panel-body]') || document.querySelector('.agy-sheet > .outline-none > :nth-child(3)'))?.getBoundingClientRect();
+                const strip = document.querySelector('[data-side-panel-strip]')?.getBoundingClientRect();
+                state.layout = {
+                    width: w,
+                    height: h,
+                    titlebarPct: inset && inset.top > 0 ? +(inset.top / h * 100).toFixed(2) : 3.39,
+                    leftPct: leftNav && leftNav.width >= 0 ? +(leftNav.width / w * 100).toFixed(2) : 13.33,
+                    rightPct: sidePane && sidePane.width >= 0 ? +(sidePane.width / w * 100).toFixed(2) : 0,
+                    tabStripPct: strip && strip.height > 0 ? +(strip.height / h * 100).toFixed(2) : 3.88,
+                };
+            },
             update({ css: nextCss, image: nextImage, imageHash: nextImageHash, surfaces: options }) {
+                state.measureLayout();
                 state.hasCss = Boolean(nextCss);
                 if (nextCss) {
                     if (nextImage !== undefined && (nextImageHash !== state.imageHash || !imageEl.style.getPropertyValue('--ag-ui-image'))) {

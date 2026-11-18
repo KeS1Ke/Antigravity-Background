@@ -460,13 +460,33 @@ try {
     assert.equal(invalid.status, 400);
     assert.equal(JSON.parse(await readFile(join(data, 'settings.json'), 'utf8')).opacity, 79);
 
-    // Drag preview modal, inline stage drag, wheel zoom & edge-cover boundary protection
+    // Drag preview modal only: inline #preview stays read-only & matches host aspect/layout
     await panelClient.command('Page.bringToFront');
+    const hostDims = await evaluate('({w:window.innerWidth,h:window.innerHeight})');
     await panel("(()=>{document.querySelector('[data-mode=fill]').click();document.querySelector('#open-drag-preview').closest('details').open=true;})()");
     await until(() => panel("document.querySelector('#wallpaper-scale').min==='100'&&!document.querySelector('#open-drag-preview').disabled"), 'Drag preview button and scale floor did not initialize');
+    const previewLayoutCheck = await panel("(()=>{const p=document.querySelector('#preview');return{draggable:p.dataset.draggable,hasBadge:Boolean(p.querySelector('.drag-stage-badge')),aspect:p.style.getPropertyValue('--ag-host-aspect').trim()}})()");
+    assert.equal(previewLayoutCheck.draggable, undefined, 'Inline #preview must not be draggable');
+    assert.equal(previewLayoutCheck.hasBadge, false, 'Inline #preview must not show drag badge');
+    assert.equal(previewLayoutCheck.aspect, `${hostDims.w} / ${hostDims.h}`, 'Inline #preview aspect ratio must match live host window');
+    const inlinePoint = await panel("(()=>{const el=document.querySelector('#preview');el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()");
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: inlinePoint.x, y: inlinePoint.y, deltaX: 0, deltaY: -120 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x, y: inlinePoint.y });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mousePressed', x: inlinePoint.x, y: inlinePoint.y, button: 'left', clickCount: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x + 25, y: inlinePoint.y + 20, button: 'left', buttons: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: inlinePoint.x + 25, y: inlinePoint.y + 20, button: 'left', clickCount: 1 });
+    await delay(50);
+    assert.deepEqual(
+        await panel("[document.querySelector('#wallpaper-x').value,document.querySelector('#wallpaper-y').value,document.querySelector('#wallpaper-scale').value]"),
+        ['50', '50', '100'],
+        'Wheel/drag on inline #preview must not alter x, y, or scale'
+    );
+
     assert.equal(await panel("document.querySelector('#open-drag-preview').closest('details').open"), true);
     await panel("document.querySelector('#open-drag-preview').click()");
     await until(() => panel("!document.querySelector('#drag-preview-modal').hidden&&document.querySelector('#drag-preview-stage').clientWidth>0"), 'Drag preview modal did not open');
+    assert.equal(await panel("document.querySelector('#drag-preview-stage').style.getPropertyValue('--ag-host-aspect').trim()"), `${hostDims.w} / ${hostDims.h}`);
+    assert.equal(await panel("document.querySelector('#drag-preview-stage').dataset.draggable"), 'true');
     await panel("(()=>{const m=document.querySelector('#drag-preview-mask');m.click();})()");
     assert.equal(await panel("document.querySelector('#drag-preview-stage').dataset.hideMask"), 'true');
     await panel("(()=>{const m=document.querySelector('#drag-preview-mask');m.click();})()");
@@ -506,17 +526,6 @@ try {
     assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '100');
     await panel("document.querySelector('#close-drag-preview').click()");
     assert.equal(await panel("document.querySelector('#drag-preview-modal').hidden"), true);
-
-    // Inline top #preview stage also supports drag/wheel
-    const inlinePoint = await panel("(()=>{const el=document.querySelector('#preview');el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()");
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: inlinePoint.x, y: inlinePoint.y, deltaX: 0, deltaY: -120 });
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: inlinePoint.x, y: inlinePoint.y, deltaX: 0, deltaY: -120 });
-    assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '110');
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x, y: inlinePoint.y });
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mousePressed', x: inlinePoint.x, y: inlinePoint.y, button: 'left', clickCount: 1 });
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x + 15, y: inlinePoint.y + 10, button: 'left', buttons: 1 });
-    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: inlinePoint.x + 15, y: inlinePoint.y + 10, button: 'left', clickCount: 1 });
-    assert(await panel("Number(document.querySelector('#wallpaper-x').value)<78&&Number(document.querySelector('#wallpaper-y').value)<50"), 'Inline #preview stage drag did not update x/y');
 
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
@@ -953,7 +962,9 @@ try {
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '1');
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
-    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 17);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
+    assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
+    assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{
         const h=document.querySelector('[data-testid="side-panel-sash"]');
         const b=h.getBoundingClientRect();
