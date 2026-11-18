@@ -67,3 +67,8 @@
 - **标题栏控制区颜色标准化**：`normalizeColor` / `shellColors` 将 `color(srgb ...)` 转换为标准 `rgb(...)`（`0..255` 整数）后再传给 `setTitleBarOverlay`，保证关闭壁纸（`!hasCss`）或卸载（`dispose()`）时在强对比度等 `color-mix` 主题下正确还原不透明底色。
 - **浏览器孔洞与分隔条背景透明**：为侧栏表面规则补充 `:not([data-has-browser-hole="true"])` 并显式声明 `[data-side-panel-body][data-has-browser-hole="true"]` 透明且无 `backdrop-filter`，同时置空 `z-index: 1003` 的 `[data-split-sash]`/`[data-testid="tiling-splitter"]` 背景，避免内置浏览器降级或开启孔洞时被底色、模糊或实心分割线遮挡。
 - **主题签名过滤与冗余校验精简**：`MutationObserver` 同时监听 `documentElement` 与 `body`（含 `data-agy-theme`），仅在 `themeSignature()` 实际变化时调用 `syncTitlebar(true)` 过滤 `style.transition` 等过渡噪音；`main.mjs` 移除 `resolveImage` 中针对 `SidecarApp` 必然保证为对象的冗余非对象守卫；`app.js` 缓存 `hostThemeColor` 并直接解析 `rgb`/`color(srgb ...)` 替代每次新建 `<canvas>`。
+
+## 10. 交互式背景拖拽预览与边界保护
+
+- **全铺边界保护**：`plugin/appearance.cjs` 的 `wallpaperStyle()` 对非 `tile` 模式启用 `effectiveScale = Math.max(100, scale)`；`sidecars/panel/app.js` 同步将非 `tile` 模式下 `#wallpaper-scale` 滑块下限及滚轮下限锁定为 `100%`，防止缩放小于界面造成未覆盖边界；`x`/`y` 拖拽计算（`dragSpan(stage)`）按 `fill`/`stretch`/`fit`/`tile` 实时可移动余量 `dx = w - s * w0`、`dy = h - s * h0` 线性映射并严格钳制于 `[0%, 100%]`，超出界面部分可在边界内自由平移、贴边即止。
+- **双预览画布与拖拽弹窗**：顶部 `#preview` 卡片与「壁纸调整」内「打开预览」弹出的大尺寸 `#drag-preview-modal` 共用同一套 `bindInteractiveStage` 指针拖拽/滚轮缩放交互与实时预览管线；弹窗支持切换「显示界面」开关以对照纯壁纸或界面遮罩，并保留 `7` 张 `<details>` 与 `13` 根 `<input type="range">` 既有契约不变。

@@ -75,9 +75,10 @@
 
     function wallpaperStyle({ x, y, scale, blur, opacity, brightness, fade, image, enabled, mode, imageWidth, imageHeight }, imageSource = 'url("' + image + '")') {
         if (!enabled || !image || opacity === 0) return '';
+        const effectiveScale = mode === 'tile' ? scale : Math.max(100, scale);
         const backgroundSize = {
             fill: 'cover', stretch: '100% 100%', fit: 'contain',
-            tile: (imageWidth * scale / 100) + 'px ' + (imageHeight * scale / 100) + 'px',
+            tile: (imageWidth * effectiveScale / 100) + 'px ' + (imageHeight * effectiveScale / 100) + 'px',
         }[mode];
         const fadeMask = fade > 0 ? `mask-image: linear-gradient(to right, transparent, black ${fade}%);` : '';
         // A full-width transparent canvas makes the fade independent of the image's width.
@@ -91,7 +92,7 @@
             background-repeat: ${mode === 'tile' ? 'repeat' : 'no-repeat'};
             background-position: ${x}% ${y}%;
             background-size: ${backgroundSize};
-            transform: scale(${mode === 'tile' ? 1 : scale / 100});
+            transform: scale(${mode === 'tile' ? 1 : effectiveScale / 100});
             transform-origin: ${x}% ${y}%;
             opacity: ${opacity / 100};
             filter: blur(${blur}px) brightness(${brightness}%);

@@ -32,6 +32,7 @@
                     </div>
                     <div class="wallpaper"></div>
                 </div>
+                <span class="drag-stage-badge">拖拽调整</span>
                 <span id="empty">选择一张背景图片</span>
             </div>
             <div class="image-actions">
@@ -53,7 +54,7 @@
                 </details>
                 <details class="card adjustments">
                     <summary><h2>壁纸调整</h2></summary>
-                    <div class="section-label reset-row"><span></span><button id="reset" type="button" class="text-button" disabled>重置</button></div>
+                    <div class="section-label reset-row"><button id="open-drag-preview" type="button" class="open-preview-button" disabled>打开预览</button><button id="reset" type="button" class="text-button" disabled>重置</button></div>
                     <div id="controls"></div>
                 </details>
             </div>
@@ -99,5 +100,36 @@
             <button id="save" class="primary" type="button" disabled>保存设置</button>
         </div>
     </footer>
+    <div id="drag-preview-modal" class="drag-modal" role="dialog" aria-modal="true" aria-label="背景拖拽调整预览" hidden>
+        <div class="drag-modal-card">
+            <div class="drag-modal-header">
+                <div>
+                    <h2>拖拽调整背景</h2>
+                    <p id="drag-preview-meta" class="subtitle">拖拽移动 · 滚轮缩放</p>
+                </div>
+                <div class="drag-modal-actions">
+                    <label class="switch"><input id="drag-preview-mask" type="checkbox" checked><span>显示界面</span></label>
+                    <button id="drag-preview-reset" type="button" class="text-button">重置位置</button>
+                    <button id="close-drag-preview" type="button" class="primary">完成</button>
+                </div>
+            </div>
+            <div id="drag-preview-stage" class="preview drag-stage" role="application" aria-label="可拖拽壁纸预览画布">
+                <div class="sample-window" aria-hidden="true">
+                    <div class="sample-titlebar"><span>Antigravity</span><span>─　□　×</span></div>
+                    <div class="sample-workspace">
+                        <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><i></i><i></i></div>
+                        <div class="sample-main">
+                            <div class="sample-overview"><b>Overview</b><span>Review</span><span>Files</span></div>
+                            <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><span>调整对话框底色</span></div><i></i><i></i><i></i></div>
+                            <div class="sample-composer"><div class="sample-composer-inner"><span>输入消息…</span><span>＋　 Gemini <em>↑</em></span></div></div>
+                        </div>
+                        <div class="sample-panel"><div class="sample-tabs">README.md　＋</div><div class="sample-panel-body"><b>README.md</b><i></i><i></i><i></i><span>Review</span><span>Open File</span><span>Terminal</span><span>Browser</span></div></div>
+                    </div>
+                    <div class="wallpaper"></div>
+                </div>
+                <span class="drag-stage-badge">拖拽移动 · 滚轮缩放</span>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

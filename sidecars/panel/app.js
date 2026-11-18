@@ -10,7 +10,14 @@
     const modes = [...document.querySelectorAll('[data-mode]')];
     const dialogTargets = [...document.querySelectorAll('[data-dialog-target]')];
     const names = { fill: '填充', stretch: '拉伸', fit: '适应', tile: '平铺' };
-    const preview = find('.wallpaper');
+    const stages = ['#preview', '#drag-preview-stage'].map(find);
+    const dragModal = find('#drag-preview-modal');
+    const openDragPreview = find('#open-drag-preview');
+    const closeDragPreview = find('#close-drag-preview');
+    const dragPreviewMask = find('#drag-preview-mask');
+    const dragPreviewReset = find('#drag-preview-reset');
+    const dragPreviewMeta = find('#drag-preview-meta');
+    const dragStage = find('#drag-preview-stage');
     const previewSheet = new CSSStyleSheet();
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, previewSheet];
     if (window.parent !== window) document.documentElement.dataset.embedded = 'true';
@@ -28,6 +35,8 @@
     let hostTheme;
     let hostThemeColor;
     let previewImage;
+    let naturalWidth = 0;
+    let naturalHeight = 0;
     let serverImage;
     let serverImageHash;
     let previewTimer;
@@ -250,9 +259,38 @@
         { inputId: 'dialogInnerColor', resetSelector: '[data-reset-dialog-color="inner"]', key: () => activeDialogTarget + 'InnerColor', cover: () => settings[activeDialogTarget + 'Cover'] },
     ];
 
+    const minScale = () => settings.mode === 'tile' ? controls.scale.min : 100;
+    const effectiveScale = () => settings.mode === 'tile' ? settings.scale : Math.max(100, settings.scale);
+    const canDragWallpaper = () => ready && !busy && settings.enabled && Boolean(settings.image);
+
+    function dragSpan(stage) {
+        const w = stage.clientWidth;
+        const h = stage.clientHeight;
+        if (!w || !h) return { dx: 0, dy: 0 };
+        const iw = naturalWidth || settings.imageWidth || 512;
+        const ih = naturalHeight || settings.imageHeight || 512;
+        const ri = iw / ih;
+        const s = effectiveScale() / 100;
+        let w0 = w;
+        let h0 = h;
+        if (settings.mode === 'fill') {
+            w0 = Math.max(w, h * ri);
+            h0 = Math.max(h, w / ri);
+        } else if (settings.mode === 'fit') {
+            w0 = Math.min(w, h * ri);
+            h0 = Math.min(h, w / ri);
+        } else if (settings.mode === 'tile') {
+            const ratio = w / 1600;
+            w0 = iw * ratio;
+            h0 = ih * ratio;
+        }
+        return { dx: w - s * w0, dy: h - s * h0 };
+    }
+
     function render() {
         const locked = !ready || busy;
         const actionLocked = locked || saving;
+        const draggable = canDragWallpaper();
         const enabled = find('#enabled');
         const theme = find('#theme');
         const sidebarCover = find('#sidebar-cover');
@@ -289,6 +327,10 @@
         imageInput.disabled = actionLocked;
         find('#remove').disabled = actionLocked || !settings.image;
         find('#reset').disabled = locked;
+        openDragPreview.disabled = locked || !settings.enabled || !settings.image;
+        dragPreviewReset.disabled = locked;
+        dragPreviewMask.disabled = locked;
+        if (!dragModal.hidden && (!settings.enabled || !settings.image)) closeModal();
         discard.disabled = actionLocked || !hasDraft;
         save.disabled = actionLocked;
         find('#mode-label').textContent = names[settings.mode];
@@ -297,7 +339,8 @@
             button.disabled = locked;
             button.setAttribute('aria-pressed', String(button.dataset.mode === settings.mode));
         }
-        for (const { input, output, unit, getValue, isDisabled } of sliders) {
+        for (const { id, input, output, unit, getValue, isDisabled } of sliders) {
+            if (id === 'scale') input.min = minScale();
             const value = getValue();
             input.value = value;
             output.value = value + unit;
@@ -305,28 +348,50 @@
         }
         if (previewImage !== settings.image) {
             previewImage = settings.image;
-            preview.style.setProperty('--image', previewImage ? 'url("' + previewImage + '")' : 'none');
+            const bg = previewImage ? 'url("' + previewImage + '")' : 'none';
+            for (const wp of document.querySelectorAll('.wallpaper')) wp.style.setProperty('--image', bg);
+            naturalWidth = 0;
+            naturalHeight = 0;
+            if (previewImage) {
+                const captured = previewImage;
+                const img = new Image();
+                img.onload = () => {
+                    if (previewImage === captured) {
+                        naturalWidth = img.naturalWidth;
+                        naturalHeight = img.naturalHeight;
+                    }
+                };
+                img.src = captured;
+            }
         }
-        const frame = find('#preview');
-        const ratio = frame.clientWidth / 1600;
         const mix = (color, alpha) => 'color-mix(in srgb,' + color + ' ' + alpha + '%,transparent)';
-        const setSurfacePreview = (cover, opacity, blur, outerColor, innerColor, defaultInner, outerVar, innerVar, blurVar) => {
+        const setSurfacePreview = (frame, ratio, cover, opacity, blur, outerColor, innerColor, defaultInner, outerVar, innerVar, blurVar) => {
             const alpha = !settings.enabled ? 100 : (cover ? opacity : 0);
             frame.style.setProperty(innerVar, mix((settings.enabled && innerColor) || defaultInner, alpha));
             frame.style.setProperty(outerVar, (!settings.enabled || !cover || !outerColor) ? 'var(--ag-ui-border)' : mix(outerColor, alpha));
             frame.style.setProperty(blurVar, ((settings.enabled && cover ? blur : 0) * ratio) + 'px');
         };
-        frame.style.setProperty('--preview-sidebar', mix('var(--ag-ui-page)', sidebarAlpha));
-        frame.style.setProperty('--preview-sidebar-blur', ((settings.enabled && settings.sidebarCover ? settings.sidebarBlur : 0) * ratio) + 'px');
-        setSurfacePreview(settings.composerCover, settings.composerOpacity, settings.composerBlur, settings.composerOuterColor, settings.composerInnerColor, 'var(--ag-ui-page)', '--preview-outer', '--preview-inner', '--preview-composer-blur');
-        setSurfacePreview(settings.bubbleCover, settings.bubbleOpacity, settings.bubbleBlur, settings.bubbleOuterColor, settings.bubbleInnerColor, 'var(--ag-ui-card)', '--preview-bubble-outer', '--preview-bubble-inner', '--preview-bubble-blur');
-        setSurfacePreview(settings.overviewCover, settings.overviewOpacity, settings.overviewBlur, settings.overviewOuterColor, settings.overviewInnerColor, 'var(--ag-ui-card)', '--preview-overview-outer', '--preview-overview-inner', '--preview-overview-blur');
-        const css = wallpaperStyle({ ...settings, blur: settings.blur * ratio, imageWidth: settings.imageWidth * ratio, imageHeight: settings.imageHeight * ratio }, 'var(--image)');
-        previewSheet.replaceSync(css ? '.wallpaper {' + css + ' position: absolute; }' : '');
+        const rules = [];
+        for (const frame of stages) {
+            frame.dataset.draggable = String(draggable);
+            const width = frame.clientWidth;
+            if (!width) continue;
+            const ratio = width / 1600;
+            frame.style.setProperty('--preview-sidebar', mix('var(--ag-ui-page)', sidebarAlpha));
+            frame.style.setProperty('--preview-sidebar-blur', ((settings.enabled && settings.sidebarCover ? settings.sidebarBlur : 0) * ratio) + 'px');
+            setSurfacePreview(frame, ratio, settings.composerCover, settings.composerOpacity, settings.composerBlur, settings.composerOuterColor, settings.composerInnerColor, 'var(--ag-ui-page)', '--preview-outer', '--preview-inner', '--preview-composer-blur');
+            setSurfacePreview(frame, ratio, settings.bubbleCover, settings.bubbleOpacity, settings.bubbleBlur, settings.bubbleOuterColor, settings.bubbleInnerColor, 'var(--ag-ui-card)', '--preview-bubble-outer', '--preview-bubble-inner', '--preview-bubble-blur');
+            setSurfacePreview(frame, ratio, settings.overviewCover, settings.overviewOpacity, settings.overviewBlur, settings.overviewOuterColor, settings.overviewInnerColor, 'var(--ag-ui-card)', '--preview-overview-outer', '--preview-overview-inner', '--preview-overview-blur');
+            const css = wallpaperStyle({ ...settings, blur: settings.blur * ratio, imageWidth: settings.imageWidth * ratio, imageHeight: settings.imageHeight * ratio }, 'var(--image)');
+            if (css) rules.push('#' + frame.id + ' .wallpaper {' + css + ' position: absolute; }');
+        }
+        previewSheet.replaceSync(rules.join('\n'));
+        dragPreviewMeta.textContent = '水平 ' + settings.x + '% · 垂直 ' + settings.y + '% · 缩放 ' + effectiveScale() + '%';
         applyTheme();
     }
 
-    new ResizeObserver(render).observe(find('#preview'));
+    const stageObserver = new ResizeObserver(render);
+    for (const stage of stages) stageObserver.observe(stage);
 
     function changed() {
         if (settings.overviewSync) syncOverviewFromBubble();
@@ -357,7 +422,7 @@
         caption.append(label, output);
         row.append(caption, input);
         find(container).append(row);
-        sliders.push({ input, output, unit: option.unit, getValue, isDisabled });
+        sliders.push({ id, input, output, unit: option.unit, getValue, isDisabled });
     }
 
     for (const [key, option] of Object.entries(controls)) {
@@ -365,8 +430,11 @@
             id: key,
             option,
             container: '#controls',
-            getValue: () => settings[key],
-            onInput: value => { settings[key] = value; changed(); },
+            getValue: () => key === 'scale' ? effectiveScale() : settings[key],
+            onInput: value => {
+                settings[key] = key === 'scale' ? Math.max(minScale(), value) : value;
+                changed();
+            },
             isDisabled: () => false,
         });
     }
@@ -447,6 +515,88 @@
     find('#remove').addEventListener('click', () => { settings.image = ''; changed(); });
     find('#reset').addEventListener('click', () => {
         Object.assign(settings, defaults, { mode: 'fit', x: 50, y: 50, scale: 100 });
+        changed();
+    });
+    function closeModal() {
+        if (dragModal.hidden) return;
+        const restoreFocus = dragModal.contains(document.activeElement);
+        dragModal.hidden = true;
+        for (const stage of stages) delete stage.dataset.dragging;
+        if (restoreFocus && !openDragPreview.disabled) openDragPreview.focus();
+    }
+    function bindInteractiveStage(stage) {
+        let drag;
+        const stopDrag = () => {
+            if (!drag) return;
+            drag = undefined;
+            delete stage.dataset.dragging;
+        };
+        stage.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || !canDragWallpaper()) return;
+            event.preventDefault();
+            stage.setPointerCapture?.(event.pointerId);
+            stage.dataset.dragging = 'true';
+            drag = {
+                pointerId: event.pointerId,
+                startClientX: event.clientX,
+                startClientY: event.clientY,
+                startX: settings.x,
+                startY: settings.y,
+            };
+        });
+        stage.addEventListener('pointermove', event => {
+            if (!drag || event.pointerId !== drag.pointerId) return;
+            if (!canDragWallpaper()) {
+                stopDrag();
+                return;
+            }
+            const { dx, dy } = dragSpan(stage);
+            const deltaX = event.clientX - drag.startClientX;
+            const deltaY = event.clientY - drag.startClientY;
+            const nextX = Math.abs(dx) > 0.5 ? Math.min(100, Math.max(0, Math.round(drag.startX + (deltaX / dx) * 100))) : drag.startX;
+            const nextY = Math.abs(dy) > 0.5 ? Math.min(100, Math.max(0, Math.round(drag.startY + (deltaY / dy) * 100))) : drag.startY;
+            if (nextX !== settings.x || nextY !== settings.y) {
+                settings.x = nextX;
+                settings.y = nextY;
+                changed();
+            }
+        });
+        stage.addEventListener('pointerup', event => {
+            if (drag && event.pointerId === drag.pointerId) stopDrag();
+        });
+        stage.addEventListener('pointercancel', stopDrag);
+        stage.addEventListener('lostpointercapture', stopDrag);
+        stage.addEventListener('wheel', event => {
+            if (!canDragWallpaper() || !event.deltaY) return;
+            event.preventDefault();
+            const step = event.deltaY < 0 ? 5 : -5;
+            const nextScale = Math.min(controls.scale.max, Math.max(minScale(), effectiveScale() + step));
+            if (nextScale !== effectiveScale()) {
+                settings.scale = nextScale;
+                changed();
+            }
+        }, { passive: false });
+    }
+    for (const stage of stages) bindInteractiveStage(stage);
+    openDragPreview.addEventListener('click', () => {
+        if (!canDragWallpaper()) return;
+        dragModal.hidden = false;
+        render();
+    });
+    closeDragPreview.addEventListener('click', closeModal);
+    dragModal.addEventListener('click', event => {
+        if (event.target === dragModal) closeModal();
+    });
+    window.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !dragModal.hidden) closeModal();
+    });
+    dragPreviewMask.addEventListener('change', event => {
+        dragStage.dataset.hideMask = String(!event.target.checked);
+    });
+    dragPreviewReset.addEventListener('click', () => {
+        settings.x = defaults.x;
+        settings.y = defaults.y;
+        settings.scale = defaults.scale;
         changed();
     });
     imageInput.addEventListener('change', async () => {

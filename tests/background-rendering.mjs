@@ -48,6 +48,10 @@ assert.deepEqual(
     [false, 42, false, 75, 12, '#445566', '#778899']
 );
 assert.throws(() => appearance.normalize(null), /背景设置无效/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 50 }), /transform:\s*scale\(1\)/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'stretch', scale: 40 }), /transform:\s*scale\(1\)/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fit', scale: 40 }), /transform:\s*scale\(1\)/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50 }), /background-size:\s*256px 256px/);
 assert.throws(() => appearance.normalize({ composerOuterColor: 'red; background:url(test)' }), /颜色/);
 assert.throws(() => appearance.normalize({ composerInnerColor: 123 }), /颜色/);
 assert.throws(() => appearance.normalize({ bubbleOuterColor: 'red' }), /颜色/);
@@ -455,6 +459,67 @@ try {
     });
     assert.equal(invalid.status, 400);
     assert.equal(JSON.parse(await readFile(join(data, 'settings.json'), 'utf8')).opacity, 79);
+
+    // Drag preview modal, inline stage drag, wheel zoom & edge-cover boundary protection
+    await panelClient.command('Page.bringToFront');
+    await panel("(()=>{document.querySelector('[data-mode=fill]').click();document.querySelector('#open-drag-preview').closest('details').open=true;})()");
+    await until(() => panel("document.querySelector('#wallpaper-scale').min==='100'&&!document.querySelector('#open-drag-preview').disabled"), 'Drag preview button and scale floor did not initialize');
+    assert.equal(await panel("document.querySelector('#open-drag-preview').closest('details').open"), true);
+    await panel("document.querySelector('#open-drag-preview').click()");
+    await until(() => panel("!document.querySelector('#drag-preview-modal').hidden&&document.querySelector('#drag-preview-stage').clientWidth>0"), 'Drag preview modal did not open');
+    await panel("(()=>{const m=document.querySelector('#drag-preview-mask');m.click();})()");
+    assert.equal(await panel("document.querySelector('#drag-preview-stage').dataset.hideMask"), 'true');
+    await panel("(()=>{const m=document.querySelector('#drag-preview-mask');m.click();})()");
+    assert.equal(await panel("document.querySelector('#drag-preview-stage').dataset.hideMask"), 'false');
+    const stagePoint = await panel("(()=>{const r=document.querySelector('#drag-preview-stage').getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()");
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: stagePoint.x, y: stagePoint.y, deltaX: 0, deltaY: 120 });
+    await delay(80);
+    assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '100', 'Wheel zoom out must clamp at 100% minimum to protect viewport coverage');
+    for (let i = 0; i < 4; i++) {
+        await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: stagePoint.x, y: stagePoint.y, deltaX: 0, deltaY: -120 });
+    }
+    await until(() => panel("document.querySelector('#wallpaper-scale').value==='120'"), 'Wheel zoom in did not reach 120%');
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stagePoint.x, y: stagePoint.y });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mousePressed', x: stagePoint.x, y: stagePoint.y, button: 'left', clickCount: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stagePoint.x + 40, y: stagePoint.y + 25, button: 'left', buttons: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: stagePoint.x + 40, y: stagePoint.y + 25, button: 'left', clickCount: 1 });
+    const dragged = await panel("({x:Number(document.querySelector('#wallpaper-x').value),y:Number(document.querySelector('#wallpaper-y').value)})");
+    assert(dragged.x < 50 && dragged.y < 50, `Expected drag right/down to shift x,y below 50%, got (${dragged.x}, ${dragged.y})`);
+    await until(async () => await evaluate(`getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).backgroundPosition`) === `${dragged.x}% ${dragged.y}%`, 'Host backgroundPosition did not sync after preview drag');
+
+    // Boundary clamp: dragging far past edges clamps within [0%, 100%] and keeps host image covering entire viewport
+    for (const [dx, dy, expected] of [[-1200, -1200, '100'], [1200, 1200, '0']]) {
+        await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stagePoint.x, y: stagePoint.y });
+        await panelClient.command('Input.dispatchMouseEvent', { type: 'mousePressed', x: stagePoint.x, y: stagePoint.y, button: 'left', clickCount: 1 });
+        await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stagePoint.x + dx, y: stagePoint.y + dy, button: 'left', buttons: 1 });
+        await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: stagePoint.x + dx, y: stagePoint.y + dy, button: 'left', clickCount: 1 });
+        assert.equal(await panel("document.querySelector('#wallpaper-x').value"), expected);
+        assert.equal(await panel("document.querySelector('#wallpaper-y').value"), expected);
+        await until(async () => await evaluate(`getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).backgroundPosition`) === `${expected}% ${expected}%`, 'Clamped position did not sync to host');
+        const coverBounds = await evaluate("(()=>{const layer=document.querySelector('#antigravity-ui-background');const lr=layer.getBoundingClientRect();const r=window.testRoots.get(layer).querySelector('.image').getBoundingClientRect();return{left:r.left,top:r.top,right:r.right,bottom:r.bottom,l:lr.left,t:lr.top,w:lr.right,h:lr.bottom}})()");
+        assert(coverBounds.left <= coverBounds.l + 0.5 && coverBounds.top <= coverBounds.t + 0.5 && coverBounds.right >= coverBounds.w - 0.5 && coverBounds.bottom >= coverBounds.h - 0.5, 'Viewport border uncovered after drag clamp: ' + JSON.stringify(coverBounds));
+    }
+
+    await panel("document.querySelector('#drag-preview-reset').click()");
+    assert.equal(await panel("document.querySelector('#wallpaper-x').value"), '78');
+    assert.equal(await panel("document.querySelector('#wallpaper-y').value"), '50');
+    assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '100');
+    await panel("document.querySelector('#close-drag-preview').click()");
+    assert.equal(await panel("document.querySelector('#drag-preview-modal').hidden"), true);
+
+    // Inline top #preview stage also supports drag/wheel
+    const inlinePoint = await panel("(()=>{const el=document.querySelector('#preview');el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()");
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: inlinePoint.x, y: inlinePoint.y, deltaX: 0, deltaY: -120 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseWheel', x: inlinePoint.x, y: inlinePoint.y, deltaX: 0, deltaY: -120 });
+    assert.equal(await panel("document.querySelector('#wallpaper-scale').value"), '110');
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x, y: inlinePoint.y });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mousePressed', x: inlinePoint.x, y: inlinePoint.y, button: 'left', clickCount: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: inlinePoint.x + 15, y: inlinePoint.y + 10, button: 'left', buttons: 1 });
+    await panelClient.command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: inlinePoint.x + 15, y: inlinePoint.y + 10, button: 'left', clickCount: 1 });
+    assert(await panel("Number(document.querySelector('#wallpaper-x').value)<78&&Number(document.querySelector('#wallpaper-y').value)<50"), 'Inline #preview stage drag did not update x/y');
+
+    await panel("document.querySelector('#discard').click()");
+    await waitDiscard();
 
     // Q4 + Q5: Embedded iframe dark CSS var detection (color(srgb 0.115 0.111 0.111)) and transparent body/footer
     const embedTarget = await fetch('http://127.0.0.1:' + port + '/json/new?' + encodeURIComponent(embedUrl), { method: 'PUT' }).then(r => r.json());
