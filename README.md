@@ -17,7 +17,7 @@
 
 ---
 
-**Antigravity Background**（插件名 `antigravity-ui`）通过 Antigravity 官方 Sidecar 扩展机制在右侧辅助面板提供实时可视化设置界面，支持自定义整窗壁纸、多种裁剪/平铺布局、交互式拖拽预览、**侧边栏 / 对话框 / Overview 面板 / 输入框**的独立透明度与毛玻璃模糊定制，以及深浅主题自适应与双保险跨重启持久化。
+**Antigravity Background**（插件名 `antigravity-ui`）通过 Antigravity 官方 Sidecar 扩展机制在右侧辅助面板提供实时可视化设置界面，支持自定义整窗壁纸、多种裁剪/平铺布局、交互式拖拽预览、**左侧边栏 / 右侧面板 / Overview 面板**透明与毛玻璃定制、**输入框与对话框**同步的原版双层立体分层级感与外内配色，以及深浅主题自适应与双保险跨重启持久化。
 
 ## 效果展示
 
@@ -34,12 +34,12 @@
     <td width="50%" align="center">
       <img src="docs/images/settings-panel-dark.png" alt="深色主题设置面板" />
       <br />
-      <sub><b>深色主题设置页</b> · 全部 7 组折叠卡（含 Overview 联动同步）</sub>
+      <sub><b>深色主题设置页</b> · 全部 7 组折叠卡（含输入框与对话框绑定 &amp; 独立 Overview 面板）</sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/images/settings-panel-light.png" alt="浅色主题设置面板" />
       <br />
-      <sub><b>浅色主题设置页</b> · 取消同步后独立切换「对话框 / Overview 面板」配色</sub>
+      <sub><b>浅色主题设置页</b> · 「左侧边栏」「右侧面板」「输入框与对话框」「Overview 面板」各自独立配置</sub>
     </td>
   </tr>
   <tr>
@@ -60,10 +60,12 @@
 | **壁纸与布局** | 支持本地 **PNG / JPG / WebP**，最长边自动压缩至 `2560px` 并保留透明通道；支持 **填充 / 拉伸 / 适应 / 平铺** 四种模式 | 填充 · 拉伸 · 适应（默认） · 平铺 |
 | **精细参数调节** | 水平位置（`0–100%`）、垂直位置（`0–100%`）、缩放（`20–220%`）、模糊（`0–30 px`）、不透明度（`0–100%`）、亮度（`30–140%`）、左侧渐隐（`0–95%`） | 修改即刻实时预览；图片与配置保存在 Sidecar 数据目录 |
 | **弹窗拖拽预览** | 顶部「图片预览」按真实 Antigravity 窗口宽高比与分栏比例等比渲染（只读防误触）；点击「壁纸调整 → 打开预览」弹出交互画布，支持自由拖拽与滚轮缩放 | 非平铺模式缩放实效下限 `100%`，位移按可移动余量贴边限位，防止露出未覆盖留白 |
-| **侧边栏表面** | 单独控制「显示底色」、底色不透明度（`0–100%`）与背景模糊（`0–30 px`）；底色仅覆盖标签栏下方内容区，顶部标签栏与主区共用壁纸 | 关闭「显示底色」即完全透明；嵌入式设置页自动消除双重透明度叠加 |
-| **对话框与面板** | 单卡整合，默认开启 **「同步 Overview 面板」** 统一微调；取消同步后可切换「对话框」与「Overview 面板」独立设置外圈/内部 hex 颜色、不透明度与模糊 | 覆盖全用户气泡变体及 4 类 Overview 面板宿主，兼容长对话滚动模糊 |
-| **输入框表面** | 独立配置「显示底色」、外圈/内部 hex 颜色、不透明度与背景模糊 | 统一覆盖普通会话、`HOME_VIEW` 起始页及顶部工具条变体 |
+| **左侧边栏表面** | 独立控制「显示底色」、底色不透明度（`0–100%`）与背景模糊（`0–30 px`） | 单层平滑覆盖左侧栏，透明化内部吸顶 `.bg-sidebar` 色块与悬停渐变，消除顶部内阴影接缝 |
+| **右侧面板表面** | 独立控制「显示底色」、底色不透明度（`0–100%`）与背景模糊（`0–30 px`） | 单层覆盖标签栏下方 `[data-side-panel-body]`（兼容 `[data-has-browser-hole]`），保持顶部文件标签条与主界面齐平 |
+| **输入框与对话框** | 单卡绑定整合，共享控制「原版分层级感」「显示底色」、外圈/内部 hex 颜色、不透明度与模糊 | 同时作用于普通/起始页输入框（含顶部工具条）与全部用户消息气泡，兼容长对话滚动模糊与纯透玻璃边框 |
+| **Overview 面板** | 独立扁平控制卡：支持「显示底色」、外圈/内部 hex 颜色、底色不透明度与背景模糊 | 独立覆盖 4 类 Overview 面板宿主，从不与输入框/对话框同步，保持轻量扁平与高交互层级 |
 | **主题与多窗口同步** | 设置页支持「跟随应用 / 深色 / 浅色」并随配置保存；多窗口实时发现、同源多标签页 `BroadcastChannel` 联动、磁盘 `settings.json` 外部变更重载 | 实时预览保留于内存草稿；点击「保存设置」落盘，点击「还原」放弃未保存草稿 |
+| **在线检查与一键更新** | 顶部标题栏显示当前版本号、GitHub 仓库图标与 **「检查更新」** 按钮；自动识别 GitHub Release（ZIP + SHA-256 校验）、Tag / `main` 分支与 Atom 退路 | 安全归档解压、目录替换失败自动回滚，支持更新后一键热重载插件，打开面板时不主动发起联网请求 |
 
 ---
 
@@ -122,7 +124,7 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 
 ## 原生交互与兼容修复
 
-针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 21`）持续做了系统性适配：
+针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 23`）持续做了系统性适配：
 
 - **对话区与原生控件层级还原**：恢复左侧对话圆点进度条（`conversation-navigator`）点击跳转、主滚动条与回到底部按钮、`Ctrl+F` 查找栏、选中浮窗/批注弹框、底部终端上边缘拖拽调整高度、分栏拖拽手柄（`[data-split-sash]` / `[data-testid="tiling-splitter"]`）及侧栏收起 Peek 热区/窄窗抽屉交互。
 - **工作状态框浮动滚动条视口裁剪**：为宿主全局挂载到 `document.body` 的浮动滚动条（`body > [data-overlay-scrollbar-track]`）建立几何反查与祖先裁剪链，通过 `clip-path: inset(...)` 限制其严格在 `[data-testid="autoscroll-viewport"]` 等容器视口内渲染与响应点击，杜绝长工作流状态框滚出会话区域时遮挡顶部标题栏、会话头或底部输入框。
@@ -158,10 +160,11 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 <details>
 <summary><b>4. 如何运行内置回归测试？</b></summary>
 
-项目提供无头 Chrome + 隔离 Sidecar 的完整端到端回归测试套件（覆盖表面渲染、拖拽边界保护、多窗/多面板同步、原生控件点击命中、浮动滚动条视口裁剪及 `app.asar`/快捷方式持久化校验）：
+项目提供无头 Chrome + 隔离 Sidecar 的完整端到端回归测试套件（覆盖表面渲染、拖拽边界保护、多窗/多面板同步、原生控件点击命中、浮动滚动条视口裁剪、`app.asar`/快捷方式持久化，以及 GitHub 在线更新安全归档与回滚校验）：
 
 ```powershell
 node tests/background-rendering.mjs
+node tests/updater.mjs
 ```
 
 </details>
@@ -182,20 +185,23 @@ antigravity-UI/
 │   └── persistence.cjs             # app.asar 自启开关与快捷方式备份/修复共享模块
 ├── sidecars/panel/
 │   ├── sidecar.json                # Sidecar 注册配置（右侧扩展面板）
-│   ├── main.mjs                    # Sidecar HTTP 服务与设置/快捷方式修复 API
+│   ├── main.mjs                    # Sidecar HTTP 服务与设置/更新/快捷方式修复 API
 │   ├── runtime.mjs                 # CDP 窗口发现、连接复用与健康状态检测
 │   ├── renderer.mjs                # 宿主窗口壁纸注入、层级适配与浮动滚动条裁剪
 │   ├── store.mjs                   # 原子写入与 mtime 外部变更重载存储
+│   ├── updater.mjs                 # GitHub Release/Tag/main 更新检查、校验与热重载
+│   ├── archive.mjs                 # 安全的 ZIP / TAR.GZ 解压与运行时清单校验
 │   ├── sdk.mjs                     # Sidecar SDK 加载器
-│   ├── index.html                  # 设置页与拖拽预览弹窗 DOM
+│   ├── index.html                  # 设置页、拖拽预览弹窗与插件更新弹窗 DOM
 │   ├── styles.css                  # 设置页深浅主题与嵌入式样式
-│   └── app.js                      # 实时预览、BroadcastChannel 同步与交互控制
+│   └── app.js                      # 实时预览、BroadcastChannel 同步与更新/交互控制
 ├── docs/
-│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §13）
+│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §14）
 │   └── images/                     # README 展示截图
 ├── GLOSSARY.md                     # 核心术语说明
 └── tests/
-    └── background-rendering.mjs    # 隔离环境渲染、交互与持久化回归测试
+    ├── background-rendering.mjs    # 隔离环境渲染、交互与持久化回归测试
+    └── updater.mjs                 # 更新器归档安全、代理与端到端回归测试
 ```
 
 ---
