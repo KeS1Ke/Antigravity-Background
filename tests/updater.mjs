@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import fs, { cp, mkdir, mkdtemp, open, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -11,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { crc32, deflateRawSync, gzipSync } from 'node:zlib';
 import { parseTarGz, parseZip, REQUIRED_RUNTIME_FILES, stageRuntimeArchive } from '../sidecars/panel/archive.mjs';
 import { Connection } from '../sidecars/panel/runtime.mjs';
+import { loadSdk } from '../sidecars/panel/sdk.mjs';
+import { SettingsStore } from '../sidecars/panel/store.mjs';
 import { PluginUpdater, releaseRuntimeDirectory, resolveSystemProxy } from '../sidecars/panel/updater.mjs';
 
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -172,10 +175,66 @@ try {
         stageRuntimeArchive(buildZipBuffer(validEntries), 'zip', join(tempRoot, 'stage-bad-ver'), '0.9.9'),
         /Package manifest mismatch/
     );
-    await assert.rejects(
-        stageRuntimeArchive(buildZipBuffer(validEntries.filter(e => !e.name.endsWith('main.mjs'))), 'zip', join(tempRoot, 'stage-incomplete'), '0.3.9'),
-        /Incomplete runtime package/
-    );
+    for (const missing of ['main.mjs', 'sdk.mjs', 'app.js', 'styles.css']) {
+        await assert.rejects(
+            stageRuntimeArchive(
+                buildZipBuffer(validEntries.filter(e => !e.name.endsWith('/' + missing))),
+                'zip', join(tempRoot, 'stage-missing-' + missing), '0.3.9'
+            ),
+            /Incomplete runtime package/
+        );
+    }
+
+    const storeData = join(tempRoot, 'concurrent-settings');
+    const firstStore = new SettingsStore(storeData, storeData);
+    const secondStore = new SettingsStore(storeData, storeData);
+    const realRename = fs.rename;
+    let interleaved = false;
+    fs.rename = async (source, target) => {
+        await realRename(source, target);
+        if (target === firstStore.path && !interleaved) {
+            interleaved = true;
+            await secondStore.save({ opacity: 72 });
+        }
+    };
+    syncBuiltinESMExports();
+    try {
+        await firstStore.save({ opacity: 31 });
+        assert.equal(await firstStore.reloadIfChanged(), true);
+        assert.equal(firstStore.settings.opacity, 72);
+    } finally {
+        fs.rename = realRename;
+        syncBuiltinESMExports();
+    }
+
+    const sdkData = join(tempRoot, 'sdk-cache');
+    const sdkBinary = join(tempRoot, 'sdk-fixture.exe');
+    const sdkCode = `import { execFileSync } from 'node:child_process';
+const BIND_HOST = '127.0.0.1';
+export class SidecarApp {
+  #port;
+  #token;
+  listen(server) { server.listen(this.#port, BIND_HOST); }
+  validate(provided) {
+    return provided === this.#token;
+  }
+}
+`;
+    const preloadCode = `(function() {
+  // Extract configuration
+  (function() { window.sidecar = {}; })();
+})();`;
+    await writeFile(sdkBinary, sdkCode + preloadCode);
+    await loadSdk(sdkBinary, sdkData);
+    const sdkCachePath = join(sdkData, 'sdk', 'cache.json');
+    const { digest } = JSON.parse(await readFile(sdkCachePath, 'utf8'));
+    const cachedSdk = join(sdkData, 'sdk', digest, 'index.mjs');
+    const cachedPreload = join(sdkData, 'sdk', digest, 'preload.js');
+    await writeFile(cachedSdk, 'export class');
+    await writeFile(cachedPreload, 'invalid preload');
+    await loadSdk(sdkBinary, sdkData);
+    assert.equal(await readFile(cachedSdk, 'utf8'), sdkCode);
+    assert.equal(await readFile(cachedPreload, 'utf8'), preloadCode);
 
     // 2. Proxy resolution precedence
     const winProxyReader = async () => ({ server: '127.0.0.1:45331', bypass: ['localhost', '127.*', '<local>'] });
@@ -208,6 +267,12 @@ try {
         const base = `http://127.0.0.1:${ghServer.address().port}`;
 
         if (url.pathname === '/repos/KeS1Ke/Antigravity-Background/releases/latest') {
+            if (scenario.mode === 'oversized-release') {
+                const body = Buffer.alloc(512 * 1024 + 1);
+                res.writeHead(200, { 'Content-Length': body.length });
+                res.end(body);
+                return;
+            }
             if (scenario.rateLimitApi) {
                 res.writeHead(429, { 'Content-Type': 'application/json' });
                 res.end('{"message":"rate limit"}');
@@ -267,7 +332,7 @@ try {
         }
         if (url.pathname === '/KeS1Ke/Antigravity-Background/commits/main.atom') {
             res.writeHead(200, { 'Content-Type': 'application/atom+xml' });
-            res.end(`<?xml version="1.0" encoding="UTF-8"?><feed><entry><id>tag:github.com,2008:Grit::Commit/${scenario.commit}</id><link href="/KeS1Ke/Antigravity-Background/commit/${scenario.commit}"/><title>${scenario.notes}</title></entry></feed>`);
+            res.end(`<?xml version="1.0" encoding="UTF-8"?><feed><entry><id>tag:github.com,2008:Grit::Commit/${scenario.commit}</id><link href="/unrelated"/><title>${scenario.notes}</title></entry></feed>`);
             return;
         }
         if (url.pathname.endsWith('.zip')) {
@@ -305,12 +370,130 @@ try {
     }
     await writeFile(join(installDataDir, 'settings.json'), JSON.stringify({ opacity: 55 }));
 
+    async function leaveInterruptedManifest(pluginDir, dataDir) {
+        const txDir = join(dataDir, 'updates', 'tx-cold-start');
+        await mkdir(join(txDir, 'backup'), { recursive: true });
+        await cp(join(pluginDir, 'plugin.json'), join(txDir, 'backup', 'plugin.json'));
+        await writeFile(join(pluginDir, 'plugin.json'), '{"name":"antigravity-ui","version":"0.0.0"}');
+        const journal = join(txDir, 'journal.json');
+        await writeFile(journal, JSON.stringify({
+            schema: 1, phase: 'installing', oldFiles: ['plugin.json'], stagedFiles: ['plugin.json'], hadSourceMeta: false,
+        }));
+        return journal;
+    }
+
+    // Old versions hold an empty lock while installing. Its age cannot establish ownership.
+    const lockPath = join(dirname(installedPlugin), '.antigravity-ui-update.lock');
+    const lockClient = new PluginUpdater({ pluginDir: installedPlugin, dataDir: installDataDir, home: installHome });
+    const updaterModule = new URL('../sidecars/panel/updater.mjs', import.meta.url).href;
+    const leaveOrphanLock = () => execFileSync(process.execPath, [
+        '--input-type=module', '-e',
+        `const [, moduleUrl, pluginDir, dataDir, home] = process.argv;
+         const { PluginUpdater } = await import(moduleUrl);
+         await new PluginUpdater({ pluginDir, dataDir, home }).acquireUpdateLock();`,
+        updaterModule, installedPlugin, installDataDir, installHome,
+    ], { stdio: 'pipe', timeout: 10_000 });
+
+    const cliLockPath = join(installHome, '.gemini', 'config', 'config.json.antigravity-ui.lock');
+    await mkdir(dirname(cliLockPath), { recursive: true });
+    const cliLockHandle = await open(cliLockPath, 'wx');
+    try {
+        await assert.rejects(lockClient.acquireUpdateLock(), { code: 'busy' });
+    } finally {
+        await cliLockHandle.close();
+        await rm(cliLockPath, { force: true });
+    }
+
+    const legacyHandle = await open(lockPath, 'wx');
+    try {
+        const oldLockTime = new Date(Date.now() - 60_000);
+        await utimes(lockPath, oldLockTime, oldLockTime);
+        await assert.rejects(lockClient.acquireUpdateLock(), { code: 'busy' });
+        assert.equal(await readFile(lockPath, 'utf8'), '');
+    } finally {
+        await legacyHandle.close();
+        await rm(lockPath, { force: true });
+    }
+
+    {
+        leaveOrphanLock();
+        const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => lockClient.acquireUpdateLock()));
+        const owners = attempts.filter(result => result.status === 'fulfilled').map(result => result.value);
+        try {
+            assert.equal(owners.length, 1);
+            for (const result of attempts) {
+                if (result.status === 'rejected') assert.equal(result.reason.code, 'busy', result.reason.stack);
+            }
+        } finally {
+            for (const owner of owners) await owner.release();
+        }
+        const nextOwner = await lockClient.acquireUpdateLock();
+        try {
+            await owners[0].release();
+            await assert.rejects(lockClient.acquireUpdateLock(), { code: 'busy' });
+        } finally {
+            await nextOwner.release();
+        }
+    }
+
+    const transientOwner = await lockClient.acquireUpdateLock();
+    const unlink = fs.unlink;
+    let releaseFailure = true;
+    fs.unlink = async path => {
+        if (dirname(path) === lockPath && releaseFailure) {
+            releaseFailure = false;
+            throw Object.assign(new Error('Fixture lock release contention'), { code: 'EPERM' });
+        }
+        return unlink(path);
+    };
+    syncBuiltinESMExports();
+    try {
+        await transientOwner.release();
+        assert.equal(releaseFailure, false);
+        const replacementOwner = await lockClient.acquireUpdateLock();
+        await replacementOwner.release();
+    } finally {
+        fs.unlink = unlink;
+        syncBuiltinESMExports();
+    }
+
+    // Load the actual entry point with the legacy module's smaller export and method surface.
+    const mixedHome = join(tempRoot, 'mixed-home');
+    const mixedPlugin = join(mixedHome, '.gemini', 'config', 'plugins', 'antigravity-ui');
+    const mixedData = join(tempRoot, 'mixed-data');
+    await cp(installedPlugin, mixedPlugin, { recursive: true });
+    await writeFile(join(mixedPlugin, 'sidecars', 'panel', 'updater.mjs'), `
+        import { PluginUpdater as CurrentUpdater } from ${JSON.stringify(updaterModule)};
+        export { releaseRuntimeDirectory } from ${JSON.stringify(updaterModule)};
+        export class PluginUpdater extends CurrentUpdater {
+            acquireUpdateLock = undefined;
+            async initializeLocalInfo() { return this.publicState(); }
+        }
+    `);
+    const mixedJournal = await leaveInterruptedManifest(mixedPlugin, mixedData);
+    const mixedStartup = spawnSync(process.execPath, [join(mixedPlugin, 'sidecars', 'panel', 'main.mjs')], {
+        env: {
+            ...process.env,
+            AG_UI_HOME: mixedHome,
+            AG_UI_RESOURCES: join(tempRoot, 'missing-sdk-fixture'),
+            ANTIGRAVITY_EXECUTABLE_DATA_DIR: mixedData,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+        windowsHide: true,
+    });
+    // Recovery must finish before the fixture reaches SDK initialization.
+    assert.equal(mixedStartup.status, 1, mixedStartup.stderr);
+    assert.match(mixedStartup.stderr, /missing-sdk-fixture.*language_server\.exe/);
+    assert.equal(JSON.parse(await readFile(join(mixedPlugin, 'plugin.json'), 'utf8')).version, '0.3.8');
+    await assert.rejects(readFile(mixedJournal), { code: 'ENOENT' });
+
     // 4a. Dev workspace check -> canApply false
     const defaultUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'def-data'), home: installHome });
     assert.equal(defaultUpdater.publicState().repoUrl, 'https://github.com/KeS1Ke/Antigravity-Background');
     const devUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'dev-data'), home: installHome, endpoints });
     const devCheck = await devUpdater.check({ force: true });
-    assert.equal(devCheck.state, 'current');
+    assert.equal(devCheck.state, 'current', JSON.stringify(devCheck));
     assert.equal(devCheck.canApply, false);
     assert.equal(devCheck.applyDisabledReason, 'dev-workspace');
     assert.equal(devCheck.sourceKind, 'main');
@@ -329,12 +512,30 @@ try {
     assert.equal(sameVerCheck.canApply, true);
     assert.equal(sameVerCheck.hasUpdate, false);
 
+    const initialScenario = scenario;
+    scenario = { ...scenario, mode: 'oversized-release' };
+    const hitsBeforeVerification = githubHitCount;
+    const invalidMetadata = await updater.check({ force: true });
+    assert.equal(invalidMetadata.error, 'verification');
+    assert.equal(githubHitCount, hitsBeforeVerification + 1, 'Verification errors must not trigger fallback requests');
+    scenario = initialScenario;
+
     // 4c. Release ZIP + SHA-256 corrupt checksum -> verification error & intact original files
-    const zip039 = buildZipBuffer(await collectPluginRuntimeEntries(project, {
+    const zip039Entries = await collectPluginRuntimeEntries(project, {
         versionOverride: '0.3.9',
         persistenceSuffix: '// updated persistence marker',
         prefix: 'antigravity-ui',
-    }));
+    });
+    const oldAsset = join(installedPlugin, 'assets', 'was-file');
+    const oldAssetDir = join(installedPlugin, 'assets', 'was-directory');
+    await writeFile(oldAsset, 'Original file');
+    await mkdir(join(oldAssetDir, 'nested'), { recursive: true });
+    await writeFile(join(oldAssetDir, 'nested', 'original.txt'), 'Original directory content');
+    zip039Entries.push(
+        { name: 'antigravity-ui/assets/was-file/replacement.txt', content: 'Replacement directory content' },
+        { name: 'antigravity-ui/assets/was-directory', content: 'Replacement file' }
+    );
+    const zip039 = buildZipBuffer(zip039Entries);
     const sha039 = Buffer.from(`${createHash('sha256').update(zip039).digest('hex')}  antigravity-background-0.3.9.zip\n`, 'utf8');
     mockAssets.set('zip', zip039);
     mockAssets.set('sha', sha039);
@@ -348,6 +549,50 @@ try {
     assert.equal(updater.publicState().error, 'verification');
     assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.3.8');
 
+    // Force an actual runtime file replacement to fail after the manifest was already installed.
+    // In the second run also fail restoration of that manifest, then recover on startup.
+    scenario.corruptSha = false;
+    const manifestPath = join(installedPlugin, 'plugin.json');
+    const mainPath = join(installedPlugin, 'sidecars', 'panel', 'main.mjs');
+    const originalRename = fs.rename;
+    for (const failRollback of [false, true]) {
+        let replacingRuntimeFailed = false;
+        fs.rename = async (from, to) => {
+            if (to === mainPath && !replacingRuntimeFailed) {
+                replacingRuntimeFailed = true;
+                throw Object.assign(new Error('Fixture runtime write failure'), { code: 'EIO' });
+            }
+            if (failRollback && replacingRuntimeFailed && to === manifestPath) {
+                throw Object.assign(new Error('Fixture backup restore failure'), { code: 'EIO' });
+            }
+            return originalRename(from, to);
+        };
+        syncBuiltinESMExports();
+        try {
+            assert.equal((await updater.check({ force: true })).state, 'available');
+            await updater.apply({ version: '0.3.9' });
+            await updater.job;
+            assert.equal(updater.publicState().error, failRollback ? 'rollback' : 'install');
+        } finally {
+            fs.rename = originalRename;
+            syncBuiltinESMExports();
+        }
+        const updatesDir = join(installDataDir, 'updates');
+        const transactions = (await readdir(updatesDir)).filter(name => name.startsWith('tx-'));
+        assert.equal(transactions.length, failRollback ? 1 : 0);
+        if (failRollback) {
+            const retainedTx = join(updatesDir, transactions[0]);
+            assert.equal(JSON.parse(await readFile(join(retainedTx, 'journal.json'), 'utf8')).phase, 'installing');
+            assert.equal(JSON.parse(await readFile(join(retainedTx, 'backup', 'plugin.json'), 'utf8')).version, '0.3.8');
+            leaveOrphanLock();
+            assert.equal((await updater.initializeLocalInfo()).currentVersion, '0.3.8');
+            assert.deepEqual(await readdir(updatesDir), []);
+        }
+        assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).version, '0.3.8');
+        assert.equal(await readFile(oldAsset, 'utf8'), 'Original file');
+        assert.equal(await readFile(join(oldAssetDir, 'nested', 'original.txt'), 'utf8'), 'Original directory content');
+    }
+
     // 4d. Release ZIP + valid SHA-256 -> installs 0.3.9, flags persistenceUpdated, retains user settings.json
     scenario.corruptSha = false;
     await updater.check({ force: true });
@@ -359,6 +604,8 @@ try {
     assert.equal(afterZip.persistenceUpdated, true);
     assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.3.9');
     assert.equal(JSON.parse(await readFile(join(installDataDir, 'settings.json'), 'utf8')).opacity, 55);
+    assert.equal(await readFile(join(oldAsset, 'replacement.txt'), 'utf8'), 'Replacement directory content');
+    assert.equal(await readFile(oldAssetDir, 'utf8'), 'Replacement file');
 
     // 4e. Tag-only Release (no zip asset) + API 429 rate limit -> HTML fallback + Tag .tar.gz install to 0.4.0
     updater.state.state = 'idle';
@@ -383,6 +630,7 @@ try {
     assert.equal(availCommit.state, 'available');
     assert.equal(availCommit.updateReason, 'commit');
     assert.equal(availCommit.latestCommit, newCommit);
+    assert.equal(availCommit.commitUrl, `${ghBase}/KeS1Ke/Antigravity-Background/commit/${newCommit}`);
     await updater.apply({ version: '0.4.0', commit: newCommit });
     while (updater.publicState().state === 'installing') await delay(30);
     assert.equal(updater.publicState().state, 'installed');
@@ -398,6 +646,11 @@ try {
     assert.equal(reloadRes.state, 'reloading');
     await delay(450);
     assert.equal(reloadFired, true);
+    updater.state.state = 'installed';
+    updater.onReload = async () => { throw new Error('Fixture reload failure'); };
+    assert.equal(updater.requestReload().state, 'reloading');
+    await delay(450);
+    assert.equal(updater.publicState().error, 'install');
 
     // 4h. Interrupted transaction journal recovery + manage.cjs install .install-source.json
     const crashedTx = join(installDataDir, 'updates', 'tx-crashed-test');
@@ -470,6 +723,10 @@ try {
 
     const sidecarHitsBeforeClick = githubHitCount;
     const sidecarData = join(tempRoot, 'ui-sidecar-data');
+    await mkdir(sidecarData);
+    await writeFile(join(sidecarData, 'settings.json'), JSON.stringify({ opacity: 55 }));
+    const coldJournal = await leaveInterruptedManifest(installedPlugin, sidecarData);
+    leaveOrphanLock();
     const sidecar = spawn(process.execPath, [join(installedPlugin, 'sidecars', 'panel', 'main.mjs')], {
         env: {
             ...process.env,
@@ -517,8 +774,30 @@ try {
         await pageClient.open();
 
         await until(() => evalOn('document.querySelector("#plugin-version")?.textContent === "v0.3.8"'), 'Initial version badge missing');
+        await assert.rejects(readFile(coldJournal), { code: 'ENOENT' });
         assert.equal(githubHitCount, sidecarHitsBeforeClick, 'Opening panel must not trigger automatic GitHub network requests');
         assert.equal(await evalOn('document.querySelector("#github-link").getAttribute("href")'), `${ghBase}/KeS1Ke/Antigravity-Background`);
+
+        const api = async (path, body) => {
+            const response = await fetch(`http://127.0.0.1:${webPort}${path}`, {
+                method: 'POST',
+                headers: { 'x-sidecar-token': 'test-updater', 'Content-Type': 'application/json' },
+                body,
+            });
+            return { status: response.status, body: await response.json() };
+        };
+        const settingsPath = join(sidecarData, 'settings.json');
+        const saved = await readFile(settingsPath, 'utf8');
+        for (const body of [undefined, 'null', '{}']) {
+            const rejected = await api('/api/settings', body);
+            assert.equal(rejected.status, 400);
+            assert.equal(await readFile(settingsPath, 'utf8'), saved);
+        }
+        for (const action of ['apply', 'reload']) {
+            const rejected = await api(`/api/update/${action}`, '{}');
+            assert.equal(rejected.status, 400);
+            assert.equal(rejected.body.code, 'verification');
+        }
 
         // Narrow 320px sidebar layout check
         await pageClient.command('Emulation.setDeviceMetricsOverride', { width: 320, height: 640, deviceScaleFactor: 1, mobile: false });
@@ -557,7 +836,7 @@ try {
         await new Promise(r => ghServer.close(r));
     }
 
-    console.log('Passed: archive security, proxy resolution, Release ZIP/SHA256 & Tag tarball, main branch & Atom fallback, rollback guard, and Sidecar/Chrome updater UI.');
+    console.log('Passed: archive and metadata validation, release/branch update, lock contention and rollback recovery, settings write guards, and Sidecar/Chrome updater UI.');
 } finally {
     await rm(tempRoot, { recursive: true, force: true });
 }

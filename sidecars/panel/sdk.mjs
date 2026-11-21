@@ -1,17 +1,40 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { readFile, mkdir, writeFile, rename, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+
+const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const MAX_SDK_BYTES = 40000;
+const MAX_PRELOAD_BYTES = 40000;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+
+async function renameWithRetry(from, to, attempts = 5) {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            await rename(from, to);
+            return;
+        } catch (error) {
+            if (attempt >= attempts || !RETRYABLE_RENAME_CODES.has(error?.code)) throw error;
+            await new Promise(done => setTimeout(done, 25 * attempt));
+        }
+    }
+}
 
 async function writeAtomic(target, content) {
     const temporary = target + '.' + randomUUID() + '.tmp';
     try {
         await writeFile(temporary, content, { flag: 'wx' });
-        await rename(temporary, target);
+        await renameWithRetry(temporary, target);
     } finally {
-        await rm(temporary, { force: true });
+        await rm(temporary, { force: true }).catch(() => {});
     }
+}
+
+async function readCachedFile(path, maxBytes) {
+    const info = await stat(path);
+    if (!info.isFile() || !info.size || info.size > maxBytes) throw new Error('Sidecar SDK 缓存文件无效。');
+    return readFile(path);
 }
 
 export async function loadSdk(executable, dataDirectory) {
@@ -28,17 +51,45 @@ export async function loadSdk(executable, dataDirectory) {
     }
     // Some Windows builds expose the SDK as embedded resources without an ESM resolver.
     // Recover the installed resources into plugin-owned data, including the outer IIFE.
-    const binary = await readFile(executable);
+    const executablePath = resolve(executable);
+    const info = await stat(executablePath);
+    const sdkRoot = join(dataDirectory, 'sdk');
+    const cachePath = join(sdkRoot, 'cache.json');
+    try {
+        const cached = JSON.parse(await readFile(cachePath, 'utf8'));
+        if (cached && typeof cached === 'object' &&
+            cached.executable === executablePath &&
+            cached.size === info.size &&
+            cached.mtimeMs === info.mtimeMs &&
+            typeof cached.digest === 'string' &&
+            SHA256_RE.test(cached.digest)) {
+            const cachedDir = join(sdkRoot, cached.digest);
+            const cachedIndex = join(cachedDir, 'index.mjs');
+            const cachedPreload = join(cachedDir, 'preload.js');
+            const [cachedSdk, preload] = await Promise.all([
+                readCachedFile(cachedIndex, MAX_SDK_BYTES + 64),
+                readCachedFile(cachedPreload, MAX_PRELOAD_BYTES + 8),
+            ]);
+            if (createHash('sha256').update(cachedSdk).update('\0').update(preload).digest('hex') === cached.digest) {
+                return import(pathToFileURL(cachedIndex).href);
+            }
+        }
+    } catch {
+        // Cache miss or corrupted cache manifest; fall through to re-extract from executable.
+    }
+
+    const binary = await readFile(executablePath);
     const marker = binary.indexOf('export class SidecarApp');
-    const start = binary.lastIndexOf("import { execFileSync } from 'node:child_process';", marker);
+    const start = marker > 0 ? binary.lastIndexOf("import { execFileSync } from 'node:child_process';", marker) : -1;
     const ending = 'return provided === this.#token;\n  }\n}\n';
-    const end = binary.indexOf(ending, marker);
+    const end = marker >= 0 ? binary.indexOf(ending, marker) : -1;
     const bridge = binary.indexOf('window.sidecar =');
-    const inner = binary.lastIndexOf('(function() {', bridge);
-    const outer = binary.lastIndexOf('(function() {', inner - 1);
-    const preloadEnd = binary.indexOf('\n})();', bridge);
-    if (marker < 0 || start < 0 || end < marker || end - start > 40000 ||
-        outer < 0 || bridge - outer > 40000 || preloadEnd < bridge) {
+    const inner = bridge > 0 ? binary.lastIndexOf('(function() {', bridge) : -1;
+    const outer = inner > 0 ? binary.lastIndexOf('(function() {', inner - 1) : -1;
+    const preloadEnd = bridge > 0 ? binary.indexOf('\n})();', bridge) : -1;
+    if (marker < 0 || start < 0 || start >= marker || end < marker || end - start > MAX_SDK_BYTES ||
+        bridge <= 0 || inner <= 0 || outer < 0 || outer >= inner || inner >= bridge ||
+        preloadEnd <= bridge || preloadEnd - outer > MAX_PRELOAD_BYTES) {
         throw new Error('无法识别此版本的 Sidecar SDK。');
     }
     const sdk = binary.toString('utf8', start, end + Buffer.byteLength(ending));
@@ -48,10 +99,18 @@ export async function loadSdk(executable, dataDirectory) {
         !preload.startsWith('(function() {\n  // Extract configuration')) {
         throw new Error('Sidecar SDK 的本机监听或界面资源不兼容。');
     }
-    const digest = createHash('sha256').update(sdk + preload).digest('hex');
-    const directory = join(dataDirectory, 'sdk', digest);
+    const digest = createHash('sha256').update(sdk).update('\0').update(preload).digest('hex');
+    const directory = join(sdkRoot, digest);
     await mkdir(directory, { recursive: true });
-    await writeAtomic(join(directory, 'preload.js'), preload);
-    await writeAtomic(join(directory, 'index.mjs'), sdk);
-    return import(pathToFileURL(join(directory, 'index.mjs')).href);
+    const preloadPath = join(directory, 'preload.js');
+    const indexPath = join(directory, 'index.mjs');
+    await writeAtomic(preloadPath, preload);
+    await writeAtomic(indexPath, sdk);
+    await writeAtomic(cachePath, JSON.stringify({
+        executable: executablePath,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        digest,
+    }));
+    return import(pathToFileURL(indexPath).href);
 }

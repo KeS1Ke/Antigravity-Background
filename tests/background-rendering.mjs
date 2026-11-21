@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Connection, WallpaperRuntime } from '../sidecars/panel/runtime.mjs';
-import { installWallpaper } from '../sidecars/panel/renderer.mjs';
+import { installWallpaper, RENDERER_REVISION } from '../sidecars/panel/renderer.mjs';
 import { SettingsStore } from '../sidecars/panel/store.mjs';
 import appearance from '../plugin/appearance.cjs';
 import persistence from '../plugin/persistence.cjs';
@@ -30,7 +30,7 @@ assert.equal(appearance.normalize().composerOuterColor, '');
 assert.equal(appearance.normalize().overviewOuterColor, '');
 assert.equal(appearance.normalize().overviewInnerColor, '');
 assert.equal(appearance.normalize().composerLayered, true);
-assert.equal(appearance.normalize().bubbleLayered, true);
+assert.equal('bubbleLayered' in appearance.normalize(), false);
 assert.equal(appearance.normalize({ composerInnerColor: '#AABBCC' }).composerInnerColor, '#aabbcc');
 assert.deepEqual(
     (() => {
@@ -40,7 +40,7 @@ assert.deepEqual(
             overviewOpacity: 90, overviewBlur: 2, overviewOuterColor: '#ff0000',
         });
         return [
-            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur, s.bubbleOuterColor, s.bubbleInnerColor,
+            s.composerCover, s.composerLayered, s.composerOpacity, s.composerBlur, s.composerOuterColor, s.composerInnerColor,
             s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor,
         ];
     })(),
@@ -56,7 +56,7 @@ assert.deepEqual(
             overviewOuterColor: '#445566', overviewInnerColor: '#778899',
         });
         return [
-            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur,
+            s.composerCover, s.composerLayered, s.composerOpacity, s.composerBlur,
             s.overviewCover, s.overviewOpacity, s.overviewBlur, s.overviewOuterColor, s.overviewInnerColor,
             'overviewSync' in s, 'leftSidebarLayered' in s, 'sidebarLayered' in s, 'overviewLayered' in s,
         ];
@@ -67,10 +67,33 @@ assert.throws(() => appearance.normalize(null), /背景设置无效/);
 assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 50 }), /transform:\s*scale\(1\)/);
 assert.match(appearance.wallpaperStyle({ ...settings, mode: 'stretch', scale: 40 }), /transform:\s*scale\(1\)/);
 assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fit', scale: 40 }), /transform:\s*scale\(1\)/);
-assert.match(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50 }), /background-size:\s*256px 256px/);
+const tileStyle = appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50, imageColor: '#224466' });
+assert.match(tileStyle, /background-size:\s*256px 256px/);
+assert.match(tileStyle, /background-repeat:\s*no-repeat/);
+assert.match(tileStyle, /background-color:\s*#224466/);
+assert.doesNotMatch(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50 }), /background-color:/);
+assert.equal(appearance.extractCanvasBorderColor({ getImageData() { throw new Error('lost context'); } }, 32, 32), '');
+assert.equal(appearance.normalize({ image: '', imageColor: '#112233' }).imageColor, '');
+assert.equal(appearance.normalize({ ...settings, imageColor: '#AABBCC' }).imageColor, '#aabbcc');
+assert.throws(() => appearance.normalize({ ...settings, imageColor: 'red' }), /壁纸背景颜色/);
+assert.equal(appearance.extractBorderColor([
+    new Uint8ClampedArray([
+        0x22, 0x44, 0x66, 255, 0x22, 0x44, 0x66, 255, 0x23, 0x43, 0x65, 255,
+        0xff, 0x33, 0x00, 255, 0x22, 0x44, 0x66, 255,
+    ]),
+]), '#224466');
+assert.equal(appearance.extractBorderColor([
+    new Uint8ClampedArray([
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0xff, 0, 0, 255,
+    ]),
+]), '');
 assert.throws(() => appearance.normalize({ composerOuterColor: 'red; background:url(test)' }), /颜色/);
 assert.throws(() => appearance.normalize({ composerInnerColor: 123 }), /颜色/);
-assert.throws(() => appearance.normalize({ bubbleOuterColor: 'red' }), /颜色/);
+assert.deepEqual(
+    appearance.normalize({ bubbleCover: false, bubbleLayered: false, bubbleBlur: 9, bubbleOuterColor: '#ABCDEF' }),
+    appearance.normalize({ composerCover: false, composerLayered: false, composerBlur: 9, composerOuterColor: '#abcdef' })
+);
 assert.throws(() => appearance.normalize({ overviewOuterColor: 'blue' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜色/);
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
@@ -273,7 +296,7 @@ try {
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerCover: false, composerOpacity: 55, composerBlur: 6 });
     const uncovered = await surfaceState();
     assert.equal(uncovered.composerAlpha, 0);
-    assert.equal(uncovered.outerBlur, 'blur(0px)');
+    assert.equal(uncovered.outerBlur, 'none');
     assert.equal(uncovered.outerBg, 'rgba(0, 0, 0, 0)');
     assert.match(uncovered.outerShadow, insetBorder);
     assert.notEqual(uncovered.composerShadow, 'none', 'Layered transparent mode must retain inner glass highlight/shadow');
@@ -290,7 +313,7 @@ try {
     const flatUncovered = await surfaceState();
     assert.equal(flatUncovered.outerBg, 'rgba(0, 0, 0, 0)');
     assert.equal(flatUncovered.composerShadow, 'none');
-    assert.equal(flatUncovered.composerBlur, 'blur(0px)');
+    assert.equal(flatUncovered.composerBlur, 'none');
 
     const editorHit = await evaluate("(()=>{const e=document.querySelector('#editor'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(editorHit, true, 'Composer must remain interactive above wallpaper');
@@ -637,8 +660,101 @@ try {
     })()`);
     await until(async () => {
         const { settings: resized } = await fetch(settingsUrl).then(reply => reply.json());
-        return resized.imageWidth === 2560 && resized.imageHeight === 1280 && resized.image.startsWith('data:image/webp;');
+        return resized.imageWidth === 2560 && resized.imageHeight === 1280 && resized.image.startsWith('data:image/webp;') && resized.imageColor === '#000000';
     }, 'Local PNG upload did not preserve its aspect ratio when resized to WebP');
+
+    // Tile mode extends wallpaper border color instead of repeating the image when scaled down
+    await panel(`(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 400;
+        canvas.height = 300;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#224466';
+        ctx.fillRect(0, 0, 400, 300);
+        ctx.fillStyle = '#ff3300';
+        ctx.fillRect(100, 80, 200, 140);
+        ctx.fillRect(180, 280, 40, 20);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], 'bordered.png', { type: 'image/png' }));
+        const input = document.querySelector('#image');
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change'));
+    })()`);
+    await until(async () => {
+        const { settings: uploaded } = await fetch(settingsUrl).then(reply => reply.json());
+        return uploaded.imageWidth === 400 && uploaded.imageHeight === 300 && uploaded.imageColor === '#224466';
+    }, 'Bordered PNG upload did not extract dominant border color #224466');
+    await panel(`(() => {
+        document.querySelector('[data-mode="tile"]').click();
+        const s = document.querySelector('#wallpaper-scale');
+        s.value = 50;
+        s.dispatchEvent(new Event('input'));
+    })()`);
+    await until(async () => await evaluate(`(() => {
+        const st = getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image'));
+        return st.backgroundRepeat === 'no-repeat' && st.backgroundColor === 'rgb(34, 68, 102)';
+    })()`), 'Host tile mode did not extend extracted wallpaper background color without repeating');
+    assert.deepEqual(await panel(`(() => {
+        const st = getComputedStyle(document.querySelector('#preview .wallpaper'));
+        return { repeat: st.backgroundRepeat, color: st.backgroundColor };
+    })()`), { repeat: 'no-repeat', color: 'rgb(34, 68, 102)' });
+
+    await panel(`(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 200;
+        canvas.height = 200;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#cc2244';
+        ctx.fillRect(60, 60, 80, 80);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], 'transparent-edge.png', { type: 'image/png' }));
+        const input = document.querySelector('#image');
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change'));
+    })()`);
+    await until(async () => {
+        const { settings: uploaded } = await fetch(settingsUrl).then(reply => reply.json());
+        return uploaded.imageWidth === 200 && uploaded.imageHeight === 200 && uploaded.imageColor === '';
+    }, 'Transparent-border PNG upload did not clear imageColor');
+    await until(async () => await evaluate(`(() => {
+        const st = getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image'));
+        return st.backgroundRepeat === 'no-repeat' && st.backgroundColor === 'rgba(0, 0, 0, 0)';
+    })()`), 'Transparent-border tile mode did not keep transparent fallback background');
+
+    // Legacy image without saved imageColor must auto-backfill and sync to both panel and host in tile mode
+    await panel(`(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 200;
+        canvas.height = 150;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#335577';
+        ctx.fillRect(0, 0, 200, 150);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(60, 40, 80, 70);
+        const legacyImage = canvas.toDataURL('image/png');
+        const current = await fetch('/api/settings').then(r => r.json());
+        const res = await fetch('/api/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-sidecar-token': 'test' },
+            body: JSON.stringify({ ...current.settings, image: legacyImage, imageWidth: 200, imageHeight: 150, imageColor: '', mode: 'tile', scale: 50 }),
+        });
+        if (!res.ok) throw new Error('Seed legacy preview failed: ' + res.status);
+    })()`);
+    await panelClient.command('Page.reload');
+    await until(async () => {
+        const { settings: synced } = await fetch(settingsUrl).then(reply => reply.json());
+        return synced.imageColor === '#335577';
+    }, 'Legacy tile image without imageColor did not auto-backfill #335577 on load');
+    await until(async () => await evaluate(`(() => {
+        const st = getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image'));
+        return st.backgroundRepeat === 'no-repeat' && st.backgroundColor === 'rgb(51, 85, 119)';
+    })()`), 'Legacy tile image did not sync auto-backfilled backgroundColor to host');
+    assert.deepEqual(await panel(`(() => {
+        const st = getComputedStyle(document.querySelector('#preview .wallpaper'));
+        return { repeat: st.backgroundRepeat, color: st.backgroundColor };
+    })()`), { repeat: 'no-repeat', color: 'rgb(51, 85, 119)' });
 
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
@@ -767,7 +883,7 @@ try {
         assert.equal(bubble.blur, 'none');
         assert.notEqual(bubble.shadow, 'none');
     }
-    assert.equal(unifiedHome.overview.blur, 'blur(0px)', 'Composer changes must never sync to Overview panel');
+    assert.equal(unifiedHome.overview.blur, 'none', 'Composer changes must never sync to Overview panel');
     assert.equal(unifiedHome.overview.shadow, 'none', 'Overview panel must remain flat');
     const homeEditorHit = await evaluate("(()=>{const e=document.querySelector('#home-editor'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(homeEditorHit, true, 'HOME_VIEW composer editor must be interactive above wallpaper');
@@ -803,7 +919,7 @@ try {
         return s.homeComposer.outerBgRgba[3] === 0 && s.regularBubble.bgRgba[3] === 0;
     }, 'Disabling composerCover did not clear composer + bubble colors');
     const uncoveredHome = await readHostSurfaces(client);
-    assert.equal(uncoveredHome.homeComposer.outerBlur, 'blur(0px)');
+    assert.equal(uncoveredHome.homeComposer.outerBlur, 'none');
     assert.match(uncoveredHome.homeComposer.outerShadow, insetBorder);
     assert.notDeepEqual(uncoveredHome.homeComposer.outerShadowRgba.slice(0, 3), [255, 0, 0]);
     assert.equal(uncoveredHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
@@ -811,7 +927,7 @@ try {
     for (const bubble of [uncoveredHome.regularBubble, uncoveredHome.proceededBubble]) {
         assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
         assert.equal(bubble.bgRgba[3], 0);
-        assert.equal(bubble.frameBlur, 'blur(0px)');
+        assert.equal(bubble.frameBlur, 'none');
         assert.match(bubble.frameShadow, insetBorder);
         assert.notDeepEqual(bubble.frameRgba.slice(0, 3), [255, 0, 0]);
         assert.notEqual(bubble.shadow, 'none', 'Layered transparent bubble retains inner rim/shadow');
@@ -834,9 +950,9 @@ try {
     const overviewHit = await evaluate("(()=>{const e=document.querySelector('[data-testid=\"overview-panel-host-overlay\"]'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(overviewHit, true, 'Overview panel at z-index 1002 must be interactive above wallpaper');
     for (const bubble of [splitHost.regularBubble, splitHost.proceededBubble]) {
-        assert.equal(bubble.frameBlur, 'blur(0px)', 'Overview adjustment must never affect user bubbles');
+        assert.equal(bubble.frameBlur, 'none', 'Overview adjustment must never affect user bubbles');
     }
-    assert.equal(splitHost.homeComposer.outerBlur, 'blur(0px)', 'Overview adjustment must never affect composer');
+    assert.equal(splitHost.homeComposer.outerBlur, 'none', 'Overview adjustment must never affect composer');
 
     const overviewPreviewVars = await panel("(()=>{const s=document.querySelector('#preview').style;const get=k=>s.getPropertyValue(k).trim();return{oOut:get('--preview-overview-outer'),oIn:get('--preview-overview-inner'),oBlur:get('--preview-overview-blur'),cBlur:get('--preview-composer-blur')}})()");
     assert.match(overviewPreviewVars.oOut, /#0000ff.*30%/);
@@ -849,10 +965,10 @@ try {
     assert.deepEqual(await panel("[document.querySelector('#overviewOuterColor').disabled,document.querySelector('#overviewInnerColor').disabled,document.querySelector('[data-reset-color=\"overviewOuterColor\"]').disabled,document.querySelector('[data-reset-color=\"overviewInnerColor\"]').disabled,document.querySelector('#wallpaper-overviewOpacity').disabled,document.querySelector('#wallpaper-overviewBlur').disabled]"), [true, true, true, true, true, true]);
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-outer').trim()"), 'var(--ag-ui-border)');
     assert.equal(await panel("document.querySelector('#preview').style.getPropertyValue('--preview-overview-blur').trim()"), '0px');
-    await until(async () => (await readHostSurfaces(client)).overview.blur === 'blur(0px)', 'Disabling overviewCover did not clear Overview blur');
+    await until(async () => (await readHostSurfaces(client)).overview.blur === 'none', 'Disabling overviewCover did not clear Overview blur');
     const uncoveredOverview = await readHostSurfaces(client);
     assert.equal(uncoveredOverview.overview.bgRgba[3], 0);
-    assert.equal(uncoveredOverview.overview.blur, 'blur(0px)');
+    assert.equal(uncoveredOverview.overview.blur, 'none');
     assert.notDeepEqual(uncoveredOverview.overview.borderRgba.slice(0, 3), [0, 0, 255]);
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
@@ -876,7 +992,7 @@ try {
     assert.equal(blurActiveState.homeComposer.outerBlur, 'blur(10px)');
 
     await panel("(()=>{const b=document.querySelector('#wallpaper-composerBlur');b.value=0;b.dispatchEvent(new Event('input'));const c=document.querySelector('#composer-cover');if(c.checked)c.click();})()");
-    await until(async () => (await readHostSurfaces(client)).regularBubble.frameBlur === 'blur(0px)', 'Resetting composerBlur to 0 did not clear blur');
+    await until(async () => (await readHostSurfaces(client)).regularBubble.frameBlur === 'none', 'Resetting composerBlur to 0 did not clear blur');
     assert.match((await readHostSurfaces(client)).viewport.maskImage, /linear-gradient/);
     await until(() => panel("document.querySelector('#discard').disabled"), 'Reverting composerBlur and composerCover to saved values should clear draft');
 
@@ -953,7 +1069,7 @@ try {
 
         // Turn off #left-sidebar-cover & #sidebar-cover -> completely transparent flat surfaces with no card rim/shadow
         await panel("(()=>{document.querySelector('#left-sidebar-cover').click();document.querySelector('#sidebar-cover').click();})()");
-        await until(async () => (await readSideSurfaces()).left.shellBlur === 'blur(0px)' && (await readSideSurfaces()).right.bodyBlur === 'blur(0px)', 'Disabling sidebar covers did not clear blur');
+        await until(async () => (await readSideSurfaces()).left.shellBlur === 'none' && (await readSideSurfaces()).right.bodyBlur === 'none', 'Disabling sidebar covers did not clear blur');
         const clearSides = await readSideSurfaces();
         assert.equal(clearSides.left.shellBg[3], 0);
         assert.equal(clearSides.left.shellShadow, 'none');
@@ -1033,9 +1149,9 @@ try {
     const savedMulti = JSON.parse(await readFile(join(data, 'settings.json'), 'utf8'));
     assert.equal(savedMulti.opacity, 47);
     assert.equal(savedMulti.composerBlur, 5);
-    assert.equal(savedMulti.bubbleBlur, 5);
+    assert.equal('bubbleBlur' in savedMulti, false);
     assert.equal(savedMulti.composerInnerColor, '#336699');
-    assert.equal(savedMulti.bubbleInnerColor, '#336699');
+    assert.equal('bubbleInnerColor' in savedMulti, false);
 
     // Panel 1 modify + discard -> BroadcastChannel -> Panel 2 (zero loopback)
     await panel("(()=>{const o=document.querySelector('#wallpaper-opacity');o.value=82;o.dispatchEvent(new Event('input'));})()");
@@ -1213,7 +1329,7 @@ try {
 
     // Regression: side panel switching to [data-browser-hole] must not trap [data-main-content-body] under #antigravity-ui-background
     assert.equal(await evaluate('window.__antigravityUiRenderer.version'), 18);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 23);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), RENDERER_REVISION);
     const activeGeneration = await evaluate('window.__antigravityUiRenderer.generation');
     const installInHost = payload => evaluate(`(${installWallpaper.toString()})(${JSON.stringify(payload)})`);
     await evaluate("window.oldLayer = document.querySelector('#antigravity-ui-background'); delete window.__antigravityUiRenderer.revision");
@@ -1221,7 +1337,7 @@ try {
     assert.equal(await installInHost({ enabled: true, css: 'color:red', imageHash: expectedImageHash, generation: activeGeneration + 1 }), 'NEED_IMAGE');
     assert.equal(await evaluate("window.oldLayer === document.querySelector('#antigravity-ui-background') && window.titlebarOptions.color === '#00000000'"), true);
     await runtime.update(true, false);
-    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), 23);
+    assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), RENDERER_REVISION);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
     const sashHits = await evaluate(`(()=>{
@@ -1748,7 +1864,7 @@ try {
     assert.equal(await store.reloadIfChanged(), true);
     assert.equal(store.settings.opacity, 64);
     assert.equal(store.settings.composerBlur, 7);
-    assert.equal(store.settings.bubbleBlur, 7);
+    assert.equal('bubbleBlur' in store.settings, false);
     assert.equal(await store.reloadIfChanged(), false);
 
     // Regression: persistence.cjs ASAR boot-switch install/idempotency/restore, shortcut backup/repair/restore & MISSING_DEVTOOLS_PORT UI flow

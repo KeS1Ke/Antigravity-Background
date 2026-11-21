@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -21,6 +21,18 @@ const resources = process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Loc
 const installation = process.env.AG_UI_INSTALLATION ||
     (basename(process.execPath).toLowerCase() === 'antigravity.exe' ? dirname(process.execPath) : dirname(resources));
 const shortcutBackup = join(home, '.gemini', 'config', 'antigravity-ui.shortcuts.bak.json');
+const updater = new PluginUpdater({
+    pluginDir,
+    dataDir: data,
+    home,
+    endpoints: parseLoopbackEndpoints(),
+    onReload: shutdown,
+});
+// An interrupted upgrade from 0.3.8 can leave the older updater next to this entry point.
+if (typeof updater.acquireUpdateLock !== 'function' && updater.inspectTargetEligibility().canApply) {
+    await recoverWithLegacyUpdater();
+}
+await updater.initializeLocalInfo();
 const { SidecarApp, Response } = await loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 const store = new SettingsStore(data, profile);
 const configPath = join(homedir(), '.gemini', 'config', 'config.json');
@@ -65,6 +77,12 @@ function resolveImage(input, saved) {
 }
 function jsonResponse(status, body) {
     return new Response(JSON.stringify(body), { contentType: 'application/json', status });
+}
+function updateErrorResponse(error) {
+    if (['verification', 'location', 'busy', 'install', 'rollback', 'network'].includes(error?.code)) {
+        return jsonResponse(400, { error: error.code, code: error.code, errorDetail: error.detail });
+    }
+    return jsonResponse(500, { error: 'install', code: 'install' });
 }
 let draft;
 let settingsError;
@@ -133,14 +151,21 @@ function parseLoopbackEndpoints() {
         return {};
     }
 }
-const updater = new PluginUpdater({
-    pluginDir,
-    dataDir: data,
-    home,
-    endpoints: parseLoopbackEndpoints(),
-    onReload: () => void shutdown(),
-});
-await updater.initializeLocalInfo();
+async function recoverWithLegacyUpdater() {
+    const lockPath = join(dirname(pluginDir), '.antigravity-ui-update.lock');
+    let lock;
+    try {
+        lock = await open(lockPath, 'wx');
+        await updater.recoverInterruptedTransactions();
+    } catch (error) {
+        if (error.code !== 'EEXIST') console.warn('旧版更新恢复失败：' + (error.code || 'rollback'));
+    } finally {
+        if (lock) {
+            await lock.close();
+            await unlink(lockPath);
+        }
+    }
+}
 const app = new SidecarApp();
 const files = {
     '/': ['index.html', 'text/html'],
@@ -188,9 +213,12 @@ app.api('/api/preview/discard', () => enqueueRequest(async () => {
     return stateResponse();
 }), 'POST');
 app.api('/api/settings', input => enqueueRequest(async () => {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length === 0) {
+        return jsonResponse(400, { error: '背景设置无效。' });
+    }
     await syncStore();
     const resolved = resolveImage(input, store.settings);
-    if (resolved === null && input !== null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+    if (resolved === null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
     if (settingsError && (!resolved || !Object.keys(store.settings).every(key => Object.hasOwn(resolved, key)))) {
         return jsonResponse(400, { error: settingsError });
     }
@@ -221,14 +249,14 @@ app.api('/api/update/apply', async input => {
     try {
         return await updater.apply(input || {});
     } catch (error) {
-        return jsonResponse(400, { error: error.message });
+        return updateErrorResponse(error);
     }
 }, 'POST');
 app.api('/api/update/reload', () => {
     try {
         return updater.requestReload();
     } catch (error) {
-        return jsonResponse(400, { error: error.message });
+        return updateErrorResponse(error);
     }
 }, 'POST');
 await syncStore();

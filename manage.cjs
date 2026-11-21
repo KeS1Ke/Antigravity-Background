@@ -145,6 +145,51 @@ function safeDirectory(path) {
         json(join(path, 'plugin.json'), {})?.name !== name) throw new Error('目标目录归属不匹配。');
 }
 
+const LOCK_OWNER_RE = /^owner-(\d+)-[a-f\d-]{36}$/;
+
+function isPidAlive(pid) {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error?.code !== 'ESRCH'; }
+}
+
+function removeUpdateDirLock(lockPath, owner) {
+    if (owner) {
+        try { fs.rmSync(join(lockPath, owner), { force: true }); } catch {}
+    }
+    try { fs.rmdirSync(lockPath); } catch {}
+}
+
+function acquireUpdateDirLock(lockPath) {
+    const existing = fs.lstatSync(lockPath, { throwIfNoEntry: false });
+    if (existing) {
+        if (!existing.isDirectory()) {
+            throw new Error('检测到旧版在线更新锁：' + lockPath + '。请等待更新完成，或确认旧进程退出后清理该文件重试。');
+        }
+        const owners = fs.readdirSync(lockPath);
+        const owner = owners[0];
+        const pid = Number(LOCK_OWNER_RE.exec(owner || '')?.[1]);
+        if (owners.length > 1 || (owner && (!Number.isInteger(pid) || pid <= 0 || isPidAlive(pid)))) {
+            throw new Error('在线更新正在进行：' + lockPath + '。请等待更新完成后再试。');
+        }
+        removeUpdateDirLock(lockPath, owner);
+    }
+    const token = randomUUID();
+    const owner = 'owner-' + process.pid + '-' + token;
+    const stagedLock = lockPath + '.' + token + '.tmp';
+    try {
+        fs.mkdirSync(stagedLock);
+        fs.writeFileSync(join(stagedLock, owner), '', { flag: 'wx' });
+        fs.renameSync(stagedLock, lockPath);
+    } catch (error) {
+        removeUpdateDirLock(stagedLock, owner);
+        if (fs.lstatSync(lockPath, { throwIfNoEntry: false }) || ['EEXIST', 'ENOTEMPTY'].includes(error.code)) {
+            throw new Error('在线更新正在进行：' + lockPath + '。请等待更新完成后再试。');
+        }
+        throw error;
+    }
+    return () => removeUpdateDirLock(lockPath, owner);
+}
+
 function acquireLock(lock) {
     try {
         return fs.openSync(lock, 'wx');
@@ -196,7 +241,9 @@ async function manage() {
     safeDirectory(destination);
     fs.mkdirSync(dirname(configuration), { recursive: true });
     const lock = configuration + '.antigravity-ui.lock';
+    const updateLock = join(dirname(destination), '.' + name + '-update.lock');
     const handle = acquireLock(lock);
+    let releaseUpdateLock = null;
     const staged = destination + '.staging-' + randomUUID();
     const previous = destination + '.previous-' + randomUUID();
     let oldMoved = false;
@@ -204,6 +251,7 @@ async function manage() {
     let persistInfo;
     let shortcutInfo;
     try {
+        releaseUpdateLock = acquireUpdateDirLock(updateLock);
         safeDirectory(destination);
         const before = fs.existsSync(configuration) ? fs.readFileSync(configuration) : null;
         const config = before ? JSON.parse(before.toString('utf8').replace(/^\uFEFF/, '')) : {};
@@ -253,6 +301,7 @@ async function manage() {
         if (oldMoved) fs.renameSync(previous, destination);
         throw error;
     } finally {
+        releaseUpdateLock?.();
         fs.closeSync(handle);
         fs.rmSync(lock, { force: true });
         fs.rmSync(staged, { recursive: true, force: true });

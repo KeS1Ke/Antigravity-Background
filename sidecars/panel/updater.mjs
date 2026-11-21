@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
-import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -9,9 +9,13 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve, win32 } from 'node:path';
 import tls from 'node:tls';
 import { promisify } from 'node:util';
-import { PLUGIN_NAME, REQUIRED_RUNTIME_FILES, RUNTIME_ROOTS, stageRuntimeArchive } from './archive.mjs';
+import * as archive from './archive.mjs';
 
 const execFileAsync = promisify(execFile);
+const { PLUGIN_NAME, REQUIRED_RUNTIME_FILES, RUNTIME_ROOTS, stageRuntimeArchive } = archive;
+// Interrupted rollback can restore an older archive module before it restores the updater.
+const isExcludedRuntimeSegment = archive.isExcludedRuntimeSegment ??
+    (segment => ['data', 'sdk'].includes(segment.toLowerCase()));
 
 export const DEFAULT_REPO = 'KeS1Ke/Antigravity-Background';
 const TRUSTED_GITHUB_HOSTS = new Set([
@@ -23,7 +27,6 @@ const TRUSTED_GITHUB_HOSTS = new Set([
     'release-assets.githubusercontent.com',
     'github-releases.githubusercontent.com',
 ]);
-const ALLOWED_NETWORK_DETAILS = new Set(['timeout', 'dns', 'certificate', 'proxy', 'http', 'connection']);
 const ALLOWED_ERROR_CODES = new Set(['network', 'verification', 'location', 'busy', 'install', 'rollback']);
 const MAX_METADATA_BYTES = 512 * 1024;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
@@ -32,6 +35,8 @@ const CHECK_BUDGET_MS = 30000;
 const APPLY_BUDGET_MS = 120000;
 const CHECK_COOLDOWN_MS = 5000;
 const PLAN_TTL_MS = 15 * 60 * 1000;
+const LOCK_OWNER_RE = /^owner-(\d+)-[a-f\d-]{36}$/;
+const FILE_RETRY_DELAYS_MS = [30, 80, 150, 220];
 const SEMVER_RE = /^(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})$/;
 const SHA_RE = /^[0-9a-f]{40}$/i;
 const SHA256_RE = /^[0-9a-f]{64}$/i;
@@ -66,6 +71,13 @@ function sanitizeText(text, maxLength = 1800) {
     return text.replace(SAFE_NOTES_STRIP_RE, '').trim().slice(0, maxLength);
 }
 
+function safeFromCodePoint(codePoint, fallback) {
+    if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
+        return fallback;
+    }
+    return String.fromCodePoint(codePoint);
+}
+
 function decodeHtmlEntities(text) {
     return String(text)
         .replace(/&amp;/g, '&')
@@ -73,8 +85,16 @@ function decodeHtmlEntities(text) {
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"')
         .replace(/&#39;|&#x27;/gi, "'")
-        .replace(/&#(\d+);/g, (_, num) => String.fromCodePoint(Number(num)))
-        .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)));
+        .replace(/&#(\d+);/g, (match, num) => safeFromCodePoint(Number(num), match))
+        .replace(/&#x([0-9a-f]+);/gi, (match, hex) => safeFromCodePoint(Number.parseInt(hex, 16), match));
+}
+
+function parseJsonStrict(raw) {
+    try {
+        return JSON.parse(String(raw).replace(/^\uFEFF/, ''));
+    } catch {
+        throw new UpdateError('verification');
+    }
 }
 
 function digestSha256(buffer) {
@@ -100,11 +120,22 @@ function hostMatchesRule(hostname, rule) {
     return host === clean || host.endsWith('.' + clean);
 }
 
+function normalizeProxyUrl(rawValue) {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return null;
+    return raw.includes('://') ? raw : `http://${raw}`;
+}
+
+function stripIpv6Brackets(hostname) {
+    const host = String(hostname || '');
+    return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
 function parseProxyServerValue(rawValue, scheme) {
     const raw = String(rawValue || '').trim();
     if (!raw) return null;
     if (!raw.includes('=')) {
-        return raw.includes('://') ? raw : `http://${raw}`;
+        return normalizeProxyUrl(raw);
     }
     const map = {};
     for (const part of raw.split(';')) {
@@ -113,7 +144,7 @@ function parseProxyServerValue(rawValue, scheme) {
     }
     const selected = map[scheme] || map.https || map.http;
     if (!selected) return null;
-    return selected.includes('://') ? selected : `http://${selected}`;
+    return normalizeProxyUrl(selected);
 }
 
 async function readWindowsProxy() {
@@ -154,13 +185,11 @@ export async function resolveSystemProxy(targetUrl, env = process.env, windowsPr
     const schemeKey = scheme === 'https' ? 'https_proxy' : 'http_proxy';
     const hasEnvScheme = Object.keys(env).some(key => key.toLowerCase() === schemeKey);
     if (hasEnvScheme) {
-        const value = (readEnv(schemeKey) || '').trim();
-        return value || null;
+        return normalizeProxyUrl(readEnv(schemeKey));
     }
     const hasEnvAll = Object.keys(env).some(key => key.toLowerCase() === 'all_proxy');
     if (hasEnvAll) {
-        const value = (readEnv('all_proxy') || '').trim();
-        return value || null;
+        return normalizeProxyUrl(readEnv('all_proxy'));
     }
 
     const win = await windowsProxyReader();
@@ -170,7 +199,7 @@ export async function resolveSystemProxy(targetUrl, env = process.env, windowsPr
 }
 
 function classifyNetworkError(error) {
-    if (error instanceof UpdateError && error.code === 'network') return error;
+    if (error instanceof UpdateError) return error;
     const text = String(error?.message || '');
     const code = String(error?.code || '');
     if (code === 'ERR_TLS_CERT_ALTNAME_INVALID' || code.includes('CERT') || text.includes('certificate')) {
@@ -182,11 +211,11 @@ function classifyNetworkError(error) {
     if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
         return new UpdateError('network', 'dns');
     }
-    if (text.includes('Tunnel connection failed') || error?.proxyError) {
-        return new UpdateError('network', 'proxy');
-    }
     if (Number.isInteger(error?.statusCode)) {
         return new UpdateError('network', error.statusCode === 407 ? 'proxy' : 'http', error.statusCode);
+    }
+    if (text.includes('Tunnel connection failed') || error?.proxyError) {
+        return new UpdateError('network', 'proxy');
     }
     return new UpdateError('network', 'connection');
 }
@@ -198,38 +227,70 @@ function isRetryableTlsError(error) {
     return code.startsWith('ERR_SSL') || code === 'ECONNRESET' || msg.includes('TLS') || msg.includes('SSL');
 }
 
-function openConnectTunnel(proxyUrlString, targetHost, targetPort, timeoutMs, maxVersion) {
-    const proxyUrl = new URL(proxyUrlString.includes('://') ? proxyUrlString : `http://${proxyUrlString}`);
+function openConnectTunnel(proxyUrlString, targetHost, targetPort, timeoutMs, maxVersion, deadline) {
+    const normalizedProxy = normalizeProxyUrl(proxyUrlString);
+    let proxyUrl;
+    try {
+        proxyUrl = new URL(normalizedProxy);
+    } catch {
+        const err = new Error('Invalid proxy URL');
+        err.proxyError = true;
+        return Promise.reject(err);
+    }
     if (!['http:', 'https:'].includes(proxyUrl.protocol)) {
         const err = new Error('Unsupported proxy protocol');
         err.proxyError = true;
         return Promise.reject(err);
     }
-    const proxyHost = proxyUrl.hostname;
+    const proxyHost = stripIpv6Brackets(proxyUrl.hostname);
     const proxyPort = Number(proxyUrl.port) || (proxyUrl.protocol === 'https:' ? 443 : 80);
+    const cleanTargetHost = stripIpv6Brackets(targetHost);
+    const connectTargetHost = cleanTargetHost.includes(':') ? `[${cleanTargetHost}]` : cleanTargetHost;
+    const effectiveDeadline = deadline ?? (Date.now() + timeoutMs);
 
     return new Promise((resolveSocket, rejectSocket) => {
         let settled = false;
         let buffer = Buffer.alloc(0);
+        let tlsSocket = null;
         const socket = proxyUrl.protocol === 'https:'
-            ? tls.connect({ host: proxyHost, port: proxyPort, servername: proxyHost })
+            ? tls.connect({
+                host: proxyHost,
+                port: proxyPort,
+                ...(net.isIP(proxyHost) ? {} : { servername: proxyHost }),
+            })
             : net.connect({ host: proxyHost, port: proxyPort });
         const fail = error => {
             if (settled) return;
             settled = true;
+            clearTimeout(tunnelTimer);
+            tlsSocket?.destroy();
             socket.destroy();
             rejectSocket(error);
         };
-        socket.setTimeout(timeoutMs, () => fail(Object.assign(new Error('Proxy connect timed out'), { code: 'ETIMEDOUT' })));
+        const tunnelTimeoutMs = Math.max(500, Math.min(timeoutMs, effectiveDeadline - Date.now()));
+        const tunnelTimer = setTimeout(() => {
+            fail(Object.assign(new Error('Proxy connect timed out'), { code: 'ETIMEDOUT' }));
+        }, tunnelTimeoutMs);
+        socket.setTimeout(tunnelTimeoutMs, () => fail(Object.assign(new Error('Proxy connect timed out'), { code: 'ETIMEDOUT' })));
         socket.once('error', error => fail(Object.assign(error, { proxyError: true })));
+        socket.once('close', () => fail(Object.assign(new Error('Proxy socket closed during tunnel setup'), { proxyError: true })));
 
         const onConnect = () => {
             const headers = [
-                `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
-                `Host: ${targetHost}:${targetPort}`,
+                `CONNECT ${connectTargetHost}:${targetPort} HTTP/1.1`,
+                `Host: ${connectTargetHost}:${targetPort}`,
             ];
             if (proxyUrl.username || proxyUrl.password) {
-                const auth = Buffer.from(`${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`).toString('base64');
+                let user;
+                let pass;
+                try {
+                    user = decodeURIComponent(proxyUrl.username);
+                    pass = decodeURIComponent(proxyUrl.password);
+                } catch {
+                    fail(Object.assign(new Error('Invalid proxy credentials'), { proxyError: true }));
+                    return;
+                }
+                const auth = Buffer.from(`${user}:${pass}`).toString('base64');
                 headers.push(`Proxy-Authorization: Basic ${auth}`);
             }
             socket.write(headers.join('\r\n') + '\r\n\r\n');
@@ -253,15 +314,25 @@ function openConnectTunnel(proxyUrlString, targetHost, targetPort, timeoutMs, ma
                 fail(Object.assign(new Error(`Tunnel connection failed: ${status}`), { proxyError: true, statusCode: status === 407 ? 407 : undefined }));
                 return;
             }
+            const tlsRemaining = effectiveDeadline - Date.now();
+            if (tlsRemaining <= 0) {
+                fail(Object.assign(new Error('Proxy TLS handshake timed out'), { code: 'ETIMEDOUT' }));
+                return;
+            }
             socket.pause();
             const leftover = buffer.subarray(end + 4);
             if (leftover.length) socket.unshift(leftover);
-            const tlsSocket = tls.connect({
+            tlsSocket = tls.connect({
                 socket,
-                servername: targetHost,
+                ...(net.isIP(cleanTargetHost) ? {} : { servername: cleanTargetHost }),
                 ...(maxVersion ? { maxVersion } : {}),
             });
+            tlsSocket.setTimeout(Math.max(500, Math.min(timeoutMs, tlsRemaining)), () => {
+                fail(Object.assign(new Error('Proxy TLS handshake timed out'), { code: 'ETIMEDOUT' }));
+            });
             tlsSocket.once('secureConnect', () => {
+                clearTimeout(tunnelTimer);
+                tlsSocket.setTimeout(0);
                 if (settled) {
                     tlsSocket.destroy();
                     return;
@@ -270,6 +341,7 @@ function openConnectTunnel(proxyUrlString, targetHost, targetPort, timeoutMs, ma
                 resolveSocket(tlsSocket);
             });
             tlsSocket.once('error', fail);
+            tlsSocket.once('close', () => fail(new Error('TLS socket closed before handshake completed')));
         };
         socket.on('data', onData);
     });
@@ -301,22 +373,32 @@ async function httpRequestOnce(urlString, {
     maxVersion = undefined,
 }) {
     const parsed = new URL(urlString);
+    if (Date.now() >= deadline) {
+        throw Object.assign(new Error('Update request timed out'), { code: 'ETIMEDOUT' });
+    }
     const remaining = Math.max(1000, Math.min(timeoutMs, deadline - Date.now()));
-    const proxyUrl = await proxyResolver(urlString);
+    const rawProxyUrl = await proxyResolver(urlString);
+    const proxyUrl = normalizeProxyUrl(rawProxyUrl);
     const isHttps = parsed.protocol === 'https:';
     const port = Number(parsed.port) || (isHttps ? 443 : 80);
 
     let tunnelSocket = null;
     if (proxyUrl && isHttps) {
-        tunnelSocket = await openConnectTunnel(proxyUrl, parsed.hostname, port, remaining, maxVersion);
+        tunnelSocket = await openConnectTunnel(proxyUrl, parsed.hostname, port, remaining, maxVersion, deadline);
     }
 
     const requestUrl = (!isHttps && proxyUrl) ? proxyUrl : urlString;
-    const reqParsed = new URL(requestUrl);
+    let reqParsed;
+    try {
+        reqParsed = new URL(requestUrl);
+    } catch {
+        tunnelSocket?.destroy();
+        throw Object.assign(new Error('Invalid proxy URL'), { proxyError: Boolean(proxyUrl) });
+    }
     const transport = reqParsed.protocol === 'https:' ? https : http;
     const requestOptions = {
         protocol: reqParsed.protocol,
-        hostname: reqParsed.hostname,
+        hostname: stripIpv6Brackets(reqParsed.hostname),
         port: reqParsed.port || (reqParsed.protocol === 'https:' ? 443 : 80),
         path: (!isHttps && proxyUrl) ? urlString : (parsed.pathname + parsed.search),
         method,
@@ -398,7 +480,7 @@ async function httpRequestOnce(urlString, {
 }
 
 async function fetchTrusted(urlString, options = {}) {
-    const { extraTrustedOrigins, method = 'GET', deadline = Date.now() + CHECK_BUDGET_MS } = options;
+    const { extraTrustedOrigins, deadline = Date.now() + CHECK_BUDGET_MS } = options;
     let currentUrl = urlString;
     for (let hop = 0; hop < 6; hop++) {
         validateTrustedUrl(currentUrl, extraTrustedOrigins);
@@ -417,11 +499,18 @@ async function fetchTrusted(urlString, options = {}) {
             }
         }
         if (response.location) {
-            currentUrl = new URL(response.location, currentUrl).href;
+            try {
+                currentUrl = new URL(response.location, currentUrl).href;
+            } catch {
+                throw new UpdateError('verification');
+            }
             continue;
         }
         if (response.status >= 400) {
-            throw Object.assign(new UpdateError('network', response.status === 407 ? 'proxy' : 'http', response.status), { statusCode: response.status });
+            throw new UpdateError('network', response.status === 407 ? 'proxy' : 'http', response.status);
+        }
+        if (response.status < 200 || response.status >= 300 || response.status === 204) {
+            throw new UpdateError('network', 'http', response.status);
         }
         return { ...response, finalUrl: currentUrl };
     }
@@ -430,7 +519,7 @@ async function fetchTrusted(urlString, options = {}) {
 
 function parseChecksumFile(text, filename) {
     const matches = [];
-    for (const rawLine of String(text).split(/\r?\n/)) {
+    for (const rawLine of String(text).replace(/^\uFEFF/, '').split(/\r?\n/)) {
         const parts = rawLine.trim().split(/\s+/);
         if (parts.length === 1 && SHA256_RE.test(parts[0])) {
             matches.push(parts[0].toLowerCase());
@@ -449,14 +538,13 @@ function parseAtomLatestCommit(xmlText, repo, webBase) {
     const idMatch = entry.match(/<id>[^<]*Commit\/([0-9a-f]{40})<\/id>/i);
     if (!idMatch) throw new UpdateError('verification');
     const sha = idMatch[1].toLowerCase();
+    if (!SHA_RE.test(sha)) throw new UpdateError('verification');
     const titleMatch = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const linkMatch = entry.match(/<link[^>]*href="([^"]+)"/i);
     const title = titleMatch ? sanitizeText(decodeHtmlEntities(titleMatch[1]), 300) : '';
-    const rawHref = linkMatch ? decodeHtmlEntities(linkMatch[1]) : `${webBase}/${repo}/commit/${sha}`;
     return {
         sha,
         message: title,
-        url: rawHref.startsWith('http') ? rawHref : `${webBase}${rawHref}`,
+        url: `${webBase}/${repo}/commit/${sha}`,
     };
 }
 
@@ -479,14 +567,36 @@ export function releaseRuntimeDirectory(pluginDir, {
     return false;
 }
 
-function hasSymlinkInTree(targetPath) {
+function isSymlink(targetPath) {
     const info = lstatSync(targetPath, { throwIfNoEntry: false });
-    if (!info) return false;
-    if (info.isSymbolicLink()) return true;
-    return false;
+    return Boolean(info?.isSymbolicLink());
 }
 
-const PRIVATE_ENTRIES = new Set(['data', 'sdk']);
+function isValidPid(pid) {
+    return Number.isInteger(pid) && pid > 0 && pid <= 0x7fffffff;
+}
+
+function isPidAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        if (error?.code === 'ESRCH') return false;
+        return true;
+    }
+}
+
+async function removeLockOwner(lockPath, owner) {
+    if (owner) {
+        await retryFileOperation(() => unlink(join(lockPath, owner))).catch(error => {
+            if (error.code !== 'ENOENT') throw error;
+        });
+    }
+    // A newer contender may already have published a populated directory at lockPath.
+    await rmdir(lockPath).catch(error => {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+    });
+}
 
 async function listRuntimeFiles(rootDir) {
     const files = [];
@@ -503,7 +613,7 @@ async function listRuntimeFiles(rootDir) {
             const walk = async (dir, prefix) => {
                 const items = await readdir(dir, { withFileTypes: true });
                 for (const item of items) {
-                    if (PRIVATE_ENTRIES.has(item.name.toLowerCase())) continue;
+                    if (isExcludedRuntimeSegment(item.name)) continue;
                     const rel = prefix ? `${prefix}/${item.name}` : item.name;
                     const full = join(dir, item.name);
                     if (item.isSymbolicLink()) throw new UpdateError('location', 'install-location');
@@ -517,23 +627,84 @@ async function listRuntimeFiles(rootDir) {
     return files.sort();
 }
 
-async function writeAtomicFile(targetPath, content) {
-    await mkdir(dirname(targetPath), { recursive: true });
+async function retryFileOperation(operation) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            await operation();
+            return;
+        } catch (error) {
+            if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt === FILE_RETRY_DELAYS_MS.length) {
+                throw error;
+            }
+            await new Promise(resolveTimer => setTimeout(resolveTimer, FILE_RETRY_DELAYS_MS[attempt]));
+        }
+    }
+}
+
+async function ensureParentDir(targetPath, boundaryRoot = null) {
+    const parent = dirname(targetPath);
+    if (boundaryRoot) {
+        const root = resolve(boundaryRoot);
+        const resolvedParent = resolve(parent);
+        const sep = process.platform === 'win32' ? '\\' : '/';
+        if (resolvedParent !== root && resolvedParent.startsWith(root + sep)) {
+            const relSegments = resolvedParent.slice(root.length + 1).split(/[\\/]/).filter(Boolean);
+            let current = root;
+            for (const segment of relSegments) {
+                current = join(current, segment);
+                const info = lstatSync(current, { throwIfNoEntry: false });
+                if (info && !info.isDirectory()) {
+                    await rm(current, { force: true });
+                }
+            }
+        }
+    }
+    await mkdir(parent, { recursive: true });
+}
+
+async function clearDirectoryConflict(targetPath) {
+    const info = lstatSync(targetPath, { throwIfNoEntry: false });
+    if (info?.isDirectory()) await removeEmptyRuntimeDirectory(targetPath);
+}
+
+async function removeEmptyRuntimeDirectory(path) {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+        if (!entry.isDirectory() || isExcludedRuntimeSegment(entry.name)) {
+            throw new UpdateError('install');
+        }
+        await removeEmptyRuntimeDirectory(join(path, entry.name));
+    }
+    await rmdir(path);
+}
+
+async function removeRuntimeFile(path) {
+    try {
+        const info = lstatSync(path, { throwIfNoEntry: false });
+        if (info && !info.isDirectory()) await unlink(path);
+    } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+    }
+}
+
+async function writeAtomicFile(targetPath, content, boundaryRoot = null) {
+    await ensureParentDir(targetPath, boundaryRoot);
     const tempPath = `${targetPath}.${randomUUID()}.tmp`;
     try {
         await writeFile(tempPath, content, { flag: 'wx' });
-        await rename(tempPath, targetPath);
+        await clearDirectoryConflict(targetPath);
+        await retryFileOperation(() => rename(tempPath, targetPath));
     } finally {
         await rm(tempPath, { force: true }).catch(() => {});
     }
 }
 
-async function copyAtomicFile(sourcePath, targetPath) {
-    await mkdir(dirname(targetPath), { recursive: true });
+async function copyAtomicFile(sourcePath, targetPath, boundaryRoot = null) {
+    await ensureParentDir(targetPath, boundaryRoot);
     const tempPath = `${targetPath}.${randomUUID()}.tmp`;
     try {
         await copyFile(sourcePath, tempPath);
-        await rename(tempPath, targetPath);
+        await clearDirectoryConflict(targetPath);
+        await retryFileOperation(() => rename(tempPath, targetPath));
     } finally {
         await rm(tempPath, { force: true }).catch(() => {});
     }
@@ -639,15 +810,23 @@ export class PluginUpdater {
     }
 
     async readLocalState() {
-        const manifestRaw = await readFile(join(this.pluginDir, 'plugin.json'), 'utf8');
-        const manifest = JSON.parse(manifestRaw.replace(/^\uFEFF/, ''));
+        let manifestRaw;
+        try {
+            manifestRaw = await readFile(join(this.pluginDir, 'plugin.json'), 'utf8');
+        } catch (error) {
+            if (['EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) {
+                throw new UpdateError('location', 'permission');
+            }
+            throw new UpdateError('location', 'install-location');
+        }
+        const manifest = parseJsonStrict(manifestRaw);
         if (manifest?.name !== PLUGIN_NAME || !parseSemver(manifest?.version)) {
             throw new UpdateError('verification');
         }
         let currentCommit = null;
         try {
             const sourceRaw = await readFile(join(this.pluginDir, '.install-source.json'), 'utf8');
-            const source = JSON.parse(sourceRaw.replace(/^\uFEFF/, ''));
+            const source = parseJsonStrict(sourceRaw);
             if (source?.version === manifest.version && typeof source?.commit === 'string' && SHA_RE.test(source.commit)) {
                 currentCommit = source.commit.toLowerCase();
             }
@@ -659,25 +838,44 @@ export class PluginUpdater {
         if (existsSync(join(this.pluginDir, '.git'))) {
             return { canApply: false, reason: 'dev-workspace' };
         }
-        if (hasSymlinkInTree(this.pluginDir)) {
-            return { canApply: false, reason: 'location' };
+        if (isSymlink(this.pluginDir)) {
+            return { canApply: false, reason: 'install-location' };
         }
         if (!this.allowCustomTarget) {
             try {
-                if (!existsSync(this.expectedPluginDir) || hasSymlinkInTree(this.expectedPluginDir)) {
-                    return { canApply: false, reason: 'location' };
+                if (!existsSync(this.expectedPluginDir) || isSymlink(this.expectedPluginDir)) {
+                    return { canApply: false, reason: 'install-location' };
                 }
-                if (realpathSync(this.pluginDir).toLowerCase() !== realpathSync(this.expectedPluginDir).toLowerCase()) {
-                    return { canApply: false, reason: 'location' };
+                const actualReal = realpathSync(this.pluginDir);
+                const expectedReal = realpathSync(this.expectedPluginDir);
+                const samePath = process.platform === 'win32'
+                    ? actualReal.toLowerCase() === expectedReal.toLowerCase()
+                    : actualReal === expectedReal;
+                if (!samePath) {
+                    return { canApply: false, reason: 'install-location' };
                 }
             } catch {
-                return { canApply: false, reason: 'location' };
+                return { canApply: false, reason: 'install-location' };
             }
         }
         return { canApply: true, reason: null };
     }
 
     async initializeLocalInfo() {
+        try {
+            const target = this.inspectTargetEligibility();
+            if (target.canApply) {
+                let lock = null;
+                try {
+                    lock = await this.acquireUpdateLock();
+                    await this.recoverInterruptedTransactions();
+                } catch {
+                    // Best-effort startup recovery: never block initialization
+                } finally {
+                    if (lock) await lock.release();
+                }
+            }
+        } catch {}
         try {
             const local = await this.readLocalState();
             const target = this.inspectTargetEligibility();
@@ -689,6 +887,18 @@ export class PluginUpdater {
         return this.publicState();
     }
 
+    createCycleProxyResolver() {
+        if (this.proxyResolver !== resolveSystemProxy) {
+            return this.proxyResolver;
+        }
+        let winProxyPromise = null;
+        const cachedWindowsReader = () => {
+            if (!winProxyPromise) winProxyPromise = readWindowsProxy();
+            return winProxyPromise;
+        };
+        return targetUrl => resolveSystemProxy(targetUrl, process.env, cachedWindowsReader);
+    }
+
     fetchOptions(deadline, extra = {}) {
         return {
             extraTrustedOrigins: this.extraTrustedOrigins,
@@ -698,24 +908,32 @@ export class PluginUpdater {
         };
     }
 
-    async tryFetchLatestRelease(currentVersion, deadline) {
+    async tryFetchLatestRelease(currentVersion, deadline, proxyResolver = this.proxyResolver) {
         const { apiBase, webBase, codeloadBase } = this.endpoints;
         const apiUrl = `${apiBase}/repos/${this.repo}/releases/latest`;
         try {
             const res = await fetchTrusted(apiUrl, this.fetchOptions(Math.min(deadline, Date.now() + 10000), {
+                proxyResolver,
                 headers: { Accept: 'application/vnd.github+json' },
                 maxBytes: MAX_METADATA_BYTES,
             }));
-            const release = JSON.parse(res.body.toString('utf8'));
+            const release = parseJsonStrict(res.body.toString('utf8'));
+            if (!release || typeof release !== 'object' || Array.isArray(release)) {
+                throw new UpdateError('verification');
+            }
             if (release.draft || release.prerelease) return null;
             const rawTag = String(release.tag_name || '').trim();
             const versionMatch = rawTag.match(/^v?(\d+\.\d+\.\d+)$/);
             if (!versionMatch || !parseSemver(versionMatch[1])) throw new UpdateError('verification');
             const latestVersion = versionMatch[1];
             const assets = Array.isArray(release.assets) ? release.assets : [];
-            const zipAsset = this.selectReleaseZipAsset(assets, latestVersion);
+            const zipAsset = this.selectPreferredZip(assets, latestVersion, item => item?.name);
             const shaAsset = zipAsset ? assets.find(item => item?.name === `${zipAsset.name}.sha256`) : null;
-            const hasPair = Boolean(zipAsset && shaAsset && this.isTrustedDownloadAsset(zipAsset.browser_download_url) && this.isTrustedDownloadAsset(shaAsset.browser_download_url));
+            if ((zipAsset && !this.isTrustedDownloadAsset(zipAsset.browser_download_url)) ||
+                (shaAsset && !this.isTrustedDownloadAsset(shaAsset.browser_download_url))) {
+                throw new UpdateError('verification');
+            }
+            const hasPair = Boolean(zipAsset && shaAsset);
             return {
                 sourceKind: 'release',
                 tag: rawTag,
@@ -732,12 +950,14 @@ export class PluginUpdater {
             };
         } catch (error) {
             if (error?.statusCode === 404) return null;
-            if (error?.statusCode !== undefined && ![403, 429].includes(error.statusCode)) throw error;
             if (error?.detail === 'certificate') throw error;
+            if (error instanceof UpdateError && error.code === 'verification') throw error;
+            if (error?.statusCode !== undefined && ![403, 429].includes(error.statusCode)) throw error;
         }
 
         // Fallback to public HTML page when API hits 403/429 rate-limit or transient API block.
         const htmlRes = await fetchTrusted(`${webBase}/${this.repo}/releases/latest`, this.fetchOptions(deadline, {
+            proxyResolver,
             headers: { Accept: 'text/html' },
             maxBytes: MAX_METADATA_BYTES,
         }));
@@ -745,7 +965,12 @@ export class PluginUpdater {
         if (finalPath === `/${this.repo}/releases`) return null;
         const tagPrefix = `/${this.repo}/releases/tag/`;
         if (!finalPath.startsWith(tagPrefix)) throw new UpdateError('verification');
-        const rawTag = decodeURIComponent(finalPath.slice(tagPrefix.length));
+        let rawTag;
+        try {
+            rawTag = decodeURIComponent(finalPath.slice(tagPrefix.length));
+        } catch {
+            throw new UpdateError('verification');
+        }
         const versionMatch = rawTag.match(/^v?(\d+\.\d+\.\d+)$/);
         if (!versionMatch || !parseSemver(versionMatch[1])) throw new UpdateError('verification');
         const latestVersion = versionMatch[1];
@@ -755,20 +980,30 @@ export class PluginUpdater {
         if (compareSemver(latestVersion, currentVersion) > 0) {
             try {
                 const expandedRes = await fetchTrusted(`${webBase}/${this.repo}/releases/expanded_assets/${encodeURIComponent(rawTag)}`, this.fetchOptions(deadline, {
+                    proxyResolver,
                     headers: { Accept: 'text/html' },
                     maxBytes: MAX_METADATA_BYTES,
                 }));
                 const expandedHtml = decodeHtmlEntities(expandedRes.body.toString('utf8'));
                 const hrefs = [...expandedHtml.matchAll(/href="([^"]*\/releases\/download\/[^"]+)"/g)].map(m => m[1]);
-                const resolvedAssets = hrefs.map(href => new URL(href, webBase).href);
+                const resolvedAssets = hrefs.map(href => {
+                    try {
+                        return new URL(href, webBase).href;
+                    } catch {
+                        throw new UpdateError('verification');
+                    }
+                });
                 const zipUrls = resolvedAssets.filter(href => href.toLowerCase().endsWith('.zip'));
-                const chosenZip = this.selectPreferredZipUrl(zipUrls, latestVersion);
+                const chosenZip = this.selectPreferredZip(zipUrls, latestVersion, url => url.split('/').pop());
                 const chosenSha = chosenZip ? resolvedAssets.find(href => href === `${chosenZip}.sha256`) : null;
+                if (chosenZip && !this.isTrustedDownloadAsset(chosenZip)) throw new UpdateError('verification');
                 if (chosenZip && chosenSha) {
                     zipAsset = chosenZip;
                     shaAsset = chosenSha;
                 }
-            } catch {}
+            } catch (error) {
+                if (error?.statusCode !== 404) throw error;
+            }
         }
 
         return {
@@ -797,72 +1032,94 @@ export class PluginUpdater {
         }
     }
 
-    selectReleaseZipAsset(assets, latestVersion) {
-        const zips = assets.filter(item => typeof item?.name === 'string' && item.name.toLowerCase().endsWith('.zip'));
+    selectPreferredZip(items, latestVersion, getName) {
+        const zips = items.filter(item => {
+            const name = getName(item);
+            return typeof name === 'string' && name.toLowerCase().endsWith('.zip');
+        });
         const preferredNames = [
             `antigravity-background-${latestVersion}.zip`,
             `antigravity-ui-${latestVersion}.zip`,
         ];
         for (const preferred of preferredNames) {
-            const match = zips.find(item => item.name.toLowerCase() === preferred);
+            const match = zips.find(item => getName(item).toLowerCase() === preferred);
             if (match) return match;
         }
         return zips.length === 1 ? zips[0] : null;
     }
 
-    selectPreferredZipUrl(urls, latestVersion) {
-        const preferredNames = [
-            `antigravity-background-${latestVersion}.zip`,
-            `antigravity-ui-${latestVersion}.zip`,
-        ];
-        for (const preferred of preferredNames) {
-            const match = urls.find(url => url.toLowerCase().endsWith('/' + preferred));
-            if (match) return match;
+    async fetchManifestAtUrls(urls, deadline, proxyResolver) {
+        let lastError = null;
+        for (let i = 0; i < urls.length; i++) {
+            try {
+                const res = await fetchTrusted(urls[i], this.fetchOptions(deadline, {
+                    proxyResolver,
+                    maxBytes: 65536,
+                }));
+                return res.body;
+            } catch (error) {
+                if (error?.detail === 'certificate') throw error;
+                if (error instanceof UpdateError && error.code === 'verification') throw error;
+                lastError = error;
+            }
         }
-        return urls.length === 1 ? urls[0] : null;
+        throw lastError;
     }
 
-    async fetchMainBranchInfo(deadline) {
+    async fetchMainBranchInfo(deadline, proxyResolver = this.proxyResolver) {
         const { apiBase, webBase, rawBase, codeloadBase } = this.endpoints;
-        let manifestBody;
-        try {
-            const res = await fetchTrusted(`${rawBase}/${this.repo}/main/plugin.json`, this.fetchOptions(deadline, { maxBytes: 65536 }));
-            manifestBody = res.body;
-        } catch {
-            const res = await fetchTrusted(`${webBase}/${this.repo}/raw/refs/heads/main/plugin.json`, this.fetchOptions(deadline, { maxBytes: 65536 }));
-            manifestBody = res.body;
-        }
-        const manifest = JSON.parse(manifestBody.toString('utf8').replace(/^\uFEFF/, ''));
-        if (manifest?.name !== PLUGIN_NAME || !parseSemver(manifest?.version)) {
-            throw new UpdateError('verification');
-        }
-        const latestVersion = manifest.version;
 
+        // Fetch commit SHA first so plugin.json can be pinned to the exact commit (eliminates raw CDN race).
         let commitInfo = null;
         try {
             const res = await fetchTrusted(`${apiBase}/repos/${this.repo}/commits/main`, this.fetchOptions(Math.min(deadline, Date.now() + 10000), {
+                proxyResolver,
                 headers: { Accept: 'application/vnd.github+json' },
                 maxBytes: MAX_METADATA_BYTES,
             }));
-            const commit = JSON.parse(res.body.toString('utf8'));
-            if (typeof commit?.sha === 'string' && SHA_RE.test(commit.sha)) {
-                commitInfo = {
-                    sha: commit.sha.toLowerCase(),
-                    message: sanitizeText(commit.commit?.message || ''),
-                    url: `${webBase}/${this.repo}/commit/${commit.sha.toLowerCase()}`,
-                };
+            const commit = parseJsonStrict(res.body.toString('utf8'));
+            if (typeof commit?.sha !== 'string' || !SHA_RE.test(commit.sha)) {
+                throw new UpdateError('verification');
             }
+            commitInfo = {
+                sha: commit.sha.toLowerCase(),
+                message: sanitizeText(commit.commit?.message || ''),
+                url: `${webBase}/${this.repo}/commit/${commit.sha.toLowerCase()}`,
+            };
         } catch (error) {
             if (error?.detail === 'certificate') throw error;
+            if (error instanceof UpdateError && error.code === 'verification') throw error;
+            if (error?.statusCode !== undefined && ![403, 429].includes(error.statusCode)) throw error;
         }
 
         if (!commitInfo) {
             const atomRes = await fetchTrusted(`${webBase}/${this.repo}/commits/main.atom`, this.fetchOptions(deadline, {
+                proxyResolver,
                 headers: { Accept: 'application/atom+xml, application/xml, text/xml' },
                 maxBytes: MAX_METADATA_BYTES,
             }));
             commitInfo = parseAtomLatestCommit(atomRes.body.toString('utf8'), this.repo, webBase);
         }
+
+        let manifestBody;
+        try {
+            manifestBody = await this.fetchManifestAtUrls([
+                `${rawBase}/${this.repo}/${commitInfo.sha}/plugin.json`,
+                `${webBase}/${this.repo}/raw/${commitInfo.sha}/plugin.json`,
+            ], deadline, proxyResolver);
+        } catch (error) {
+            if (error?.statusCode !== 404) throw error;
+            manifestBody = await this.fetchManifestAtUrls([
+                `${rawBase}/${this.repo}/main/plugin.json`,
+                `${webBase}/${this.repo}/raw/refs/heads/main/plugin.json`,
+            ], deadline, proxyResolver);
+        }
+
+        const manifest = parseJsonStrict(manifestBody.toString('utf8'));
+        if (manifest?.name !== PLUGIN_NAME || !parseSemver(manifest?.version)) {
+            throw new UpdateError('verification');
+        }
+        const latestVersion = manifest.version;
 
         return {
             sourceKind: 'main',
@@ -910,8 +1167,9 @@ export class PluginUpdater {
                 this.state.currentCommit = currentCommit;
 
                 const deadline = Date.now() + CHECK_BUDGET_MS;
-                let remote = await this.tryFetchLatestRelease(currentVersion, deadline);
-                if (!remote) remote = await this.fetchMainBranchInfo(deadline);
+                const proxyResolver = this.createCycleProxyResolver();
+                let remote = await this.tryFetchLatestRelease(currentVersion, deadline, proxyResolver);
+                if (!remote) remote = await this.fetchMainBranchInfo(deadline, proxyResolver);
 
                 const cmp = compareSemver(remote.latestVersion, currentVersion);
                 let hasUpdate = false;
@@ -949,7 +1207,16 @@ export class PluginUpdater {
                     checkedAt: new Date(this.now()).toISOString(),
                 };
             } catch (error) {
-                const classified = error instanceof UpdateError ? error : classifyNetworkError(error);
+                let classified;
+                if (error instanceof UpdateError) {
+                    classified = error;
+                } else if (['EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) {
+                    classified = new UpdateError('location', 'permission');
+                } else if (error instanceof SyntaxError) {
+                    classified = new UpdateError('verification');
+                } else {
+                    classified = classifyNetworkError(error);
+                }
                 this.state = {
                     ...this.state,
                     state: 'error',
@@ -994,7 +1261,7 @@ export class PluginUpdater {
                 ...this.state,
                 state: 'error',
                 canApply: false,
-                applyDisabledReason: target.reason || 'location',
+                applyDisabledReason: target.reason || 'install-location',
                 error: 'location',
                 errorDetail: target.reason === 'dev-workspace' ? 'dev-workspace' : 'install-location',
                 progress: undefined,
@@ -1031,12 +1298,22 @@ export class PluginUpdater {
 
         this.job = this.performInstall(plan)
             .catch(error => {
-                const err = error instanceof UpdateError ? error : classifyNetworkError(error);
+                let err;
+                if (error instanceof UpdateError) {
+                    err = error;
+                } else if (['EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) {
+                    err = new UpdateError('install', 'permission');
+                } else if (error instanceof SyntaxError) {
+                    err = new UpdateError('verification');
+                } else {
+                    err = new UpdateError('install');
+                }
                 this.state = {
                     ...this.state,
                     state: 'error',
+                    progress: undefined,
                     error: ALLOWED_ERROR_CODES.has(err.code) ? err.code : 'install',
-                    errorDetail: err.detail || (['EACCES', 'EPERM', 'EBUSY'].includes(error?.code) ? 'permission' : undefined),
+                    errorDetail: err.detail,
                 };
             })
             .finally(() => { this.job = null; });
@@ -1044,30 +1321,88 @@ export class PluginUpdater {
         return this.publicState();
     }
 
+    async recoverUpdateLock(lockPath) {
+        try {
+            const info = lstatSync(lockPath, { throwIfNoEntry: false });
+            if (!info) return;
+            if (info.isDirectory()) {
+                const owners = await readdir(lockPath);
+                const owner = owners[0];
+                const pid = Number(LOCK_OWNER_RE.exec(owner || '')?.[1]);
+                if (owners.length > 1 || (owner && (!isValidPid(pid) || isPidAlive(pid)))) {
+                    throw new UpdateError('busy');
+                }
+                await removeLockOwner(lockPath, owner);
+                return;
+            }
+            // A legacy process can still hold this file while it edits the installation.
+            throw new UpdateError('busy', 'legacy-lock');
+        } catch (error) {
+            if (error.code === 'ENOENT') return;
+            // Windows can temporarily report EPERM while another contender deletes the old lock.
+            if (['EISDIR', 'EPERM', 'EBUSY'].includes(error.code)) {
+                throw new UpdateError('busy');
+            }
+            throw error;
+        }
+    }
+
+    async acquireUpdateLock() {
+        const lockPath = join(dirname(this.pluginDir), `.${PLUGIN_NAME}-update.lock`);
+        const cliLockPath = join(this.home, '.gemini', 'config', `config.json.${PLUGIN_NAME}.lock`);
+        if (lstatSync(cliLockPath, { throwIfNoEntry: false })) {
+            throw new UpdateError('busy');
+        }
+        const token = randomUUID();
+        const owner = `owner-${process.pid}-${token}`;
+        const stagedLock = `${lockPath}.${token}.tmp`;
+        await this.recoverUpdateLock(lockPath);
+        try {
+            await mkdir(stagedLock);
+            await writeFile(join(stagedLock, owner), '', { flag: 'wx' });
+            // Publish a populated directory in one operation. Empty-directory cleanup can
+            // never delete a new owner, even if another process already recovered the old one.
+            await rename(stagedLock, lockPath);
+        } catch (error) {
+            await removeLockOwner(stagedLock, owner).catch(() => {});
+            if (lstatSync(lockPath, { throwIfNoEntry: false }) ||
+                ['EEXIST', 'ENOTEMPTY'].includes(error.code)) {
+                throw new UpdateError('busy');
+            }
+            throw new UpdateError('install', ['EACCES', 'EPERM', 'EBUSY'].includes(error?.code) ? 'permission' : undefined);
+        }
+        if (lstatSync(cliLockPath, { throwIfNoEntry: false })) {
+            await removeLockOwner(lockPath, owner).catch(() => {});
+            throw new UpdateError('busy');
+        }
+        return { release: () => removeLockOwner(lockPath, owner) };
+    }
+
     async performInstall(plan) {
         const deadline = Date.now() + APPLY_BUDGET_MS;
         await mkdir(this.updatesDir, { recursive: true });
-        const lockPath = join(dirname(this.pluginDir), `.${PLUGIN_NAME}-update.lock`);
-        let lockHandle;
-        try {
-            lockHandle = await open(lockPath, 'wx');
-        } catch (error) {
-            if (error.code === 'EEXIST') throw new UpdateError('busy');
-            throw new UpdateError('install', ['EACCES', 'EPERM'].includes(error.code) ? 'permission' : undefined);
-        }
+        const lock = await this.acquireUpdateLock();
+        const proxyResolver = this.createCycleProxyResolver();
 
         const txDir = join(this.updatesDir, `tx-${randomUUID()}`);
+        let keepTxDir = false;
+        let installFailed = false;
         try {
             await this.recoverInterruptedTransactions();
+            const local = await this.readLocalState();
+            if (local.currentVersion !== plan.currentVersion || local.currentCommit !== plan.currentCommit) {
+                throw new UpdateError('verification', 'plan-expired');
+            }
             let expectedSha256 = null;
             if (plan.packageKind === 'release-zip' && plan.checksumUrl) {
                 this.state = { ...this.state, progress: { phase: 'verify' } };
-                const shaRes = await fetchTrusted(plan.checksumUrl, this.fetchOptions(deadline, { maxBytes: 8192 }));
+                const shaRes = await fetchTrusted(plan.checksumUrl, this.fetchOptions(deadline, { proxyResolver, maxBytes: 8192 }));
                 expectedSha256 = parseChecksumFile(shaRes.body.toString('utf8'), plan.archiveName);
             }
 
             this.state = { ...this.state, progress: { phase: 'download', received: 0, total: plan.size || undefined } };
             const archiveRes = await fetchTrusted(plan.url, this.fetchOptions(deadline, {
+                proxyResolver,
                 maxBytes: MAX_ARCHIVE_BYTES,
                 timeoutMs: 60000,
                 onProgress: (received, total) => {
@@ -1131,14 +1466,18 @@ export class PluginUpdater {
 
             try {
                 this.state = { ...this.state, progress: { phase: 'install' } };
-                for (const rel of stagedFiles) {
-                    await copyAtomicFile(join(stageDir, ...rel.split('/')), join(this.pluginDir, ...rel.split('/')));
-                }
                 const stagedSet = new Set(stagedFiles.map(item => item.toLowerCase()));
                 for (const oldRel of oldFiles) {
                     if (!stagedSet.has(oldRel.toLowerCase())) {
-                        await rm(join(this.pluginDir, ...oldRel.split('/')), { force: true });
+                        await removeRuntimeFile(join(this.pluginDir, ...oldRel.split('/')));
                     }
+                }
+                for (const rel of stagedFiles) {
+                    await copyAtomicFile(
+                        join(stageDir, ...rel.split('/')),
+                        join(this.pluginDir, ...rel.split('/')),
+                        this.pluginDir
+                    );
                 }
                 const sourceMeta = {
                     repo: this.repo,
@@ -1148,7 +1487,7 @@ export class PluginUpdater {
                     tag: plan.tag || null,
                     updatedAt: new Date(this.now()).toISOString(),
                 };
-                await writeAtomicFile(oldSourcePath, JSON.stringify(sourceMeta, null, 2) + '\n');
+                await writeAtomicFile(oldSourcePath, JSON.stringify(sourceMeta, null, 2) + '\n', this.pluginDir);
 
                 const verified = await this.readLocalState();
                 if (verified.currentVersion !== plan.expectedVersion) {
@@ -1161,7 +1500,12 @@ export class PluginUpdater {
                 await writeAtomicFile(journalPath, JSON.stringify({ schema: 1, phase: 'committed' }));
             } catch (installError) {
                 this.state = { ...this.state, progress: { phase: 'recover' } };
-                await this.restoreBackupSnapshot(backupDir, journalPath, journal);
+                try {
+                    await this.restoreBackupSnapshot(backupDir, journalPath, journal);
+                } catch (rollbackError) {
+                    keepTxDir = true;
+                    throw rollbackError;
+                }
                 if (installError instanceof UpdateError) throw installError;
                 throw new UpdateError('install', ['EACCES', 'EPERM', 'EBUSY'].includes(installError?.code) ? 'permission' : undefined);
             }
@@ -1178,32 +1522,56 @@ export class PluginUpdater {
                 error: undefined,
                 errorDetail: undefined,
             };
+        } catch (error) {
+            installFailed = true;
+            throw error;
         } finally {
-            if (this.state.state !== 'error' || this.state.error !== 'rollback') {
+            if (!keepTxDir) {
                 await rm(txDir, { recursive: true, force: true }).catch(() => {});
             }
-            await lockHandle.close().catch(() => {});
-            await rm(lockPath, { force: true }).catch(() => {});
+            await lock.release().catch(error => {
+                if (!installFailed) throw error;
+            });
         }
     }
 
     async restoreBackupSnapshot(backupDir, journalPath, journal) {
-        try {
-            const oldSet = new Set(journal.oldFiles.map(item => item.toLowerCase()));
-            for (const rel of journal.oldFiles) {
-                await copyAtomicFile(join(backupDir, ...rel.split('/')), join(this.pluginDir, ...rel.split('/')));
-            }
-            for (const stagedRel of journal.stagedFiles) {
-                if (!oldSet.has(stagedRel.toLowerCase())) {
-                    await rm(join(this.pluginDir, ...stagedRel.split('/')), { force: true });
+        const failures = [];
+        const oldSet = new Set(journal.oldFiles.map(item => item.toLowerCase()));
+        for (const stagedRel of journal.stagedFiles) {
+            if (!oldSet.has(stagedRel.toLowerCase())) {
+                try {
+                    await removeRuntimeFile(join(this.pluginDir, ...stagedRel.split('/')));
+                } catch (error) {
+                    failures.push({ rel: stagedRel, error });
                 }
             }
-            const sourceMetaPath = join(this.pluginDir, '.install-source.json');
+        }
+        for (const rel of journal.oldFiles) {
+            try {
+                const src = join(backupDir, ...rel.split('/'));
+                const dst = join(this.pluginDir, ...rel.split('/'));
+                const [srcHash, dstHash] = await Promise.all([fileSha256(src), fileSha256(dst)]);
+                if (srcHash && srcHash === dstHash) continue;
+                await copyAtomicFile(src, dst, this.pluginDir);
+            } catch (error) {
+                failures.push({ rel, error });
+            }
+        }
+        const sourceMetaPath = join(this.pluginDir, '.install-source.json');
+        try {
             if (journal.hadSourceMeta) {
-                await copyAtomicFile(join(backupDir, '.install-source.json'), sourceMetaPath);
+                await copyAtomicFile(join(backupDir, '.install-source.json'), sourceMetaPath, this.pluginDir);
             } else {
                 await rm(sourceMetaPath, { force: true });
             }
+        } catch (error) {
+            failures.push({ rel: '.install-source.json', error });
+        }
+        if (failures.length > 0) {
+            throw new UpdateError('rollback');
+        }
+        try {
             await writeAtomicFile(journalPath, JSON.stringify({ ...journal, phase: 'restored' }));
         } catch {
             throw new UpdateError('rollback');
@@ -1211,19 +1579,22 @@ export class PluginUpdater {
     }
 
     async recoverInterruptedTransactions() {
-        const entries = await readdir(this.updatesDir, { withFileTypes: true }).catch(() => []);
+        const entries = await readdir(this.updatesDir, { withFileTypes: true }).catch(error => {
+            if (error.code === 'ENOENT') return [];
+            throw new UpdateError('rollback');
+        });
         for (const entry of entries) {
             if (!entry.isDirectory() || !entry.name.startsWith('tx-')) continue;
             const txDir = join(this.updatesDir, entry.name);
             const journalPath = join(txDir, 'journal.json');
-            if (!existsSync(journalPath)) {
-                await rm(txDir, { recursive: true, force: true }).catch(() => {});
-                continue;
-            }
             let journal;
             try {
-                journal = JSON.parse(await readFile(journalPath, 'utf8'));
-            } catch {
+                journal = parseJsonStrict(await readFile(journalPath, 'utf8'));
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    await rm(txDir, { recursive: true, force: true }).catch(() => {});
+                    continue;
+                }
                 throw new UpdateError('rollback');
             }
             if (journal?.phase === 'committed' || journal?.phase === 'restored') {
@@ -1241,8 +1612,22 @@ export class PluginUpdater {
     requestReload() {
         if (this.state.state === 'reloading') return this.publicState();
         if (this.state.state !== 'installed' || !this.onReload) throw new UpdateError('verification');
-        this.state = { ...this.state, state: 'reloading' };
-        const timer = setTimeout(() => { void this.onReload(); }, 350);
+        this.state = { ...this.state, state: 'reloading', error: undefined, errorDetail: undefined };
+        const timer = setTimeout(() => {
+            Promise.resolve()
+                .then(() => this.onReload())
+                .catch(() => {
+                    if (this.state.state === 'reloading') {
+                        this.state = {
+                            ...this.state,
+                            state: 'error',
+                            progress: undefined,
+                            error: 'install',
+                            errorDetail: undefined,
+                        };
+                    }
+                });
+        }, 350);
         timer.unref?.();
         return this.publicState();
     }

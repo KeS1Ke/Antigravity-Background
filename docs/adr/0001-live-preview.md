@@ -102,3 +102,7 @@
   - 拆出独立扁平 **「Overview 面板」** 设置卡（`overviewCover`、`overviewOuterColor`、`overviewInnerColor`、`overviewOpacity`、`overviewBlur`），保留外框颜色与内部填充，移除 `box-shadow` 立体卡片层叠，完全独立于输入框与对话框。
 - **双列设置页均衡布局与实时预览（`index.html`、`styles.css`、`app.js`）**：
   - 左列放置「图片布局」「壁纸调整」「设置页主题」，右列放置「左侧边栏」「右侧面板」「输入框与对话框」「Overview 面板」（全页 8 张 `<details>` 卡片、15 根滑块）；顶部 16:9 `#preview` 与弹窗 `#drag-preview-stage` 同步反映扁平左右栏、对齐文件标签条、同步输入框/气泡分层以及独立扁平 Overview 面板。
+
+## 15. 输入框与用户气泡共用设置（`renderer` `revision = 24`）
+
+`normalize()`、设置写盘和 `surfaceConfig()` 统一使用 `composer*` 字段。旧配置缺少对应 `composer*` 字段时，仍会读取合法的 `bubble*` 值完成迁移。渲染器从同一组设置派生输入框和用户气泡的样式，Overview 面板仍使用独立的 `overview*` 字段。模糊值为 0 时，宿主底层使用 `backdrop-filter: none`。

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 
 export const PLUGIN_NAME = 'antigravity-ui';
 export const RUNTIME_ROOTS = ['plugin.json', 'plugin', 'sidecars', 'assets'];
+export const EXCLUDED_RUNTIME_DIRS = new Set(['data', 'sdk']);
 export const REQUIRED_RUNTIME_FILES = [
     'plugin.json',
     'plugin/appearance.cjs',
@@ -21,6 +22,21 @@ export const REQUIRED_RUNTIME_FILES = [
     'sidecars/panel/sidecar.json',
     'assets/logo.png',
 ];
+
+export function isExcludedRuntimeSegment(segment) {
+    return EXCLUDED_RUNTIME_DIRS.has(String(segment || '').toLowerCase());
+}
+
+export function isRuntimeRelativePath(parts) {
+    if (!Array.isArray(parts) || !parts.length) return false;
+    if (parts[0] === 'plugin.json') return parts.length === 1;
+    return parts.length >= 2 && RUNTIME_ROOTS.includes(parts[0]);
+}
+
+export function isProtectedRuntimePath(pathOrParts) {
+    const parts = Array.isArray(pathOrParts) ? pathOrParts : String(pathOrParts || '').split('/');
+    return parts.some(isExcludedRuntimeSegment);
+}
 
 export const MAX_ARCHIVE_ENTRIES = 2048;
 export const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
@@ -88,6 +104,8 @@ export function parseTarGz(buffer, { maxEntries = MAX_ARCHIVE_ENTRIES, maxExpand
     }
     const entries = [];
     const seen = new Set();
+    let headerCount = 0;
+    const maxHeaders = maxEntries * 4;
     let totalBytes = 0;
     let offset = 0;
     let nextPax = null;
@@ -97,30 +115,49 @@ export function parseTarGz(buffer, { maxEntries = MAX_ARCHIVE_ENTRIES, maxExpand
         const block = tar.subarray(offset, offset + 512);
         offset += 512;
         if (block.every(byte => byte === 0)) break;
+        headerCount++;
+        if (headerCount > maxHeaders) throw new Error('Archive entry count exceeds budget');
+
         const rawType = block[156];
         const type = rawType === 0 ? '0' : String.fromCharCode(rawType);
-        const size = parseOctalOrBase256(block.subarray(124, 136));
-        if (!Number.isSafeInteger(size) || size < 0 || offset + size > tar.length) {
+        const headerSize = parseOctalOrBase256(block.subarray(124, 136));
+        if (!Number.isSafeInteger(headerSize) || headerSize < 0) {
             throw new Error('Invalid tar entry bounds');
         }
-        const data = tar.subarray(offset, offset + size);
-        offset += Math.ceil(size / 512) * 512;
 
-        if (type === 'x') {
-            nextPax = parsePaxRecords(data);
+        if (type === 'x' || type === 'g' || type === 'L') {
+            if (offset + headerSize > tar.length) throw new Error('Invalid tar entry bounds');
+            totalBytes += headerSize;
+            if (totalBytes > maxExpandedBytes) throw new Error('Expanded archive exceeds budget');
+            const extData = tar.subarray(offset, offset + headerSize);
+            offset += Math.ceil(headerSize / 512) * 512;
+            if (type === 'x') nextPax = parsePaxRecords(extData);
+            else if (type === 'L') nextLongName = extData.toString('utf8').replace(/\0+$/, '');
             continue;
         }
-        if (type === 'g') {
-            continue;
-        }
-        if (type === 'L') {
-            nextLongName = data.toString('utf8').replace(/\0+$/, '');
-            continue;
-        }
+
         const pax = nextPax;
         const longName = nextLongName;
         nextPax = null;
         nextLongName = null;
+
+        let actualSize = headerSize;
+        if (pax?.size !== undefined) {
+            if (!/^\d+$/.test(pax.size)) throw new Error('Invalid tar pax size');
+            const parsedPaxSize = Number(pax.size);
+            if (!Number.isSafeInteger(parsedPaxSize) || parsedPaxSize < 0) {
+                throw new Error('Invalid tar pax size');
+            }
+            if (headerSize !== 0 && parsedPaxSize !== headerSize) {
+                throw new Error('Tar entry size mismatch');
+            }
+            actualSize = parsedPaxSize;
+        }
+        if (offset + actualSize > tar.length) {
+            throw new Error('Invalid tar entry bounds');
+        }
+        const data = tar.subarray(offset, offset + actualSize);
+        offset += Math.ceil(actualSize / 512) * 512;
 
         if (!['0', '5'].includes(type)) {
             throw new Error('Unsupported tar entry type');
@@ -142,10 +179,9 @@ export function parseTarGz(buffer, { maxEntries = MAX_ARCHIVE_ENTRIES, maxExpand
             entries.push({ parts, dir: true, data: null });
             continue;
         }
-        const actualSize = pax?.size ? Number(pax.size) : size;
         totalBytes += actualSize;
         if (totalBytes > maxExpandedBytes) throw new Error('Expanded archive exceeds budget');
-        entries.push({ parts, dir: false, data: Buffer.from(data) });
+        entries.push({ parts, dir: false, data });
     }
     return entries;
 }
@@ -214,8 +250,9 @@ export function parseZip(buffer, { maxEntries = MAX_ARCHIVE_ENTRIES, maxExpanded
             entries.push({ parts, dir: true, data: null });
             continue;
         }
+        const remainingBudget = maxExpandedBytes - totalBytes;
+        if (uncompressedSize > remainingBudget) throw new Error('Expanded archive exceeds budget');
         totalBytes += uncompressedSize;
-        if (totalBytes > maxExpandedBytes) throw new Error('Expanded archive exceeds budget');
         if (localOffset + 30 > cdOffset || buffer.readUInt32LE(localOffset) !== 0x04034b50) {
             throw new Error('Corrupt zip local header');
         }
@@ -227,10 +264,10 @@ export function parseZip(buffer, { maxEntries = MAX_ARCHIVE_ENTRIES, maxExpanded
         const payload = buffer.subarray(dataStart, dataEnd);
         let data;
         if (method === 0) {
-            data = Buffer.from(payload);
+            data = payload;
         } else if (method === 8) {
             try {
-                data = inflateRawSync(payload, { maxOutputLength: maxExpandedBytes });
+                data = inflateRawSync(payload, { maxOutputLength: Math.max(1, Math.min(uncompressedSize, remainingBudget)) });
             } catch {
                 throw new Error('Zip entry decompression failed');
             }
@@ -263,7 +300,10 @@ export async function stageRuntimeArchive(archiveBuffer, archiveKind, stageDir, 
     for (const entry of entries) {
         if (entry.dir) continue;
         const relative = stripFirst ? entry.parts.slice(1) : entry.parts;
-        if (!relative.length || !RUNTIME_ROOTS.includes(relative[0])) continue;
+        if (!isRuntimeRelativePath(relative)) continue;
+        if (isProtectedRuntimePath(relative)) {
+            throw new Error('Archive touches protected path');
+        }
         const relPosix = relative.join('/');
         if (stagedFiles.has(relPosix.toLowerCase())) throw new Error('Duplicate runtime path');
         const target = resolve(stageRoot, ...relative);
