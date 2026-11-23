@@ -236,6 +236,22 @@ export class SidecarApp {
     assert.equal(await readFile(cachedSdk, 'utf8'), sdkCode);
     assert.equal(await readFile(cachedPreload, 'utf8'), preloadCode);
 
+    // Chunked extraction across the 4 MB scan boundary
+    const chunkBoundaryBinary = join(tempRoot, 'sdk-chunk-boundary.exe');
+    const chunkSdkOffset = (4 * 1024 * 1024) - 96;
+    await writeFile(chunkBoundaryBinary, Buffer.concat([
+        Buffer.alloc(chunkSdkOffset, 0x20),
+        Buffer.from(sdkCode, 'utf8'),
+        Buffer.alloc(128 * 1024, 0x20),
+        Buffer.from(preloadCode, 'utf8'),
+        Buffer.alloc(512 * 1024, 0x20),
+    ]));
+    const chunkSdkData = join(tempRoot, 'sdk-chunk-cache');
+    await loadSdk(chunkBoundaryBinary, chunkSdkData);
+    const chunkCache = JSON.parse(await readFile(join(chunkSdkData, 'sdk', 'cache.json'), 'utf8'));
+    assert.equal(await readFile(join(chunkSdkData, 'sdk', chunkCache.digest, 'index.mjs'), 'utf8'), sdkCode);
+    assert.equal(await readFile(join(chunkSdkData, 'sdk', chunkCache.digest, 'preload.js'), 'utf8'), preloadCode);
+
     // 2. Proxy resolution precedence
     const winProxyReader = async () => ({ server: '127.0.0.1:45331', bypass: ['localhost', '127.*', '<local>'] });
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', {}, winProxyReader), 'http://127.0.0.1:45331');
@@ -488,7 +504,23 @@ export class SidecarApp {
     assert.equal(JSON.parse(await readFile(join(mixedPlugin, 'plugin.json'), 'utf8')).version, '0.3.8');
     await assert.rejects(readFile(mixedJournal), { code: 'ENOENT' });
 
-    // 4a. Dev workspace check -> canApply false
+    // 4a. Clean startup skips update lock creation when no interrupted transaction exists
+    const cleanUpdater = new PluginUpdater({
+        pluginDir: installedPlugin,
+        dataDir: join(tempRoot, 'clean-data'),
+        home: installHome,
+    });
+    let cleanLockCalls = 0;
+    cleanUpdater.acquireUpdateLock = async () => {
+        cleanLockCalls++;
+        throw new Error('acquireUpdateLock must not run when updates dir has no pending tx-*');
+    };
+    const cleanInfo = await cleanUpdater.initializeLocalInfo();
+    assert.equal(cleanLockCalls, 0);
+    assert.equal(cleanInfo.currentVersion, '0.3.8');
+    assert.equal(cleanInfo.canApply, true);
+
+    // 4b. Dev workspace check -> canApply false
     const defaultUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'def-data'), home: installHome });
     assert.equal(defaultUpdater.publicState().repoUrl, 'https://github.com/KeS1Ke/Antigravity-Background');
     const devUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'dev-data'), home: installHome, endpoints });

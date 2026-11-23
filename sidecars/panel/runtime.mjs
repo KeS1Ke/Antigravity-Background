@@ -1,9 +1,26 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { installWallpaper } from './renderer.mjs';
+import { installWallpaper, RENDERER_VERSION, RENDERER_REVISION } from './renderer.mjs';
 import { randomUUID } from 'node:crypto';
 
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const INSTALL_WALLPAPER_SOURCE = installWallpaper.toString();
+const RENDERER_KEY = `${RENDERER_VERSION}:${RENDERER_REVISION}`;
+const ATTACH_RETRY_DELAYS = [150, 250, 400, 600, 1000, 1500];
+const FAST_EVAL_PREFIX =
+    '(async (p) => {' +
+    'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null };' +
+    'const active = window.__antigravityUiRenderer;' +
+    'if (!active) return { value: (p.css && p.image === undefined && p.imageHash) ? "NEED_IMAGE" : "NEED_FULL", layout: null };' +
+    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", layout: null };` +
+    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
+    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
+    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", layout: null };' +
+    'if (p.css && p.image === undefined && p.imageHash && active.imageHash !== p.imageHash) return { value: "NEED_IMAGE", layout: null };' +
+    'active.owner = p.owner; active.generation = p.generation;' +
+    'active.update(p); await active.syncTitlebar();' +
+    'return { value: window.__antigravityUiRenderer === active ? "OK" : "IGNORED", layout: window.__antigravityUiRenderer === active ? (active.layout ?? null) : null };' +
+    '})(';
 
 function missingPortError(message, cause) {
     const error = new Error(message, cause ? { cause } : undefined);
@@ -18,6 +35,7 @@ export class Connection {
         this.nextId = 0;
         this.lastImageHash = undefined;
         this.lastLayout = null;
+        this.installedKey = undefined;
         this.nonHost = false;
     }
 
@@ -116,6 +134,7 @@ export class WallpaperRuntime {
         this.pendingDiscover = false;
         this.lastDiscoveryAt = 0;
         this.timer = undefined;
+        this.timerToken = 0;
     }
 
     isDirty() {
@@ -123,16 +142,36 @@ export class WallpaperRuntime {
     }
 
     stopTimer() {
+        this.timerToken++;
         if (this.timer !== undefined) {
-            clearInterval(this.timer);
+            clearTimeout(this.timer);
             this.timer = undefined;
         }
     }
 
     start(tick = () => void this.update(false, true)) {
         this.stopTimer();
+        const token = ++this.timerToken;
+        let retryStep = 0;
+        const scheduleNext = () => {
+            if (this.stopped || token !== this.timerToken) return;
+            let delayMs;
+            if (this.health.windows > 0) {
+                retryStep = 0;
+                delayMs = 1500;
+            } else {
+                delayMs = ATTACH_RETRY_DELAYS[Math.min(retryStep, ATTACH_RETRY_DELAYS.length - 1)];
+                if (retryStep < ATTACH_RETRY_DELAYS.length - 1) retryStep++;
+            }
+            this.timer = setTimeout(() => {
+                this.timer = undefined;
+                if (this.stopped || token !== this.timerToken) return;
+                tick();
+                scheduleNext();
+            }, delayMs);
+        };
         tick();
-        this.timer = setInterval(tick, 1500);
+        scheduleNext();
     }
 
     update(activate = false, discover = !activate) {
@@ -213,20 +252,50 @@ export class WallpaperRuntime {
     }
 
     async evaluate(connection, payload) {
+        const serializedPayload = JSON.stringify(payload);
+        if (connection.installedKey === RENDERER_KEY && payload.enabled) {
+            const fastResult = await connection.command('Runtime.evaluate', {
+                expression: FAST_EVAL_PREFIX + serializedPayload + ')',
+                returnByValue: true,
+                awaitPromise: true,
+            });
+            if (fastResult.exceptionDetails) {
+                connection.installedKey = undefined;
+                const detail = fastResult.exceptionDetails.exception?.description || fastResult.exceptionDetails.text || '';
+                throw new Error(detail ? '背景样式无法应用到界面：' + detail : '背景样式无法应用到界面。');
+            }
+            const fastOutcome = fastResult.result?.value;
+            const fastValue = fastOutcome && typeof fastOutcome === 'object' && Object.hasOwn(fastOutcome, 'value')
+                ? fastOutcome.value
+                : fastOutcome;
+            if (fastValue !== 'NEED_FULL') {
+                if (fastValue === 'OK' || fastValue === true) {
+                    connection.lastLayout = fastOutcome?.layout ?? null;
+                } else {
+                    connection.installedKey = undefined;
+                    connection.lastLayout = null;
+                }
+                return fastValue;
+            }
+            connection.installedKey = undefined;
+        }
         const result = await connection.command('Runtime.evaluate', {
-            expression: '(async () => { const value = await (' + installWallpaper.toString() + ')(' + JSON.stringify(payload) + '); return { value, layout: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.layout ?? null) : null }; })()',
+            expression: '(async () => { const value = await (' + INSTALL_WALLPAPER_SOURCE + ')(' + serializedPayload + '); return { value, layout: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.layout ?? null) : null }; })()',
             returnByValue: true,
             awaitPromise: true,
         });
         if (result.exceptionDetails) {
+            connection.installedKey = undefined;
             const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || '';
             throw new Error(detail ? '背景样式无法应用到界面：' + detail : '背景样式无法应用到界面。');
         }
         const outcome = result.result?.value;
         if (outcome && typeof outcome === 'object' && Object.hasOwn(outcome, 'value')) {
             connection.lastLayout = outcome.layout ?? null;
+            connection.installedKey = (payload.enabled && (outcome.value === true || outcome.value === 'OK')) ? RENDERER_KEY : undefined;
             return outcome.value;
         }
+        connection.installedKey = undefined;
         connection.lastLayout = null;
         return outcome;
     }
@@ -351,7 +420,7 @@ export class WallpaperRuntime {
         this.stopped = true;
         this.stopTimer();
         await this.operation;
-        const expression = '(' + installWallpaper.toString() + ')(' +
+        const expression = '(' + INSTALL_WALLPAPER_SOURCE + ')(' +
             JSON.stringify({ enabled: false, owner: this.owner, generation: this.generation }) + ')';
         await Promise.allSettled([...this.connections.values()].map(async connection => {
             try {

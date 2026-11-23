@@ -191,6 +191,7 @@
     let previewImage;
     let naturalWidth = 0;
     let naturalHeight = 0;
+    let loadedImageEl = null;
     let detectedImageFor = '';
     let detectedImageColor = '';
     let serverImage;
@@ -539,6 +540,20 @@
         return extractCanvasBorderColor(ctx, canvas.width, canvas.height);
     }
 
+    function ensureTileEdgeColor() {
+        if (settings.mode !== 'tile' || !settings.image || settings.imageColor ||
+            detectedImageFor === settings.image || !loadedImageEl) {
+            return false;
+        }
+        detectedImageColor = detectImageEdgeColor(loadedImageEl);
+        detectedImageFor = settings.image;
+        if (detectedImageColor) {
+            settings.imageColor = detectedImageColor;
+            return true;
+        }
+        return false;
+    }
+
     function render() {
         const locked = !ready || busy;
         const actionLocked = locked || saving;
@@ -595,6 +610,7 @@
             for (const wp of wallpaperEls) wp.style.setProperty('--image', bg);
             naturalWidth = 0;
             naturalHeight = 0;
+            loadedImageEl = null;
             if (!previewImage) {
                 detectedImageFor = '';
                 detectedImageColor = '';
@@ -606,13 +622,10 @@
                     if (previewImage === captured) {
                         naturalWidth = img.naturalWidth;
                         naturalHeight = img.naturalHeight;
-                        if (!settings.imageColor && detectedImageFor !== captured) {
-                            detectedImageColor = detectImageEdgeColor(img);
-                            detectedImageFor = captured;
-                            if (ready && !busy && !saving && settings.mode === 'tile' && detectedImageColor) {
-                                changed();
-                                return;
-                            }
+                        loadedImageEl = img;
+                        if (ensureTileEdgeColor() && ready && !busy && !saving) {
+                            changed();
+                            return;
                         }
                         if (!dragModal.hidden) render();
                     }
@@ -675,9 +688,12 @@
     for (const stage of stages) stageObserver.observe(stage);
 
     function changed() {
-        if (settings.mode === 'tile' && settings.image && !settings.imageColor &&
-            detectedImageFor === settings.image && detectedImageColor) {
-            settings.imageColor = detectedImageColor;
+        if (settings.mode === 'tile' && settings.image && !settings.imageColor) {
+            if (detectedImageFor === settings.image && detectedImageColor) {
+                settings.imageColor = detectedImageColor;
+            } else {
+                ensureTileEdgeColor();
+            }
         }
         syncQueued = false;
         keepStatusAfterPreview = false;

@@ -1,12 +1,21 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/promises';
+import { open, readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const MAX_SDK_BYTES = 40000;
 const MAX_PRELOAD_BYTES = 40000;
+const SCAN_CHUNK_BYTES = 4 * 1024 * 1024;
+const SCAN_OVERLAP_BYTES = 64 * 1024;
+const SDK_IMPORT_MARKER = "import { execFileSync } from 'node:child_process';";
+const SDK_CLASS_MARKER = 'export class SidecarApp';
+const SDK_ENDING = 'return provided === this.#token;\n  }\n}\n';
+const SDK_ENDING_BYTES = Buffer.byteLength(SDK_ENDING);
+const PRELOAD_BRIDGE_MARKER = 'window.sidecar =';
+const PRELOAD_IIFE_MARKER = '(function() {';
+const PRELOAD_END_MARKER = '\n})();';
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 async function renameWithRetry(from, to, attempts = 5) {
@@ -35,6 +44,58 @@ async function readCachedFile(path, maxBytes) {
     const info = await stat(path);
     if (!info.isFile() || !info.size || info.size > maxBytes) throw new Error('Sidecar SDK 缓存文件无效。');
     return readFile(path);
+}
+
+async function extractEmbeddedSdk(executablePath) {
+    let sdk;
+    let preload;
+    const handle = await open(executablePath, 'r');
+    try {
+        const readBuffer = Buffer.allocUnsafe(SCAN_CHUNK_BYTES);
+        let tail = Buffer.alloc(0);
+        while (true) {
+            const { bytesRead } = await handle.read(readBuffer, 0, SCAN_CHUNK_BYTES, null);
+            if (bytesRead === 0) break;
+            const chunk = readBuffer.subarray(0, bytesRead);
+            const window = tail.length > 0 ? Buffer.concat([tail, chunk]) : chunk;
+
+            if (!sdk) {
+                const marker = window.indexOf(SDK_CLASS_MARKER);
+                if (marker > 0) {
+                    const start = window.lastIndexOf(SDK_IMPORT_MARKER, marker);
+                    const end = window.indexOf(SDK_ENDING, marker);
+                    if (start >= 0 && start < marker && end >= marker && end - start <= MAX_SDK_BYTES) {
+                        sdk = window.toString('utf8', start, end + SDK_ENDING_BYTES);
+                    }
+                }
+            }
+
+            if (!preload) {
+                const bridge = window.indexOf(PRELOAD_BRIDGE_MARKER);
+                if (bridge > 0) {
+                    const inner = window.lastIndexOf(PRELOAD_IIFE_MARKER, bridge);
+                    const outer = inner > 0 ? window.lastIndexOf(PRELOAD_IIFE_MARKER, inner - 1) : -1;
+                    const preloadEnd = window.indexOf(PRELOAD_END_MARKER, bridge);
+                    if (inner > 0 && outer >= 0 && outer < inner && inner < bridge &&
+                        preloadEnd > bridge && preloadEnd - outer <= MAX_PRELOAD_BYTES) {
+                        preload = window.toString('utf8', outer, preloadEnd + 6);
+                    }
+                }
+            }
+
+            if (sdk && preload) break;
+            tail = window.length > SCAN_OVERLAP_BYTES
+                ? Buffer.from(window.subarray(window.length - SCAN_OVERLAP_BYTES))
+                : Buffer.from(window);
+        }
+    } finally {
+        await handle.close();
+    }
+
+    if (!sdk || !preload) {
+        throw new Error('无法识别此版本的 Sidecar SDK。');
+    }
+    return { sdk, preload };
 }
 
 export async function loadSdk(executable, dataDirectory) {
@@ -78,22 +139,7 @@ export async function loadSdk(executable, dataDirectory) {
         // Cache miss or corrupted cache manifest; fall through to re-extract from executable.
     }
 
-    const binary = await readFile(executablePath);
-    const marker = binary.indexOf('export class SidecarApp');
-    const start = marker > 0 ? binary.lastIndexOf("import { execFileSync } from 'node:child_process';", marker) : -1;
-    const ending = 'return provided === this.#token;\n  }\n}\n';
-    const end = marker >= 0 ? binary.indexOf(ending, marker) : -1;
-    const bridge = binary.indexOf('window.sidecar =');
-    const inner = bridge > 0 ? binary.lastIndexOf('(function() {', bridge) : -1;
-    const outer = inner > 0 ? binary.lastIndexOf('(function() {', inner - 1) : -1;
-    const preloadEnd = bridge > 0 ? binary.indexOf('\n})();', bridge) : -1;
-    if (marker < 0 || start < 0 || start >= marker || end < marker || end - start > MAX_SDK_BYTES ||
-        bridge <= 0 || inner <= 0 || outer < 0 || outer >= inner || inner >= bridge ||
-        preloadEnd <= bridge || preloadEnd - outer > MAX_PRELOAD_BYTES) {
-        throw new Error('无法识别此版本的 Sidecar SDK。');
-    }
-    const sdk = binary.toString('utf8', start, end + Buffer.byteLength(ending));
-    const preload = binary.toString('utf8', outer, preloadEnd + 6);
+    const { sdk, preload } = await extractEmbeddedSdk(executablePath);
     if (!/const BIND_HOST = ['"]127\.0\.0\.1['"]/.test(sdk) ||
         !sdk.includes('server.listen(this.#port, BIND_HOST') ||
         !preload.startsWith('(function() {\n  // Extract configuration')) {

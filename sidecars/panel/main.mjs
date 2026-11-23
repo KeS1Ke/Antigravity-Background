@@ -1,14 +1,26 @@
-import { open, readFile, unlink } from 'node:fs/promises';
+import { open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadSdk } from './sdk.mjs';
 import { WallpaperRuntime } from './runtime.mjs';
 import { InvalidSettingsError, SettingsStore } from './store.mjs';
-import { PluginUpdater, releaseRuntimeDirectory } from './updater.mjs';
 import appearance from '../../plugin/appearance.cjs';
-import persistence from '../../plugin/persistence.cjs';
+
+function releaseRuntimeDirectory(rootDir) {
+    if (process.platform !== 'win32') return false;
+    const root = win32.resolve(rootDir);
+    const current = win32.resolve(process.cwd());
+    for (const segment of ['assets', 'plugin', 'sidecars']) {
+        const relative = win32.relative(win32.join(root, segment), current);
+        if (relative === '' || (relative !== '..' && !relative.startsWith('..\\') && !win32.isAbsolute(relative))) {
+            process.chdir(root);
+            return true;
+        }
+    }
+    return false;
+}
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pluginDir = resolve(directory, '..', '..');
@@ -21,28 +33,27 @@ const resources = process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Loc
 const installation = process.env.AG_UI_INSTALLATION ||
     (basename(process.execPath).toLowerCase() === 'antigravity.exe' ? dirname(process.execPath) : dirname(resources));
 const shortcutBackup = join(home, '.gemini', 'config', 'antigravity-ui.shortcuts.bak.json');
-const updater = new PluginUpdater({
-    pluginDir,
-    dataDir: data,
-    home,
-    endpoints: parseLoopbackEndpoints(),
-    onReload: shutdown,
-});
-// An interrupted upgrade from 0.3.8 can leave the older updater next to this entry point.
-if (typeof updater.acquireUpdateLock !== 'function' && updater.inspectTargetEligibility().canApply) {
-    await recoverWithLegacyUpdater();
-}
-await updater.initializeLocalInfo();
-const { SidecarApp, Response } = await loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 const store = new SettingsStore(data, profile);
 const configPath = join(homedir(), '.gemini', 'config', 'config.json');
+let configSignature;
+let configEnabled = true;
 const enabled = async () => {
     try {
+        const info = await stat(configPath);
+        const signature = `${info.mtimeMs}:${info.ctimeMs}:${info.size}:${info.ino}`;
+        if (signature === configSignature) return configEnabled;
         const configuration = JSON.parse((await readFile(configPath, 'utf8')).replace(/^\uFEFF/, ''));
-        return configuration.plugins?.['antigravity-ui']?.enabled !== false &&
+        configEnabled = configuration.plugins?.['antigravity-ui']?.enabled !== false &&
             configuration.sidecars?.['antigravity-ui/panel']?.enabled !== false;
+        configSignature = signature;
+        return configEnabled;
     } catch (error) {
-        if (error.code === 'ENOENT') return true;
+        if (error.code === 'ENOENT') {
+            configSignature = 'ENOENT';
+            configEnabled = true;
+            return true;
+        }
+        configSignature = undefined;
         throw error;
     }
 };
@@ -75,6 +86,20 @@ function resolveImage(input, saved) {
     }
     return null;
 }
+let app;
+let exiting = false;
+async function shutdown() {
+    if (exiting) return;
+    exiting = true;
+    const timer = setTimeout(() => process.exit(0), 4000);
+    timer.unref();
+    await runtime.stop();
+    await app?.close();
+    process.exit(0);
+}
+process.once('SIGTERM', () => void shutdown());
+process.once('SIGINT', () => void shutdown());
+
 function jsonResponse(status, body) {
     return new Response(JSON.stringify(body), { contentType: 'application/json', status });
 }
@@ -93,7 +118,7 @@ function enqueueRequest(task) {
     requests = operation.catch(() => {});
     return operation;
 }
-async function syncStore() {
+async function syncStore({ initial = false } = {}) {
     let reloaded;
     try {
         reloaded = await store.reloadIfChanged();
@@ -105,7 +130,7 @@ async function syncStore() {
     }
     if (!reloaded) return false;
     draft = undefined;
-    pendingActivate = true;
+    if (!initial) pendingActivate = true;
     return true;
 }
 async function activateRuntime(discover) {
@@ -122,15 +147,20 @@ function stateResponse(extra = {}) {
         runtime: settingsError ? { ...runtime.health, error: settingsError } : runtime.health,
     };
 }
+let cachedStyleKey;
+let cachedStyleValue;
 const runtime = new WallpaperRuntime(profile, () => {
     const settings = draft || store.settings;
-    return {
+    if (settings === cachedStyleKey && cachedStyleValue) return cachedStyleValue;
+    cachedStyleKey = settings;
+    cachedStyleValue = {
         enabled: settings.enabled,
         css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'),
         image: settings.image,
         imageHash: imageDigest(settings.image),
         surfaces: appearance.surfaceConfig(settings),
     };
+    return cachedStyleValue;
 }, enabled, hostPort);
 function parseLoopbackEndpoints() {
     const raw = process.env.AG_UI_UPDATE_ENDPOINTS;
@@ -151,12 +181,12 @@ function parseLoopbackEndpoints() {
         return {};
     }
 }
-async function recoverWithLegacyUpdater() {
+async function recoverWithLegacyUpdater(instance) {
     const lockPath = join(dirname(pluginDir), '.antigravity-ui-update.lock');
     let lock;
     try {
         lock = await open(lockPath, 'wx');
-        await updater.recoverInterruptedTransactions();
+        await instance.recoverInterruptedTransactions();
     } catch (error) {
         if (error.code !== 'EEXIST') console.warn('旧版更新恢复失败：' + (error.code || 'rollback'));
     } finally {
@@ -166,17 +196,78 @@ async function recoverWithLegacyUpdater() {
         }
     }
 }
-const app = new SidecarApp();
+async function hasPendingUpdateTx(updatesDir) {
+    try {
+        const entries = await readdir(updatesDir, { withFileTypes: true });
+        return entries.some(entry => entry.isDirectory() && entry.name.startsWith('tx-'));
+    } catch (error) {
+        return error?.code !== 'ENOENT';
+    }
+}
+let updaterPromise;
+function getUpdater() {
+    updaterPromise ??= (async () => {
+        const { PluginUpdater } = await import('./updater.mjs');
+        const instance = new PluginUpdater({
+            pluginDir,
+            dataDir: data,
+            home,
+            endpoints: parseLoopbackEndpoints(),
+            onReload: shutdown,
+        });
+        // An interrupted upgrade from 0.3.8 can leave the older updater next to this entry point.
+        if (typeof instance.acquireUpdateLock !== 'function' && instance.inspectTargetEligibility().canApply) {
+            await recoverWithLegacyUpdater(instance);
+        }
+        await instance.initializeLocalInfo();
+        return instance;
+    })().catch(error => {
+        updaterPromise = undefined;
+        throw error;
+    });
+    return updaterPromise;
+}
+let persistencePromise;
+function loadPersistence() {
+    persistencePromise ??= import('../../plugin/persistence.cjs').then(mod => mod.default || mod);
+    return persistencePromise;
+}
 const files = {
     '/': ['index.html', 'text/html'],
     '/app.js': ['app.js', 'text/javascript'],
     '/styles.css': ['styles.css', 'text/css'],
     '/appearance.js': ['../../plugin/appearance.cjs', 'text/javascript'],
 };
-for (const [route, [path, type]] of Object.entries(files)) {
-    app.api(route, async () => new Response(await readFile(join(directory, path)), {
-        contentType: type + '; charset=utf-8',
-        headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
+function preloadStaticAssets() {
+    return Promise.all(Object.entries(files).map(async ([route, [path, type]]) => [
+        route,
+        { body: await readFile(join(directory, path)), contentType: type + '; charset=utf-8' },
+    ]));
+}
+if (await hasPendingUpdateTx(join(data, 'updates'))) {
+    await getUpdater();
+}
+const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
+const assetsPromise = preloadStaticAssets();
+await syncStore({ initial: true });
+let heartbeatPending = false;
+runtime.start(() => {
+    if (heartbeatPending) return;
+    heartbeatPending = true;
+    void enqueueRequest(async () => {
+        await syncStore();
+        await runtime.update(false, true);
+    }).catch(error => {
+        runtime.health = { ...runtime.health, error: error.message };
+    }).finally(() => { heartbeatPending = false; });
+});
+const [{ SidecarApp, Response }, staticAssets] = await Promise.all([sdkPromise, assetsPromise]);
+const staticHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+app = new SidecarApp();
+for (const [route, asset] of staticAssets) {
+    app.api(route, () => new Response(asset.body, {
+        contentType: asset.contentType,
+        headers: staticHeaders,
     }), 'GET');
 }
 app.api('/api/settings', () => enqueueRequest(async () => {
@@ -234,6 +325,7 @@ app.api('/api/settings', input => enqueueRequest(async () => {
 }), 'POST');
 app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
     try {
+        const persistence = await loadPersistence();
         const result = process.platform === 'win32'
             ? persistence.patchShortcuts({ home, installation, backupPath: shortcutBackup })
             : { total: 0, repaired: 0, ready: 0, shortcuts: [] };
@@ -243,44 +335,22 @@ app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
         return jsonResponse(500, { error: error.message });
     }
 }), 'POST');
-app.api('/api/update', () => updater.publicState(), 'GET');
-app.api('/api/update/check', () => updater.requestCheck(), 'POST');
+app.api('/api/update', async () => (await getUpdater()).publicState(), 'GET');
+app.api('/api/update/check', async () => (await getUpdater()).requestCheck(), 'POST');
 app.api('/api/update/apply', async input => {
     try {
+        const updater = await getUpdater();
         return await updater.apply(input || {});
     } catch (error) {
         return updateErrorResponse(error);
     }
 }, 'POST');
-app.api('/api/update/reload', () => {
+app.api('/api/update/reload', async () => {
     try {
+        const updater = await getUpdater();
         return updater.requestReload();
     } catch (error) {
         return updateErrorResponse(error);
     }
 }, 'POST');
-await syncStore();
 await app.run();
-let heartbeatPending = false;
-runtime.start(() => {
-    if (heartbeatPending) return;
-    heartbeatPending = true;
-    void enqueueRequest(async () => {
-        await syncStore();
-        await runtime.update(false, true);
-    }).catch(error => {
-        runtime.health = { ...runtime.health, error: error.message };
-    }).finally(() => { heartbeatPending = false; });
-});
-let exiting = false;
-async function shutdown() {
-    if (exiting) return;
-    exiting = true;
-    const timer = setTimeout(() => process.exit(0), 4000);
-    timer.unref();
-    await runtime.stop();
-    await app.close();
-    process.exit(0);
-}
-process.once('SIGTERM', () => void shutdown());
-process.once('SIGINT', () => void shutdown());

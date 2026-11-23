@@ -25,6 +25,7 @@
         'overviewCover', 'overviewOpacity', 'overviewBlur', 'overviewOuterColor', 'overviewInnerColor',
     ];
     const DATA_IMAGE_RE = /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;
+    const verifiedImages = new Set();
     const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
     const CSS_VAR_RE = /^var\(--[a-z0-9-]+\)$/i;
     const CSS_DATA_URL_RE = /^url\("data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+={0,2}"\)$/;
@@ -55,9 +56,15 @@
             return [key, Number.isFinite(raw) ? Math.min(max, Math.max(min, Math.round(raw))) : value];
         }));
         const image = input.image ?? '';
-        if (typeof image !== 'string' || image.length > maximumImageLength ||
-            (image !== '' && !DATA_IMAGE_RE.test(image))) {
+        if (typeof image !== 'string' || image.length > maximumImageLength) {
             throw new Error('背景图片无效或压缩后仍过大。');
+        }
+        if (image !== '' && !verifiedImages.has(image)) {
+            if (!DATA_IMAGE_RE.test(image)) {
+                throw new Error('背景图片无效或压缩后仍过大。');
+            }
+            if (verifiedImages.size >= 4) verifiedImages.clear();
+            verifiedImages.add(image);
         }
         let imageColor = '';
         if (input.imageColor !== undefined) {

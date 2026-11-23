@@ -1989,6 +1989,27 @@ try {
     assert.equal(missRuntime.health.errorCode, 'MISSING_DEVTOOLS_PORT');
     assert.doesNotMatch(missRuntime.health.error, /ENOENT/);
 
+    // Adaptive cold-start attach: if DevToolsActivePort appears shortly after start(), attach well under 1500ms
+    const delayedProfile = join(persistTestRoot, 'delayed-profile');
+    await mkdir(delayedProfile, { recursive: true });
+    const delayedRuntime = new WallpaperRuntime(
+        delayedProfile,
+        () => ({ enabled: true, css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'), image: settings.image, imageHash: expectedImageHash, surfaces: appearance.surfaceConfig(settings) }),
+        async () => true,
+        String(server.address().port)
+    );
+    delayedRuntime.generation = Date.now() + 120000;
+    const attachStart = Date.now();
+    delayedRuntime.start();
+    try {
+        await delay(200);
+        await writeFile(join(delayedProfile, 'DevToolsActivePort'), String(port) + '\n');
+        await until(() => delayedRuntime.health.windows === 1, 'Delayed runtime did not attach adaptively');
+        assert.ok(Date.now() - attachStart < 1000, `Expected adaptive attach < 1000ms, took ${Date.now() - attachStart}ms`);
+    } finally {
+        await delayedRuntime.stop();
+    }
+
     // Launch a lightweight Sidecar pointing at missing DevToolsActivePort to verify /api/repair-shortcuts + #repair-launch UI
     const missProbe = createServer();
     await new Promise(resolve => missProbe.listen(0, '127.0.0.1', resolve));

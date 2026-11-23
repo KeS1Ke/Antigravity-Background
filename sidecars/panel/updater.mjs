@@ -861,10 +861,19 @@ export class PluginUpdater {
         return { canApply: true, reason: null };
     }
 
-    async initializeLocalInfo() {
+    async hasInterruptedTransactions() {
         try {
-            const target = this.inspectTargetEligibility();
-            if (target.canApply) {
+            const entries = await readdir(this.updatesDir, { withFileTypes: true });
+            return entries.some(entry => entry.isDirectory() && entry.name.startsWith('tx-'));
+        } catch (error) {
+            return error?.code !== 'ENOENT';
+        }
+    }
+
+    async initializeLocalInfo() {
+        const target = this.inspectTargetEligibility();
+        try {
+            if (target.canApply && await this.hasInterruptedTransactions()) {
                 let lock = null;
                 try {
                     lock = await this.acquireUpdateLock();
@@ -878,7 +887,6 @@ export class PluginUpdater {
         } catch {}
         try {
             const local = await this.readLocalState();
-            const target = this.inspectTargetEligibility();
             this.state.currentVersion = local.currentVersion;
             this.state.currentCommit = local.currentCommit;
             this.state.canApply = target.canApply;
