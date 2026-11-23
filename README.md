@@ -162,11 +162,12 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 <details>
 <summary><b>4. 如何运行内置回归测试？</b></summary>
 
-项目提供无头 Chrome + 隔离 Sidecar 的完整端到端回归测试套件（覆盖表面渲染、拖拽边界保护、多窗/多面板同步、原生控件点击命中、浮动滚动条视口裁剪、`app.asar`/快捷方式持久化，以及 GitHub 在线更新安全归档与回滚校验）：
+项目提供无头 Chrome + 隔离 Sidecar 的完整端到端回归测试套件（覆盖表面渲染、拖拽边界保护、多窗/多面板同步、原生控件点击命中、浮动滚动条视口裁剪、`app.asar`/快捷方式持久化、GitHub 在线更新安全归档与回滚校验，以及文档与源码同步校验）：
 
 ```powershell
 node tests/background-rendering.mjs
 node tests/updater.mjs
+node tests/docs-sync.mjs
 ```
 
 </details>
@@ -180,6 +181,9 @@ antigravity-UI/
 ├── Antigravity-UI.cmd              # Windows 交互式安装 / 卸载 / 状态入口
 ├── manage.cjs                      # CLI 安装管理与旧版补丁迁移
 ├── plugin.json                     # Antigravity 插件清单
+├── AGENTS.md                       # 维护者与 Agent 路由指南
+├── ARCHITECTURE.md                 # 当前态架构、状态机与接口索引
+├── GLOSSARY.md                     # 核心术语说明
 ├── assets/
 │   └── logo.png                    # 插件图标
 ├── plugin/
@@ -200,15 +204,17 @@ antigravity-UI/
 ├── docs/
 │   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §16）
 │   └── images/                     # README 展示截图
-├── GLOSSARY.md                     # 核心术语说明
 └── tests/
     ├── background-rendering.mjs    # 隔离环境渲染、交互与持久化回归测试
-    └── updater.mjs                 # 更新器归档安全、代理与端到端回归测试
+    ├── updater.mjs                 # 更新器归档安全、代理与端到端回归测试
+    └── docs-sync.mjs               # 文档与源码清单/接口/链接双向同步校验
 ```
 
 ---
 
 ## 设计文档
 
+- 当前架构、状态机与接口索引：[ARCHITECTURE.md](ARCHITECTURE.md)
+- 维护约定与验证回路：[AGENTS.md](AGENTS.md)
 - 架构演进与技术细节记录：[docs/adr/0001-live-preview.md](docs/adr/0001-live-preview.md)
 - 术语定义：[GLOSSARY.md](GLOSSARY.md)
