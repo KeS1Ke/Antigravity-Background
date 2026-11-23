@@ -1,8 +1,13 @@
 .artifacts/
 antigrative-dashboard-0.9.1/
 STATE.md
+.install-source.json
+.DS_Store
+Thumbs.db
 node_modules/
 *.tmp
 *.lock
 *.bak
+*.log
 .env*
+!.env.example
