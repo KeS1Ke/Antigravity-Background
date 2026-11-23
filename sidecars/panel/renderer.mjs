@@ -3,7 +3,7 @@
 export async function installWallpaper(payload = {}) {
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 24;
+    const revision = 25;
 
     // -------------------------------------------------------------------------
     // Section 1: Pure helpers (kept inside installWallpaper so toString() CDP
@@ -657,7 +657,8 @@ export async function installWallpaper(payload = {}) {
                     const rightPanelRules =
                         rightPane + ' .browser-hole-ancestor { background:transparent !important; }' +
                         // Only the body rises above the wallpaper. Tabs share the main area's wallpaper treatment.
-                        rightBody + ' { position:relative;z-index:1001;' + flatBg(sidebar.innerBg, sidebar.effectiveBlur) + 'box-shadow:none !important; }';
+                        rightBody + ' { position:relative;z-index:1001;' + flatBg(sidebar.innerBg, sidebar.effectiveBlur) + 'box-shadow:none !important; }' +
+                        rightBody + ' :is([data-testid="subagent-tab-sidebar"],[data-testid="terminals-and-tasks-sidebar"]) { background:transparent !important; }';
                     const composerRules = composer.layered
                         ? anyComposer + ' { padding:4px !important;border-radius:calc(var(--nux-composer-radius,20px) + 4px) !important;' + flatBg(composer.outerBg, composer.effectiveBlur) + outerFrameShadow(composer.outerBorder) + ' }' +
                           anyComposer + ' .surface-composer-card { border-radius:var(--nux-composer-radius,20px) !important;background:' + composer.innerBg + ' !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important;' + raisedShadow(composer.innerRim) + ' }' +
@@ -694,6 +695,7 @@ export async function installWallpaper(payload = {}) {
                         // that blocks user-bubble backdrop-filter; `position: relative; z-index: 1001` does not.
                         '[data-testid="autoscroll-viewport"] { isolation:auto !important;position:relative;z-index:1001 !important;' +
                         (composer.cover && composer.effectiveBlur > 0 ? 'mask-image:none !important;-webkit-mask-image:none !important;' : '') + ' }' +
+                        ':is([data-testid="side-question-tab-conversation"],[data-testid="subagent-tab-conversation"],[data-testid="conversation-view"] > .relative.min-h-0) > .absolute.bottom-0.z-10.pointer-events-none { background:none !important; }' +
                         '[data-testid="autoscroll-viewport"] ~ [data-testid="overlay-scrollbar"],[data-testid="autoscroll-viewport"] ~ .agy-scroll-bottom,[data-testid="bottom-terminal-panel-resize-handle"],body > [data-overlay-scrollbar-track]:is([style*="z-index: 51"],[style*="z-index:51"],[data-ag-ui-elevated-track="true"]) { z-index:1001 !important; }' +
                         '[data-testid="conversation-view"] > .pointer-events-none.inset-y-0.left-0:has(> [data-testid="conversation-navigator"]),[data-testid="conversation-navigator"],[data-testid="conversation-view"] .sticky.top-0:has([data-testid="find-bar-match-count"]),[data-main-content-body] .absolute.top-4.right-4:has(> button:is([aria-label="Close"],[aria-label="关闭"],[data-testid*="close"])),.selection-popup,[data-comment-bubble-popover="true"],[data-testid="pdf-selected-annotation-popover"],[data-testid="comment-box"].absolute { z-index:1002 !important; }' +
                         '[data-main-content-body] [data-split-sized]:not(:has(> [data-peek-surface])) { z-index:auto !important; }' +

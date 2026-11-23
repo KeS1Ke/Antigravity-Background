@@ -1485,9 +1485,24 @@ try {
                 '    <div data-testid="overlay-scrollbar" style="position:absolute;top:2px;bottom:2px;right:2px;width:12px;z-index:30;pointer-events:auto"></div>' +
                 '    <button type="button" class="agy-scroll-bottom" style="position:absolute;bottom:16px;left:50%;width:32px;height:32px;z-index:20;pointer-events:auto"></button>' +
                 '  </div>' +
+                '  <div id="main-bottom-fade" class="absolute bottom-0 z-10 pointer-events-none inset-x-4" style="position:absolute;bottom:0;height:48px;background:linear-gradient(to top, rgb(60, 59, 59), transparent)"></div>' +
                 '</div>';
             mainBody.appendChild(convo);
             cleanup.push(() => convo.remove());
+
+            const sideQuestionHost = document.createElement('div');
+            sideQuestionHost.style.cssText = 'display:flex;flex-direction:column;height:200px;';
+            sideQuestionHost.innerHTML =
+                '<div data-testid="side-question-tab-conversation" class="relative flex-grow basis-0 min-h-0 w-full" style="position:relative;flex:1;min-height:0">' +
+                '  <div id="btw-bottom-fade" class="absolute bottom-0 inset-x-4 z-10 pointer-events-none" style="position:absolute;bottom:0;height:48px;background:linear-gradient(to top, rgb(60, 59, 59), transparent)"></div>' +
+                '</div>' +
+                '<div data-testid="subagent-tab-conversation" class="relative flex-grow basis-0 min-h-0 w-full" style="position:relative;flex:1;min-height:0">' +
+                '  <div id="subagent-bottom-fade" class="absolute bottom-0 inset-x-4 z-10 pointer-events-none" style="position:absolute;bottom:0;height:48px;background:linear-gradient(to top, rgb(60, 59, 59), transparent)"></div>' +
+                '</div>' +
+                '<div data-testid="subagent-tab-sidebar" style="background:rgb(60, 59, 59)"></div>' +
+                '<div data-testid="terminals-and-tasks-sidebar" style="background:rgb(60, 59, 59)"></div>';
+            sideBody.appendChild(sideQuestionHost);
+            cleanup.push(() => sideQuestionHost.remove());
 
             // 2. Bottom terminal resize handle overlapping bottom of conversation / composer
             const term = document.createElement('div');
@@ -1668,6 +1683,14 @@ try {
                 maxTabZ,
                 maxBodyZ,
                 overlaidTabZ,
+                mainFadeBgImg: getComputedStyle(convo.querySelector('#main-bottom-fade')).backgroundImage,
+                mainFadeBg: getComputedStyle(convo.querySelector('#main-bottom-fade')).backgroundColor,
+                btwFadeBgImg: getComputedStyle(sideQuestionHost.querySelector('#btw-bottom-fade')).backgroundImage,
+                btwFadeBg: getComputedStyle(sideQuestionHost.querySelector('#btw-bottom-fade')).backgroundColor,
+                subagentFadeBgImg: getComputedStyle(sideQuestionHost.querySelector('#subagent-bottom-fade')).backgroundImage,
+                subagentFadeBg: getComputedStyle(sideQuestionHost.querySelector('#subagent-bottom-fade')).backgroundColor,
+                subagentSideBg: getComputedStyle(sideQuestionHost.querySelector('[data-testid="subagent-tab-sidebar"]')).backgroundColor,
+                terminalSideBg: getComputedStyle(sideQuestionHost.querySelector('[data-testid="terminals-and-tasks-sidebar"]')).backgroundColor,
             };
         } finally {
             while (cleanup.length) cleanup.pop()();
@@ -1707,6 +1730,14 @@ try {
     assert.equal(stackingChecks.maxTabZ, '1002');
     assert.equal(stackingChecks.maxBodyZ, '1002');
     assert.equal(stackingChecks.overlaidTabZ, '1002');
+    assert.equal(stackingChecks.mainFadeBgImg, 'none', 'ConversationView bottom gradient fade must be cleared');
+    assert.equal(stackingChecks.mainFadeBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(stackingChecks.btwFadeBgImg, 'none', 'Side Question (/btw) bottom gradient fade must be cleared');
+    assert.equal(stackingChecks.btwFadeBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(stackingChecks.subagentFadeBgImg, 'none', 'Subagent tab bottom gradient fade must be cleared');
+    assert.equal(stackingChecks.subagentFadeBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(stackingChecks.subagentSideBg, 'rgba(0, 0, 0, 0)', 'Subagent tab sidebar must stay transparent inside right side panel');
+    assert.equal(stackingChecks.terminalSideBg, 'rgba(0, 0, 0, 0)', 'Terminals and tasks sidebar must stay transparent inside right side panel');
 
     // Regression: floating body > [data-overlay-scrollbar-track] on scrollable working-status blocks must stay clipped to autoscroll-viewport
     const floatingClipChecks = await evaluate(`(async () => {
