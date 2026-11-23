@@ -126,11 +126,11 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 
 ## 原生交互与兼容修复
 
-针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 25`）持续做了系统性适配：
+针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 26`）持续做了系统性适配：
 
 - **对话区与原生控件层级还原**：恢复左侧对话圆点进度条（`conversation-navigator`）点击跳转、主滚动条与回到底部按钮、`Ctrl+F` 查找栏、选中浮窗/批注弹框、底部终端上边缘拖拽调整高度、分栏拖拽手柄（`[data-split-sash]` / `[data-testid="tiling-splitter"]`）及侧栏收起 Peek 热区/窄窗抽屉交互。
 - **工作状态框浮动滚动条视口裁剪**：为宿主全局挂载到 `document.body` 的浮动滚动条（`body > [data-overlay-scrollbar-track]`）建立几何反查与祖先裁剪链，通过 `clip-path: inset(...)` 限制其严格在 `[data-testid="autoscroll-viewport"]` 等容器视口内渲染与响应点击，杜绝长工作流状态框滚出会话区域时遮挡顶部标题栏、会话头或底部输入框。
-- **标题栏与原生浏览器视图隔离**：通过 `MutationObserver` 与主题签名过滤保护透明 `titleBarOverlay`，同步标准化 `color(srgb ...)` 色彩格式；在侧栏切换至原生 `[data-browser-hole]` 标签页时解除主区 `clip-path` 陷阱并保持浏览器孔洞全透明无模糊遮挡。
+- **标题栏与原生浏览器视图隔离**：通过 `MutationObserver` 与主题签名过滤保护透明 `titleBarOverlay`，同步标准化 `color(srgb ...)` 色彩格式；在侧栏切换至原生 `[data-browser-hole]` 标签页时解除主区 `clip-path` 陷阱、恢复停靠左侧栏底层 `--shell-canvas` 画布色（消除顶栏下方暗色断层），并保持浏览器孔洞全透明无模糊遮挡。
 
 ---
 

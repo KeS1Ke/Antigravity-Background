@@ -119,3 +119,8 @@
   - `updater.mjs` 与 `archive.mjs` 保持“正式 Release 优先于同版本 `main` 提交”的更新策略，将 `inspectTargetEligibility()` 纳入 `initializeLocalInfo()` 异常边界，为 `ensureParentDir`、事务恢复路径及 `CONIN$`/`CONOUT$` 补齐校验，并将删除操作纳入 Windows 文件占用重试。
   - `manage.cjs` 与 `persistence.cjs` 持久化自定义安装目录路径以支持无参卸载还原、补全卸载回滚 `app.asar` 对称补偿、对 `replaceAtomic` 增加 Windows 重试并原子写入备份，且仅在全部快捷方式写回确认成功后才清理备份。
   - `app.js` 将 `render()` 布局读取移至样式写入前（仅在宿主比例变化时重读）、补全 `img.onerror` 提示与 `syncQueued` 忙时补跑机制，并区分边缘取色 2D 上下文不可用与透明图片结果。
+
+## 17. 原生浏览器孔洞激活时的停靠左侧栏底层画布还原（`renderer` `version = 18` / `revision = 26`）
+
+- **问题成因**：右侧边栏激活包含 `[data-browser-hole]` 的原生视图后，宿主在祖先链（含 `.agy-inset-shell.browser-hole-ancestor`）上写入 `data-has-browser-hole="true"` 并将其背景置透明，再由顶栏 `[data-testid="title-menu-bar"]`、`[data-main-content-header]` 与 `[data-side-panel-strip]` 各自补涂 `var(--shell-canvas)`。插件此前将停靠左侧栏外层容器 `[data-testid="sidebar-split"] > :first-child` 直接抬升至 `z-index: 1001` 且透明化/半透明化内层 `.bg-sidebar`，导致壁纸层（`z-index: 1000`）下方的左侧栏区域失去 `var(--shell-canvas)` 承托而透出更暗的窗口底色，在左侧栏顶部与菜单栏、会话头交界处形成明显暗色断层。
+- **修复方案**：`revision = 26` 保持停靠左侧栏外层容器 `z-index: auto !important`（不建立层叠上下文），仅将内层 `[data-split-sized]`（或无 `[data-split-sized]` 时的 `.bg-sidebar`）抬升至 `z-index: 1001 !important`；同时在 `body[data-has-browser-hole="true"]` 生效时为非孔洞停靠左侧栏外层容器补涂 `background-color: var(--shell-canvas, var(--sidebar, var(--background))) !important` 与 `1px` 右侧分隔条补色阴影（位于壁纸层下方），使左侧栏与顶栏、会话头在开启浏览器孔洞前后像素级一致。

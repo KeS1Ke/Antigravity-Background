@@ -3,7 +3,7 @@
 export async function installWallpaper(payload = {}) {
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 25;
+    const revision = 26;
 
     // -------------------------------------------------------------------------
     // Section 1: Pure helpers (kept inside installWallpaper so toString() CDP
@@ -651,7 +651,10 @@ export async function installWallpaper(payload = {}) {
                         ':where(:root:not(.dark):not(.dark-theme):not(.theme-dark):not(.vscode-dark):not([data-theme="dark"]) body[data-agy-theme]:not(.dark):not(.dark-theme):not(.theme-dark):not(.vscode-dark):not([data-theme="dark"]),.vscode-light,[data-theme="light"]) { --ag-ui-frame-default:var(--onyx-frame,#eaedf2);--ag-ui-raised-default:var(--onyx-raised,var(--card,#ffffff));--ag-ui-rim-default:rgba(10,10,12,.11);--ag-ui-highlight-default:rgba(255,255,255,.85);--ag-ui-inset-shadow:rgba(10,10,12,.06);--ag-ui-drop-shadow:0 10px 26px -10px rgba(10,10,12,.14),0 2px 6px -1px rgba(10,10,12,.06);--ag-ui-card-shadow:0 3px 10px -2px rgba(10,10,12,.08),0 1px 3px rgba(10,10,12,.05); }' +
                         ':where(.dark,.dark-theme,.theme-dark,.vscode-dark,[data-theme="dark"]) { --ag-ui-frame-default:color-mix(in srgb,var(--onyx-frame,#111216) 72%,#000);--ag-ui-raised-default:color-mix(in srgb,var(--onyx-raised,var(--card,#1d1e23)) 92%,#fff);--ag-ui-rim-default:rgba(255,255,255,.12);--ag-ui-highlight-default:rgba(255,255,255,.14);--ag-ui-inset-shadow:rgba(0,0,0,.34);--ag-ui-drop-shadow:0 18px 40px -12px rgba(0,0,0,.44),0 2px 8px -2px rgba(0,0,0,.28);--ag-ui-card-shadow:0 4px 12px -2px rgba(0,0,0,.34),0 1px 3px rgba(0,0,0,.22); }';
                     const leftSidebarRules =
-                        leftDocked + ' { position:relative;z-index:1001 !important; }' +
+                        leftDocked + ' { position:relative;z-index:auto !important; }' +
+                        'body[data-has-browser-hole="true"] ' + leftDocked + ':not([data-has-browser-hole="true"]) { background-color:var(--shell-canvas,var(--sidebar,var(--background))) !important;box-shadow:1px 0 0 var(--shell-canvas,var(--sidebar,var(--background))) !important; }' +
+                        leftDocked + ' > [data-split-sized] { z-index:1001 !important; }' +
+                        leftDocked + ':not(:has(> [data-split-sized])) .h-full.w-full.flex.flex-col.bg-sidebar { position:relative;z-index:1001 !important; }' +
                         '[data-testid="sidebar-split"] .bg-sidebar .bg-sidebar,[data-testid="sidebar-split"] .bg-sidebar .agy-row-actions::before,.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"] .bg-sidebar .bg-sidebar,.agy-inset-shell > [data-testid="sidebar-popover-backdrop"] + [role="dialog"] .agy-row-actions::before { background:transparent !important; }' +
                         leftShell + ' {' + flatBg(leftSidebar.innerBg, leftSidebar.effectiveBlur) + 'box-shadow:none !important; }';
                     const rightPanelRules =

@@ -1041,13 +1041,14 @@ try {
             const rb=getComputedStyle(rbEl);
             const mainEl=document.querySelector('[data-main-content-body]');
             return {
-                left:{dockZ:ld.zIndex,shellBg:rgba(ls.backgroundColor),shellBlur:ls.backdropFilter,shellShadow:ls.boxShadow,stickyBg:lstick.backgroundColor,innerBg:rgba(li.backgroundColor),innerShadow:li.boxShadow,innerRadius:li.borderRadius,selectedShadow:lsel.boxShadow},
+                left:{dockZ:ld.zIndex,shellZ:ls.zIndex,shellBg:rgba(ls.backgroundColor),shellBlur:ls.backdropFilter,shellShadow:ls.boxShadow,stickyBg:lstick.backgroundColor,innerBg:rgba(li.backgroundColor),innerShadow:li.boxShadow,innerRadius:li.borderRadius,selectedShadow:lsel.boxShadow},
                 right:{shellZ:rs.zIndex,shellBg:rgba(rs.backgroundColor),shellBlur:rs.backdropFilter,tabsBg:rt.backgroundColor,tabsTop:Math.round(rtEl.getBoundingClientRect().top),mainTop:Math.round(mainEl.getBoundingClientRect().top),bodyTop:Math.round(rbEl.getBoundingClientRect().top),bodyBg:rgba(rb.backgroundColor),bodyBlur:rb.backdropFilter,bodyShadow:rb.boxShadow,bodyRadius:rb.borderRadius},
             };
         })()`);
         await until(async () => (await readSideSurfaces()).right.bodyBlur === 'blur(10px)' && (await readSideSurfaces()).left.shellBlur === 'blur(8px)', 'Left sidebar & right panel flat styles did not apply');
         const flatSides = await readSideSurfaces();
-        assert.equal(flatSides.left.dockZ, '1001');
+        assert.equal(flatSides.left.dockZ, 'auto');
+        assert.equal(flatSides.left.shellZ, '1001');
         approxRgba(flatSides.left.shellBg, [19, 19, 19, 102]);
         assert.equal(flatSides.left.shellBlur, 'blur(8px)');
         assert.equal(flatSides.left.shellShadow, 'none', 'Left sidebar shell must not render an inset border/shadow seam below titlebar');
@@ -1454,6 +1455,142 @@ try {
     assert.equal(cleanedHole.sideClip, 'none');
     assert.equal(cleanedHole.mainClip, 'none');
     assert.equal(cleanedHole.splitClip, 'none');
+
+    // Regression: opening a [data-browser-hole] right pane clears .agy-inset-shell's --shell-canvas background;
+    // docked left sidebar must restore var(--shell-canvas) below #antigravity-ui-background so top-left never darkens into a seam.
+    const leftHoleSettings = appearance.normalize({ ...settings, opacity: 40, leftSidebarCover: false });
+    const leftHoleRuntime = new WallpaperRuntime(profile, () => ({
+        enabled: true,
+        css: appearance.wallpaperStyle(leftHoleSettings, 'var(--ag-ui-image)'),
+        image: leftHoleSettings.image,
+        imageHash: expectedImageHash,
+        surfaces: appearance.surfaceConfig(leftHoleSettings),
+    }), async () => true, String(server.address().port));
+    leftHoleRuntime.generation = runtime.generation + 100;
+    try {
+        await leftHoleRuntime.update(true, true);
+        await evaluate(`(()=>{
+            const style = document.createElement('style');
+            style.id = 'test-left-hole-style';
+            style.textContent = '.agy-inset-shell{--shell-canvas:#444343;background-color:var(--shell-canvas)}.browser-hole-ancestor[data-has-browser-hole="true"]{background-color:transparent!important}body[data-has-browser-hole="true"]{background-color:transparent}';
+            document.head.appendChild(style);
+            const shell = document.querySelector('.agy-inset-shell');
+            shell.classList.add('browser-hole-ancestor');
+            const sheet = document.querySelector('.agy-sheet');
+            const split = document.createElement('div');
+            split.id = 'test-left-hole-split';
+            split.setAttribute('data-testid', 'sidebar-split');
+            split.setAttribute('data-split-root', 'true');
+            split.style.cssText = 'display:flex;width:100%;height:100%;';
+            const leftDock = document.createElement('div');
+            leftDock.id = 'test-left-hole-dock';
+            leftDock.className = 'flex';
+            leftDock.style.cssText = 'position:relative;width:180px;height:100%;flex-shrink:0;overflow:hidden;';
+            leftDock.innerHTML =
+                '<div data-split-sized=":r-hole:" class="h-full w-full" style="position:absolute;top:0;left:0;width:180px;height:100%;z-index:10;display:flex">' +
+                '  <div class="contents" style="--color-sidebar:var(--shell-canvas);--sidebar:var(--shell-canvas)">' +
+                '    <div id="test-left-hole-shell" class="h-full w-full flex flex-col pb-2 bg-sidebar" style="width:100%;height:100%">' +
+                '      <div style="height:40px;flex-shrink:0"></div>' +
+                '      <button type="button" id="test-left-hole-btn" style="margin:0 8px;height:32px;background:rgba(255,255,255,0.05);border:0;color:#fff">New Conversation</button>' +
+                '    </div>' +
+                '  </div>' +
+                '</div>';
+            const sash = document.createElement('div');
+            sash.id = 'test-left-hole-sash';
+            sash.setAttribute('data-split-sash', 'true');
+            sash.style.cssText = 'position:relative;width:1px;height:100%;flex-shrink:0;z-index:30;';
+            const topHeader = document.createElement('div');
+            topHeader.id = 'test-left-hole-header';
+            topHeader.className = 'absolute left-0 top-0 flex items-center shrink-0 z-50';
+            topHeader.style.cssText = 'position:absolute;left:0;top:0;width:140px;height:40px;z-index:50;';
+            topHeader.innerHTML = '<button type="button" id="test-left-hole-hdr-btn" style="width:28px;height:28px">Logo</button>';
+            shell.insertBefore(split, sheet);
+            split.append(leftDock, sash, sheet);
+            shell.appendChild(topHeader);
+        })()`);
+        await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+        const beforeLeftHoleShot = await client.command('Page.captureScreenshot', { format: 'png' });
+        const leftHoleMetrics = await evaluate(`(async()=>{
+            const shell = document.querySelector('.agy-inset-shell');
+            const split = document.querySelector('#test-left-hole-split');
+            const sheet = document.querySelector('.agy-sheet');
+            const outline = document.querySelector('.outline-none');
+            const pane = document.querySelector('.pane');
+            const sideBody = document.querySelector('.pane .flex-grow');
+            for (const el of [document.documentElement, document.body, shell, split, sheet, outline, pane, sideBody]) {
+                el.dataset.hasBrowserHole = 'true';
+            }
+            await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+            const dock = document.querySelector('#test-left-hole-dock');
+            const sized = dock.querySelector('[data-split-sized]');
+            const nav = document.querySelector('#test-left-hole-shell');
+            const btn = document.querySelector('#test-left-hole-btn');
+            const hdrBtn = document.querySelector('#test-left-hole-hdr-btn');
+            const hit = el => { const b = el.getBoundingClientRect(); return document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2) === el; };
+            const r = dock.getBoundingClientRect();
+            return {
+                shellBg: getComputedStyle(shell).backgroundColor,
+                dockZ: getComputedStyle(dock).zIndex,
+                dockBg: getComputedStyle(dock).backgroundColor,
+                sizedZ: getComputedStyle(sized).zIndex,
+                navBg: getComputedStyle(nav).backgroundColor,
+                btnHit: hit(btn),
+                hdrBtnHit: hit(hdrBtn),
+                rect: { left: r.left, top: r.top, right: r.right + 1, bottom: r.bottom },
+            };
+        })()`);
+        assert.equal(leftHoleMetrics.shellBg, 'rgba(0, 0, 0, 0)', 'Host browser-hole rule must clear .agy-inset-shell background');
+        assert.equal(leftHoleMetrics.dockZ, 'auto', 'Docked left sidebar container must stay non-stacking so --shell-canvas paints below wallpaper');
+        assert.equal(leftHoleMetrics.dockBg, 'rgb(68, 67, 67)', 'Docked left sidebar container must restore --shell-canvas under browser hole');
+        assert.equal(leftHoleMetrics.sizedZ, '1001', 'Docked left sidebar content wrapper must sit above wallpaper');
+        assert.equal(leftHoleMetrics.navBg, 'rgba(0, 0, 0, 0)', 'Transparent left sidebar shell must remain transparent above wallpaper');
+        assert.equal(leftHoleMetrics.btnHit, true, 'Docked left sidebar buttons must remain clickable above wallpaper');
+        assert.equal(leftHoleMetrics.hdrBtnHit, true, 'Top-left header controls must remain clickable above docked left sidebar');
+        const afterLeftHoleShot = await client.command('Page.captureScreenshot', { format: 'png' });
+        const leftHoleDiff = await evalOn(client, `(async()=>{
+            const load=b64=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src='data:image/png;base64,'+b64;});
+            const [beforeImg,afterImg]=await Promise.all([load(${JSON.stringify(beforeLeftHoleShot.data)}),load(${JSON.stringify(afterLeftHoleShot.data)})]);
+            const w=beforeImg.naturalWidth,h=beforeImg.naturalHeight;
+            const draw=img=>{const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');g.drawImage(img,0,0);return g.getImageData(0,0,w,h).data;};
+            const a=draw(beforeImg),b=draw(afterImg);
+            const sx=w/window.innerWidth,sy=h/window.innerHeight;
+            const r=${JSON.stringify(leftHoleMetrics.rect)};
+            const x0=Math.max(0,Math.ceil(r.left*sx)),y0=Math.max(0,Math.ceil(r.top*sy));
+            const x1=Math.min(w,Math.floor(r.right*sx)),y1=Math.min(h,Math.floor(r.bottom*sy));
+            let changed=0;
+            for(let y=y0;y<y1;y++){
+                for(let x=x0;x<x1;x++){
+                    const i=(y*w+x)*4;
+                    if(a[i]!==b[i]||a[i+1]!==b[i+1]||a[i+2]!==b[i+2]||a[i+3]!==b[i+3])changed++;
+                }
+            }
+            return { changed, width: x1 - x0, height: y1 - y0 };
+        })()`, 'Compare left-sidebar browser-hole screenshots');
+        assert(leftHoleDiff.width > 0 && leftHoleDiff.height > 0);
+        assert.equal(leftHoleDiff.changed, 0, 'Toggling data-has-browser-hole must not change any pixel inside the docked left sidebar or its sash');
+    } finally {
+        await evaluate(`(()=>{
+            const shell = document.querySelector('.agy-inset-shell');
+            const split = document.querySelector('#test-left-hole-split');
+            const sheet = document.querySelector('.agy-sheet');
+            const outline = document.querySelector('.outline-none');
+            const pane = document.querySelector('.pane');
+            const sideBody = document.querySelector('.pane .flex-grow');
+            for (const el of [document.documentElement, document.body, shell, split, sheet, outline, pane, sideBody]) {
+                if (el) delete el.dataset.hasBrowserHole;
+            }
+            shell?.classList.remove('browser-hole-ancestor');
+            if (split && sheet) shell.insertBefore(sheet, split);
+            split?.remove();
+            document.querySelector('#test-left-hole-header')?.remove();
+            document.querySelector('#test-left-hole-style')?.remove();
+        })()`);
+        leftHoleRuntime.stopTimer();
+        for (const conn of leftHoleRuntime.connections.values()) conn.close();
+        leftHoleRuntime.connections.clear();
+        runtime.generation = leftHoleRuntime.generation + 100;
+        await runtime.update(true, true);
+    }
 
     // Regression: interactive overlays, navigators, scrollbars, peek sidebar, drawer, split fork & terminal handle must remain clickable
     const stackingChecks = await evaluate(`(()=>{
