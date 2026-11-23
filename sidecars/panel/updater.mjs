@@ -112,11 +112,12 @@ function hostMatchesRule(hostname, rule) {
     if (!host || !pattern) return false;
     if (pattern === '*') return true;
     if (pattern === '<local>') return !host.includes('.');
-    if (pattern.includes('*')) {
-        const regex = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+    const withoutPort = pattern.replace(/:\d+$/, '');
+    if (withoutPort.includes('*')) {
+        const regex = new RegExp('^' + withoutPort.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
         return regex.test(host);
     }
-    const clean = pattern.replace(/:\d+$/, '').replace(/^\./, '');
+    const clean = withoutPort.replace(/^\./, '');
     return host === clean || host.endsWith('.' + clean);
 }
 

@@ -124,3 +124,18 @@
 
 - **问题成因**：右侧边栏激活包含 `[data-browser-hole]` 的原生视图后，宿主在祖先链（含 `.agy-inset-shell.browser-hole-ancestor`）上写入 `data-has-browser-hole="true"` 并将其背景置透明，再由顶栏 `[data-testid="title-menu-bar"]`、`[data-main-content-header]` 与 `[data-side-panel-strip]` 各自补涂 `var(--shell-canvas)`。插件此前将停靠左侧栏外层容器 `[data-testid="sidebar-split"] > :first-child` 直接抬升至 `z-index: 1001` 且透明化/半透明化内层 `.bg-sidebar`，导致壁纸层（`z-index: 1000`）下方的左侧栏区域失去 `var(--shell-canvas)` 承托而透出更暗的窗口底色，在左侧栏顶部与菜单栏、会话头交界处形成明显暗色断层。
 - **修复方案**：`revision = 26` 保持停靠左侧栏外层容器 `z-index: auto !important`（不建立层叠上下文），仅将内层 `[data-split-sized]`（或无 `[data-split-sized]` 时的 `.bg-sidebar`）抬升至 `z-index: 1001 !important`；同时在 `body[data-has-browser-hole="true"]` 生效时为非孔洞停靠左侧栏外层容器补涂 `background-color: var(--shell-canvas, var(--sidebar, var(--background))) !important` 与 `1px` 右侧分隔条补色阴影（位于壁纸层下方），使左侧栏与顶栏、会话头在开启浏览器孔洞前后像素级一致。
+
+## 18. 跨屏幕不同分辨率与全屏/窗口化等比渲染（`renderer` `version = 18` / `revision = 27`）
+
+- **问题成因**：
+  1. `tile` 模式此前采用绝对 CSS 像素 `(imageWidth * effectiveScale / 100)px`，在切换不同分辨率/DPI 屏幕或全屏↔窗口化缩放时壁纸与 Antigravity 窗口尺寸脱钩，缩小时还会使 `W - imgW` 变号导致 `background-position` 方向反转与主体裁切；设置页预览也被迫按宿主宽度手动换算像素。
+  2. `fill`/`fit`/`stretch` 在 `scale > 100%` 时依赖 `transform: scale()`，导致 `mask-image` 左侧渐隐随变换拉伸偏移、模糊半径被倍增；且壁纸 `filter: blur(${blur}px)` 为固定像素，在高分屏下偏弱、窗口化缩小后偏糊。
+  3. 宿主 `resize` 未立即更新 `state.layout`，且面板在打开状态下不会因窗口尺寸或 DPI 切换刷新 `hostLayout`。
+- **修复方案**：
+  - 在宿主 `#antigravity-ui-background` 与预览 `.sample-window` 上启用 `container-type: size`，统一在 `plugin/appearance.cjs` 的 `wallpaperStyle()` 中使用容器查询单位 `100cqw`/`100cqh` 与 `--ag-ui-image-aspect`（由宿主 `renderer.mjs` 与面板 `app.js` 在图片解码后自动同步真实 `naturalWidth / naturalHeight`，以 `imageWidth / imageHeight` 作为首帧回退）计算全部 4 种布局的 `background-size`（`tile` 采用宽高面积均衡 `(50cqw + 50cqh × r) × scale` 兼顾不同分辨率与 1:1/半屏窗口化体感、`fit` 采用 `contain × scale`、`fill` 采用 `cover × scale`、`stretch` 采用 `effectiveScale%`），彻底移除 `transform: scale()`，使 `mask-image` 左侧渐隐始终严格锚定窗口 `0% → fade%`。
+  - 壁纸模糊改为 `blur(calc(${blur} * min(100cqw, 100cqh * 16 / 9) / 1920))`（`blur === 0` 保持 `blur(0px)`），使不同分辨率、DPI 与全屏/窗口化下视觉模糊强度一致，面板预览也与宿主共享同一份 `wallpaperStyle()` CSS 无需手动换算像素。
+  - 同步 `app.js` 的 `dragSpan(stage)` 在 `tile` 模式下使用与 CSS 一致的 `0.5·w + 0.5·h·r` 基准；`renderer.mjs` 在 `onResize` 即时刷新 `state.measureLayout()`，`app.js` 监听 `resize` 与 `devicePixelRatio` 变化防抖同步最新宿主比例。
+- **冷启动、宿主主线程开销与审查加固**：
+  - `runtime.mjs` 首次附加与周期复检非宿主 CDP 目标时先以轻量宿主指纹表达式（`HOST_PROBE_EXPRESSION`，77 字节）探测，彻底避免向非宿主页面序列化、传输与解析完整 `installWallpaper` 源码（~36 KB）及大图；`main.mjs` 将设置页静态资源改为首次请求时按需并行读取并缓存，不占用启动关键路径。
+  - `renderer.mjs` 在 `update()` 内将 `measureLayout()` 节流至 250ms（首帧与 `onResize` 仍立即测量）、非表面变更路径避免同步扫描浮动滚动条，并在 `syncTitlebar()` 内于 `shellColors()` 之前短路 1000ms 有效缓存（保持主题 `MutationObserver` 强制刷新与 1500ms 心跳兜底语义），同时兼容省略 `imageHash` 的直接换图调用。
+  - `main.mjs` 容错处理缺省或无端口 `ANTIGRAVITY_LS_ADDRESS`；`persistence.cjs` 为 `inspectAsarPersist` 补齐损坏/占用异常边界；`manage.cjs` 对齐目录锁 PID 合法区间并补全卸载失败时的快捷方式对称回滚与目录恢复异常隔离；`updater.mjs` 的 `hostMatchesRule` 支持剥离通配代理规则末尾端口，`sdk.mjs` 移除预载结尾长度魔数。

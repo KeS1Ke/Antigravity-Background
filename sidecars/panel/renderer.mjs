@@ -3,7 +3,7 @@
 export async function installWallpaper(payload = {}) {
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 26;
+    const revision = 27;
 
     // -------------------------------------------------------------------------
     // Section 1: Pure helpers (kept inside installWallpaper so toString() CDP
@@ -289,6 +289,25 @@ export async function installWallpaper(payload = {}) {
         let bodyObserved = false;
         let syncRafId = 0;
         let lastFallbackScanAt = 0;
+        let lastMeasureAt = 0;
+        let aspectToken = 0;
+        const syncImageAspect = src => {
+            const token = ++aspectToken;
+            if (!src) {
+                layer.style.removeProperty('--ag-ui-image-aspect');
+                return;
+            }
+            const probe = new Image();
+            probe.onload = () => {
+                if (disposed || token !== aspectToken || !probe.naturalWidth || !probe.naturalHeight) return;
+                layer.style.setProperty('--ag-ui-image-aspect', String(Number((probe.naturalWidth / probe.naturalHeight).toFixed(6))));
+            };
+            probe.onerror = () => {
+                if (disposed || token !== aspectToken) return;
+                layer.style.removeProperty('--ag-ui-image-aspect');
+            };
+            probe.src = src;
+        };
 
         const FALLBACK_SCAN_INTERVAL = 250;
         const FALLBACK_SCAN_LIMIT = 200;
@@ -526,6 +545,7 @@ export async function installWallpaper(payload = {}) {
             }
         };
         const onResize = () => {
+            state.measureLayout();
             if (hasFloatingTrack()) scheduleFloatingSync();
         };
 
@@ -549,9 +569,11 @@ export async function installWallpaper(payload = {}) {
             imageHash: '',
             layout: null,
             titlebar: null,
+            titlebarHasCss: null,
             titlebarAt: 0,
             diagnostics: { layoutMeasured: false, fallbackScans: 0 },
             measureLayout() {
+                lastMeasureAt = Date.now();
                 const w = window.innerWidth;
                 const h = window.innerHeight;
                 const insetEl = document.querySelector('.agy-inset-shell');
@@ -580,20 +602,27 @@ export async function installWallpaper(payload = {}) {
             update({ css: nextCss, image: nextImage, imageHash: nextImageHash, surfaces: options } = {}) {
                 refreshLease();
                 observeBody();
-                state.measureLayout();
+                if (!state.layout || Date.now() - lastMeasureAt >= 250) state.measureLayout();
                 const safeCss = typeof nextCss === 'string' ? nextCss : '';
                 const safeHash = typeof nextImageHash === 'string' ? nextImageHash : '';
                 state.hasCss = Boolean(safeCss);
                 if (safeCss) {
                     if (nextImage !== undefined) {
                         if (typeof nextImage === 'string' && safeImageRe.test(nextImage)) {
-                            if (safeHash !== state.imageHash || !imageEl.style.getPropertyValue('--ag-ui-image')) {
-                                imageEl.style.setProperty('--ag-ui-image', 'url("' + nextImage + '")');
+                            const currentUrl = imageEl.style.getPropertyValue('--ag-ui-image');
+                            let nextUrl;
+                            const imageChanged = safeHash
+                                ? (safeHash !== state.imageHash || !currentUrl)
+                                : (currentUrl !== (nextUrl = 'url("' + nextImage + '")'));
+                            if (imageChanged) {
+                                imageEl.style.setProperty('--ag-ui-image', nextUrl ?? ('url("' + nextImage + '")'));
                                 state.imageHash = safeHash;
+                                syncImageAspect(nextImage);
                             }
                         } else if (nextImage === '') {
                             imageEl.style.removeProperty('--ag-ui-image');
                             state.imageHash = '';
+                            syncImageAspect('');
                         }
                     }
                     if (safeCss !== currentCss) {
@@ -610,11 +639,13 @@ export async function installWallpaper(payload = {}) {
                     if (state.imageHash) {
                         imageEl.style.removeProperty('--ag-ui-image');
                         state.imageHash = '';
+                        syncImageAspect('');
                     }
                 }
                 const nextOptions = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
                 const signature = JSON.stringify(nextOptions);
-                if (signature !== currentSurfaces) {
+                const surfacesChanged = signature !== currentSurfaces;
+                if (surfacesChanged) {
                     const leftSidebar = computeSurfaceState(nextOptions, 'leftSidebar', 'var(--sidebar,var(--background,#131313))');
                     const sidebar = computeSurfaceState(nextOptions, 'sidebar', 'var(--background,#131313)');
                     const composer = computeSurfaceState(
@@ -679,7 +710,7 @@ export async function installWallpaper(payload = {}) {
                         overviewHosts + ' { z-index:1002 !important;' + flatBg(overview.innerBg, overview.effectiveBlur) + 'border-color:' + overview.outerBorder + ' !important;box-shadow:none !important; }';
                     layout.replaceSync(
                         themeTokens +
-                        '#antigravity-ui-background { position:fixed; inset:0; z-index:1000; pointer-events:none; overflow:hidden; contain:paint; }' +
+                        '#antigravity-ui-background { position:fixed; inset:0; z-index:1000; pointer-events:none; overflow:hidden; contain:paint; container-type:size; }' +
                         '.agy-sheet { z-index:auto !important; }' +
                         rightPane + ' { position:relative; z-index:auto !important; }' +
                         rightPane + ' > .h-full.w-full { z-index:auto !important; }' +
@@ -712,27 +743,35 @@ export async function installWallpaper(payload = {}) {
                     );
                     currentSurfaces = signature;
                 }
-                syncFloatingScrollbars();
+                if (surfacesChanged) syncFloatingScrollbars();
+                else if (hasFloatingTrack()) scheduleFloatingSync();
                 refreshLease();
             },
             async syncTitlebar(force = false) {
+                const now = Date.now();
+                if (!force &&
+                    state.titlebar &&
+                    state.titlebarHasCss === state.hasCss &&
+                    now - state.titlebarAt < 1000) return;
                 const base = shellColors();
                 const overlay = state.hasCss ? { color: '#00000000', symbolColor: base.symbolColor } : base;
                 if (!force &&
                     state.titlebar?.color === overlay.color &&
                     state.titlebar?.symbolColor === overlay.symbolColor &&
-                    Date.now() - state.titlebarAt < 1000) return;
+                    now - state.titlebarAt < 1000) return;
                 const setter = window.electronNative?.setTitleBarOverlay;
                 if (typeof setter !== 'function') return;
                 await setter.call(window.electronNative, overlay);
                 if (!disposed && window[key] === state) {
                     state.titlebar = overlay;
+                    state.titlebarHasCss = state.hasCss;
                     state.titlebarAt = Date.now();
                 }
             },
             dispose() {
                 if (disposed) return;
                 disposed = true;
+                aspectToken++;
                 clearTimeout(lease);
                 if (syncRafId) {
                     cancelAnimationFrame(syncRafId);

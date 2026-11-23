@@ -258,6 +258,7 @@ export class SidecarApp {
     const winProxyReader = async () => ({ server: '127.0.0.1:45331', bypass: ['localhost', '127.*', '<local>'] });
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', {}, winProxyReader), 'http://127.0.0.1:45331');
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { NO_PROXY: 'localhost' }, winProxyReader), 'http://127.0.0.1:45331');
+    assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { NO_PROXY: '*.github.com:443' }, winProxyReader), null);
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { HTTPS_PROXY: '' }, winProxyReader), null);
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { HTTPS_PROXY: 'http://127.0.0.1:8888' }, winProxyReader), 'http://127.0.0.1:8888');
     assert.equal(await resolveSystemProxy('http://127.0.0.1:12345/api', { HTTPS_PROXY: 'http://127.0.0.1:8888' }, winProxyReader), null);

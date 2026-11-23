@@ -7,6 +7,7 @@ const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const INSTALL_WALLPAPER_SOURCE = installWallpaper.toString();
 const RENDERER_KEY = `${RENDERER_VERSION}:${RENDERER_REVISION}`;
 const ATTACH_RETRY_DELAYS = [150, 250, 400, 600, 1000, 1500];
+const HOST_PROBE_EXPRESSION = 'window === window.top && Boolean(window.electronNative && window.nativeStorage)';
 const FAST_EVAL_PREFIX =
     '(async (p) => {' +
     'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null };' +
@@ -37,6 +38,7 @@ export class Connection {
         this.lastLayout = null;
         this.installedKey = undefined;
         this.nonHost = false;
+        this.hostVerified = false;
     }
 
     async open() {
@@ -305,8 +307,24 @@ export class WallpaperRuntime {
     }
 
     async send(connection, payload) {
+        if (!connection.hostVerified || connection.nonHost) {
+            const probe = await connection.command('Runtime.evaluate', {
+                expression: HOST_PROBE_EXPRESSION,
+                returnByValue: true,
+            });
+            if (this.stopped) return {};
+            if (probe.exceptionDetails || probe.result?.value !== true) {
+                connection.nonHost = true;
+                connection.hostVerified = false;
+                connection.installedKey = undefined;
+                connection.lastImageHash = undefined;
+                return { nonHost: true };
+            }
+            connection.nonHost = false;
+            connection.hostVerified = true;
+        }
         const needImage = Boolean(payload.enabled && payload.css);
-        const omitImage = !needImage || connection.nonHost || (payload.imageHash && connection.lastImageHash === payload.imageHash);
+        const omitImage = !needImage || (payload.imageHash && connection.lastImageHash === payload.imageHash);
         let value = await this.evaluate(connection, omitImage ? { ...payload, image: undefined } : payload);
         if (this.stopped) return {};
         if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload);
@@ -319,6 +337,7 @@ export class WallpaperRuntime {
         if (value !== true && value !== 'OK') {
             if (value === false) {
                 connection.nonHost = true;
+                connection.hostVerified = false;
                 connection.lastImageHash = undefined;
                 return { nonHost: true };
             }

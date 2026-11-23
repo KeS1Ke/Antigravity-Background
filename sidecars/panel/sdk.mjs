@@ -16,6 +16,7 @@ const SDK_ENDING_BYTES = Buffer.byteLength(SDK_ENDING);
 const PRELOAD_BRIDGE_MARKER = 'window.sidecar =';
 const PRELOAD_IIFE_MARKER = '(function() {';
 const PRELOAD_END_MARKER = '\n})();';
+const PRELOAD_END_BYTES = Buffer.byteLength(PRELOAD_END_MARKER);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 async function renameWithRetry(from, to, attempts = 5) {
@@ -78,7 +79,7 @@ async function extractEmbeddedSdk(executablePath) {
                     const preloadEnd = window.indexOf(PRELOAD_END_MARKER, bridge);
                     if (inner > 0 && outer >= 0 && outer < inner && inner < bridge &&
                         preloadEnd > bridge && preloadEnd - outer <= MAX_PRELOAD_BYTES) {
-                        preload = window.toString('utf8', outer, preloadEnd + 6);
+                        preload = window.toString('utf8', outer, preloadEnd + PRELOAD_END_BYTES);
                     }
                 }
             }

@@ -156,6 +156,7 @@ function safeDirectory(path) {
 }
 
 const LOCK_OWNER_RE = /^owner-(\d+)-[a-f\d-]{36}$/;
+const isValidPid = pid => Number.isInteger(pid) && pid > 0 && pid <= 0x7fffffff;
 
 function isPidAlive(pid) {
     try { process.kill(pid, 0); return true; }
@@ -178,7 +179,7 @@ function acquireUpdateDirLock(lockPath) {
         const owners = fs.readdirSync(lockPath);
         const owner = owners[0];
         const pid = Number(LOCK_OWNER_RE.exec(owner || '')?.[1]);
-        if (owners.length > 1 || (owner && (!Number.isInteger(pid) || pid <= 0 || isPidAlive(pid)))) {
+        if (owners.length > 1 || (owner && (!isValidPid(pid) || isPidAlive(pid)))) {
             throw new Error('在线更新正在进行：' + lockPath + '。请等待更新完成后再试。');
         }
         removeUpdateDirLock(lockPath, owner);
@@ -239,17 +240,20 @@ async function manage() {
         const portFile = join(home, 'AppData', 'Roaming', 'Antigravity', 'DevToolsActivePort');
         const hasPort = fs.existsSync(portFile);
         if (asarInfo.exists || shortcuts.length > 0) {
+            const asarStatus = asarInfo.error
+                ? '读取异常（' + asarInfo.error + '）'
+                : (asarInfo.patched ? '已注入' : '未注入');
             console.log(
-                '持久化状态：app.asar 自启开关 ' + (asarInfo.patched ? '已注入' : '未注入') +
+                '持久化状态：app.asar 自启开关 ' + asarStatus +
                 ' ｜ 快捷方式 ' + readyShortcuts + '/' + shortcuts.length + ' 已配置' +
                 ' ｜ 当前调试端口 ' + (hasPort ? '已就绪' : '未检测到')
             );
         }
         return;
     }
-    const running = runningAntigravity();
+    const running = process.platform === 'win32' ? runningAntigravity() : [];
     const installation = await resolveInstallation(command, appOverride, home, running, savedInstallation);
-    desktopClosed(installation, runningAntigravity());
+    if (process.platform === 'win32') desktopClosed(installation, runningAntigravity());
     safeDirectory(destination);
     fs.mkdirSync(dirname(configuration), { recursive: true });
     const lock = configuration + '.antigravity-ui.lock';
@@ -317,8 +321,16 @@ async function manage() {
         if (command === 'install' && shortcutInfo?.repaired > 0) {
             try { restoreShortcuts({ backupPath: shortcutBackup }); } catch {}
         }
-        if (newMoved) fs.rmSync(destination, { recursive: true, force: true });
-        if (oldMoved) fs.renameSync(previous, destination);
+        if (command === 'uninstall' && shortcutInfo?.restored > 0 && process.platform === 'win32') {
+            try { patchShortcuts({ home, installation, backupPath: shortcutBackup }); } catch {}
+        }
+        if (newMoved) {
+            try { fs.rmSync(destination, { recursive: true, force: true }); } catch {}
+        }
+        if (oldMoved) {
+            try { fs.renameSync(previous, destination); }
+            catch (restoreError) { console.error('回滚旧目录失败，原目录位于 ' + previous + '：' + restoreError.message); }
+        }
         throw error;
     } finally {
         releaseUpdateLock?.();

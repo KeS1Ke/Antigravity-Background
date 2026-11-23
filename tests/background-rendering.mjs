@@ -64,11 +64,17 @@ assert.deepEqual(
     [true, false, 42, 9, false, 75, 12, '#445566', '#778899', false, false, false, false]
 );
 assert.throws(() => appearance.normalize(null), /背景设置无效/);
-assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 50 }), /transform:\s*scale\(1\)/);
-assert.match(appearance.wallpaperStyle({ ...settings, mode: 'stretch', scale: 40 }), /transform:\s*scale\(1\)/);
-assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fit', scale: 40 }), /transform:\s*scale\(1\)/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 50 }), /background-size:\s*cover/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'stretch', scale: 40 }), /background-size:\s*100% 100%/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fit', scale: 40 }), /background-size:\s*contain/);
+assert.doesNotMatch(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 150 }), /transform:/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', scale: 150, imageWidth: 1600, imageHeight: 900 }), /background-size:\s*calc\(max\(100cqw,\s*100cqh \* var\(--ag-ui-image-aspect,\s*1\.777778\)\) \* 1\.5\) auto/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'stretch', scale: 150 }), /background-size:\s*150% 150%/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fit', scale: 150, imageWidth: 1600, imageHeight: 900 }), /background-size:\s*calc\(min\(100cqw,\s*100cqh \* var\(--ag-ui-image-aspect,\s*1\.777778\)\) \* 1\.5\) auto/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'fill', blur: 12 }), /filter:\s*blur\(calc\(12 \* min\(100cqw,\s*100cqh \* 16 \/ 9\) \/ 1920\)\)/);
 const tileStyle = appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50, imageColor: '#224466' });
-assert.match(tileStyle, /background-size:\s*256px 256px/);
+assert.match(tileStyle, /background-size:\s*calc\(\(50cqw \+ 50cqh \* var\(--ag-ui-image-aspect,\s*1\)\) \* 0\.5\) auto/);
+assert.match(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 100 }), /background-size:\s*calc\(\(50cqw \+ 50cqh \* var\(--ag-ui-image-aspect,\s*1\)\) \* 1\) auto/);
 assert.match(tileStyle, /background-repeat:\s*no-repeat/);
 assert.match(tileStyle, /background-color:\s*#224466/);
 assert.doesNotMatch(appearance.wallpaperStyle({ ...settings, mode: 'tile', scale: 50 }), /background-color:/);
@@ -755,6 +761,103 @@ try {
         const st = getComputedStyle(document.querySelector('#preview .wallpaper'));
         return { repeat: st.backgroundRepeat, color: st.backgroundColor };
     })()`), { repeat: 'no-repeat', color: 'rgb(51, 85, 119)' });
+
+    // Cross-screen / multi-resolution & fullscreen-vs-windowed proportionality (tile balanced*scale, proportional blur, unshifted fade mask, live resize layout)
+    await panel(`(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160;
+        canvas.height = 90;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#eeeeee';
+        ctx.fillRect(0, 0, 160, 90);
+        ctx.fillStyle = '#334455';
+        ctx.fillRect(90, 10, 60, 70);
+        const wideImage = canvas.toDataURL('image/png');
+        const current = await fetch('/api/settings').then(r => r.json());
+        const res = await fetch('/api/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-sidecar-token': 'test' },
+            // Deliberately seed stale 512x512 dimensions to verify host/panel natural aspect auto-sync too
+            body: JSON.stringify({ ...current.settings, image: wideImage, imageWidth: 512, imageHeight: 512, imageColor: '#eeeeee', mode: 'tile', scale: 65, x: 100, y: 0, blur: 12, fade: 35 }),
+        });
+        if (!res.ok) throw new Error('Seed wide tile preview failed: ' + res.status);
+    })()`);
+    await until(async () => await evaluate(`(() => {
+        const layer = document.querySelector('#antigravity-ui-background');
+        return Number(layer?.style.getPropertyValue('--ag-ui-image-aspect')) > 1.7;
+    })()`), 'Host renderer did not auto-sync natural --ag-ui-image-aspect');
+    const viewportCases = [
+        { name: '2K maximized', width: 2560, height: 1392, dpr: 1 },
+        { name: '1080p maximized', width: 1920, height: 1032, dpr: 1 },
+        { name: '1080p 125% DPI', width: 1536, height: 816, dpr: 1.25 },
+        { name: '16:10 laptop', width: 1707, height: 1019, dpr: 1.5 },
+        { name: 'windowed 4:3', width: 1200, height: 900, dpr: 1 },
+        { name: 'half-screen split', width: 960, height: 1032, dpr: 1 },
+    ];
+    try {
+        for (const vp of viewportCases) {
+            await client.command('Emulation.setDeviceMetricsOverride', { width: vp.width, height: vp.height, deviceScaleFactor: vp.dpr, mobile: false });
+            await until(async () => await evaluate(`window.__antigravityUiRenderer?.layout?.width === ${vp.width} && window.__antigravityUiRenderer?.layout?.height === ${vp.height}`), `onResize did not refresh host layout for ${vp.name}`);
+            const m = await evaluate(`(() => {
+                const layer = document.querySelector('#antigravity-ui-background');
+                const img = window.testRoots.get(layer).querySelector('.image');
+                const st = getComputedStyle(img);
+                const rect = img.getBoundingClientRect();
+                const bgW = parseFloat(st.backgroundSize.split(' ')[0]);
+                const blurMatch = st.filter.match(/blur\\(([\\d.]+)px\\)/);
+                return { bgW, blurPx: blurMatch ? Number(blurMatch[1]) : 0, pos: st.backgroundPosition, transform: st.transform, w: rect.width, h: rect.height, cw: document.documentElement.clientWidth, ch: document.documentElement.clientHeight };
+            })()`);
+            const expectedBgW = (0.5 * m.w + 0.5 * m.h * (16 / 9)) * 0.65;
+            const expectedBlur = 12 * Math.min(m.w, m.h * (16 / 9)) / 1920;
+            assert.equal(m.w, m.cw, `${vp.name}: wallpaper layer width must match layout viewport width`);
+            assert.equal(m.h, m.ch, `${vp.name}: wallpaper layer height must match layout viewport height`);
+            assert(Math.abs(m.bgW - expectedBgW) <= 1.5, `${vp.name}: tile width ${m.bgW} must match balanced*0.65 (${expectedBgW})`);
+            assert(Math.abs(m.blurPx - expectedBlur) <= 0.2, `${vp.name}: blur ${m.blurPx} must scale proportionally (${expectedBlur})`);
+            assert.equal(m.pos, '100% 0%', `${vp.name}: anchor position must remain 100% 0%`);
+            assert.equal(m.transform, 'none', `${vp.name}: tile mode must not use transform scale`);
+        }
+        // Zoomed fill mode (scale 150%) must scale via background-size without transforming mask-image or magnifying blur
+        await panel(`(async () => {
+            const current = await fetch('/api/settings').then(r => r.json());
+            const res = await fetch('/api/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-sidecar-token': 'test' },
+                body: JSON.stringify({ ...current.settings, image: undefined, imageHash: current.imageHash, mode: 'fill', scale: 150, x: 78, y: 50, fade: 38, blur: 10 }),
+            });
+            if (!res.ok) throw new Error('Seed zoomed fill failed: ' + res.status);
+        })()`);
+        await client.command('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+        await until(async () => await evaluate(`(() => {
+            const img = window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image');
+            return parseFloat(getComputedStyle(img).backgroundSize.split(' ')[0]) > 1800;
+        })()`), 'Zoomed fill background-size did not apply');
+        const fillM = await evaluate(`(() => {
+            const img = window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image');
+            const st = getComputedStyle(img);
+            const r = img.getBoundingClientRect();
+            const blurMatch = st.filter.match(/blur\\(([\\d.]+)px\\)/);
+            return { bgW: parseFloat(st.backgroundSize.split(' ')[0]), transform: st.transform, mask: st.maskImage, blurPx: blurMatch ? Number(blurMatch[1]) : 0, left: r.left, top: r.top, w: r.width, h: r.height, cw: document.documentElement.clientWidth, ch: document.documentElement.clientHeight };
+        })()`);
+        assert(Math.abs(fillM.bgW - Math.max(fillM.w, fillM.h * (16 / 9)) * 1.5) <= 1.5, `Zoomed fill width ${fillM.bgW} must equal cover*1.5`);
+        assert.equal(fillM.transform, 'none', 'Zoomed fill must not transform the masked layer');
+        assert.match(fillM.mask, /linear-gradient.*38%/);
+        assert.deepEqual({ left: fillM.left, top: fillM.top, w: fillM.w, h: fillM.h }, { left: 0, top: 0, w: fillM.cw, h: fillM.ch });
+        assert(Math.abs(fillM.blurPx - (10 * Math.min(fillM.w, fillM.h * (16 / 9)) / 1920)) <= 0.2, `Zoomed fill blur ${fillM.blurPx} must not be magnified by scale`);
+        // Preview stage must also resolve container-relative sizing identically to host
+        await panelClient.command('Page.reload');
+        await waitReady('Reload for container preview check did not initialize');
+        const previewCheck = await panel(`(() => {
+            const sw = document.querySelector('#preview .sample-window');
+            const wp = document.querySelector('#preview .wallpaper');
+            const swR = sw.getBoundingClientRect();
+            const st = getComputedStyle(wp);
+            const bgW = parseFloat(st.backgroundSize.split(' ')[0]);
+            return { swW: swR.width, swH: swR.height, bgW, expected: Math.max(swR.width, swR.height * (16 / 9)) * 1.5 };
+        })()`);
+        assert(previewCheck.swW > 0 && Math.abs(previewCheck.bgW - previewCheck.expected) <= 2, `Preview wallpaper width ${previewCheck.bgW} must match container formula ${previewCheck.expected}`);
+    } finally {
+        await client.command('Emulation.clearDeviceMetricsOverride');
+    }
 
     await panel("document.querySelector('#discard').click()");
     await waitDiscard();
@@ -2079,6 +2182,11 @@ try {
     };
     const origAsar = buildTestAsar({ 'package.json': samplePkg, 'dist/main.js': sampleMain });
     const fakeAsarPath = join(fakeRes, 'app.asar');
+    await writeFile(fakeAsarPath, Buffer.from('corrupt-asar'));
+    const corruptInspect = persistence.inspectAsarPersist(fakeInstall);
+    assert.equal(corruptInspect.exists, true);
+    assert.equal(corruptInspect.patched, false);
+    assert.ok(corruptInspect.error, 'inspectAsarPersist should surface parse errors without throwing');
     await writeFile(fakeAsarPath, origAsar);
     const patch1 = persistence.installAsarPersist(fakeInstall);
     assert.equal(patch1.status, 'patched');

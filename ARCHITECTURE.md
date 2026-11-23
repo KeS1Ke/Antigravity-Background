@@ -27,7 +27,7 @@ flowchart LR
 | [Antigravity-UI.cmd](Antigravity-UI.cmd)、[manage.cjs](manage.cjs) | Windows 交互入口与 CLI 管理器（`install` / `uninstall` / `status`）。通过 `safeDirectory` 校验安装目标必须为真实目录（禁止 symlink/junction），维护 `config.json` 启停状态与 `antigravity-ui.install.json` 安装目录记录，并自动迁移旧版 `dist/antigravity-ui/original.json` 补丁。 |
 | [plugin/appearance.cjs](plugin/appearance.cjs) | 前后端共用的配置单一事实来源：定义配置归一化 `normalize()`、表面样式提取 `surfaceConfig()`、壁纸 CSS 生成 `wallpaperStyle()` 及边缘取色 `extractBorderColor()` / `extractCanvasBorderColor()`，并对图片 data URL 维护最多 4 项的校验缓存 `verifiedImages`。 |
 | [plugin/persistence.cjs](plugin/persistence.cjs) | 跨重启双保险持久化共享模块：在 `resources/app.asar` 的 `dist/main.js` 注入仅限 `127.0.0.1` 的 `app.commandLine.appendSwitch` 并生成 SHA-256 备份；扫描桌面、OneDrive、开始菜单与任务栏快捷方式补齐调试参数并备份原始参数；提供 `replaceAtomic` Windows 重试。 |
-| [sidecars/panel/main.mjs](sidecars/panel/main.mjs) | Sidecar HTTP 服务入口：启动时并行预读静态资源、加载 SDK 与同步存储，先启动 `WallpaperRuntime` 再启动 `SidecarApp`；通过串行请求队列 `enqueueRequest` 协调心跳、预览、保存与外部重载；按需懒加载 `updater.mjs` 与 `persistence.cjs`，并基于 `stat` 签名缓存 `config.json` 启用状态。 |
+| [sidecars/panel/main.mjs](sidecars/panel/main.mjs) | Sidecar HTTP 服务入口：启动时并行加载 SDK 与同步存储并先启动 `WallpaperRuntime`，静态面板资源延迟到首次打开设置页时并行读取并缓存；通过串行请求队列 `enqueueRequest` 协调心跳、预览、保存与外部重载；按需懒加载 `updater.mjs` 与 `persistence.cjs`，并基于 `stat` 签名缓存 `config.json` 启用状态。 |
 | [sidecars/panel/sdk.mjs](sidecars/panel/sdk.mjs) | Sidecar SDK 加载器：优先解析 `sidecar_sdk` 模块，缺失时以 4MB 分块 + 64KB 重叠流式扫描 `language_server.exe` 嵌入式资源，校验 `127.0.0.1` 绑定约束后按摘要缓存至数据目录 `sdk/`。 |
 | [sidecars/panel/store.mjs](sidecars/panel/store.mjs) | 配置持久化存储：通过 `SettingsStore` 串行队列执行原子写（临时文件 + Windows 退避重试重命名），按 `mtimeMs`/`ctimeMs`/`size`/`ino` 签名执行 `reloadIfChanged()` 感知外部变更，自动兼容迁移旧版 `antigravity-ui-wallpaper.json`，文件损坏时保留最近有效设置直至面板重新保存修复。 |
 | [sidecars/panel/runtime.mjs](sidecars/panel/runtime.mjs) | CDP 运行时控制器：读取 `DevToolsActivePort` 并过滤环回页面目标，按 `[150, 250, 400, 600, 1000, 1500]ms` 自适应退避附加（稳态 `1500ms` 心跳）；维护 `Connection` 连接池、租约 `generation`/`owner`、250ms 窗口发现节流及 `lastImageHash` 增量传输。 |
@@ -110,7 +110,7 @@ stateDiagram-v2
 
 ### 5.1 关键机制与设计取舍
 
-- **CDP 增量同步与租约判优**：[sidecars/panel/runtime.mjs](sidecars/panel/runtime.mjs) 按 `RENDERER_VERSION:RENDERER_REVISION` 跟踪连接已注入状态，稳态复用 `FAST_EVAL_PREFIX` 跳过整段 `installWallpaper` 源码传输；同时按 `lastImageHash` 省略大图，仅在目标重载返回 `'NEED_IMAGE'` 时补发完整图片。宿主侧 `shouldIgnoreLease` 按 `version > revision > generation > owner` 裁决多实例写入，确保停用（`enabled: false`）旧请求不会覆盖高代次会话。
+- **CDP 增量同步与租约判优**：[sidecars/panel/runtime.mjs](sidecars/panel/runtime.mjs) 首次附加或复检非宿主目标时先以 77 字节轻量表达式探测宿主指纹（避免向非宿主页面序列化/注入完整渲染源码与大图），对已确认宿主按 `RENDERER_VERSION:RENDERER_REVISION` 复用 `FAST_EVAL_PREFIX` 并按 `lastImageHash` 省略大图，仅在目标重载返回 `'NEED_IMAGE'` 时补发完整图片。宿主侧 `shouldIgnoreLease` 按 `version > revision > generation > owner` 裁决多实例写入，确保停用（`enabled: false`）旧请求不会覆盖高代次会话。
 - **跨重启持久化与安装边界**：[plugin/persistence.cjs](plugin/persistence.cjs) 在 `app.asar` 早期入口与桌面/菜单/任务栏快捷方式双路注入仅限本机 `127.0.0.1` 的调试端口开关，既保留协议拉起与裸程序启动能力，又通过 SHA-256 备份和参数备份实现无损卸载。
 - **事务更新与目录锁**：[sidecars/panel/updater.mjs](sidecars/panel/updater.mjs) 使用目录锁（内含 `owner-<pid>-<uuid>` 标记）替代单文件锁以支持回收已退出进程残留锁；更新前将受影响文件备份至 `updates/tx-<uuid>/backup` 并写入事务日志，启动时通过 `hasPendingUpdateTx` 自动触发恢复。
 

@@ -161,9 +161,15 @@ function injectMainBootSwitch(mainSource) {
 function inspectAsarPersist(installation) {
     const asarPath = join(installation, 'resources', 'app.asar');
     if (!fs.existsSync(asarPath)) return { exists: false, patched: false, backupOk: false };
-    const bytes = fs.readFileSync(asarPath);
-    const marker = readAsarEntry(bytes, PERSIST_ENTRY_PATH);
-    const mainBytes = readAsarEntry(bytes, 'dist/main.js');
+    let marker;
+    let mainBytes;
+    try {
+        const bytes = fs.readFileSync(asarPath);
+        marker = readAsarEntry(bytes, PERSIST_ENTRY_PATH);
+        mainBytes = readAsarEntry(bytes, 'dist/main.js');
+    } catch (error) {
+        return { exists: true, patched: false, backupOk: false, error: error.message };
+    }
     const hasMarkerInMain = Boolean(mainBytes && mainBytes.toString('utf8').includes(PERSIST_MARKER));
     if (!marker) return { exists: true, patched: hasMarkerInMain, backupOk: false };
     let sha256 = '';

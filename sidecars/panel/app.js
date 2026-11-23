@@ -211,6 +211,11 @@
     let operations = Promise.resolve();
     let lastMetricsKey = '';
     let lastPreviewCss = '';
+    let lastViewportSig = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
+    let resizeSyncTimer;
+    let resizeFollowUpTimer;
+    let dprMedia;
+    let onDprChange;
 
     function isInteractionBusy() {
         return saving || previewInFlight || previewQueued || busy || Boolean(previewTimer);
@@ -225,7 +230,12 @@
 
     function applyRuntimeLayout(runtime) {
         if (!runtime) return;
-        hostLayout = runtime.layout ?? null;
+        const nextLayout = runtime.layout ?? null;
+        if (nextLayout && (!hostLayout || nextLayout.width !== hostLayout.width || nextLayout.height !== hostLayout.height)) {
+            clearTimeout(resizeFollowUpTimer);
+            resizeFollowUpTimer = undefined;
+        }
+        hostLayout = nextLayout;
         missingDebugPort = runtime.errorCode === 'MISSING_DEVTOOLS_PORT';
     }
 
@@ -496,18 +506,17 @@
         const s = effectiveScale() / 100;
         let w0 = w;
         let h0 = h;
-        if (settings.mode === 'tile') {
-            const ratio = w / metrics.width;
-            w0 = (settings.imageWidth || 512) * ratio;
-            h0 = (settings.imageHeight || 512) * ratio;
-        } else {
+        if (settings.mode !== 'stretch') {
             const iw = naturalWidth || settings.imageWidth || 512;
             const ih = naturalHeight || settings.imageHeight || 512;
             const ri = iw / ih;
             if (settings.mode === 'fill') {
                 w0 = Math.max(w, h * ri);
                 h0 = Math.max(h, w / ri);
-            } else if (settings.mode === 'fit') {
+            } else if (settings.mode === 'tile') {
+                w0 = 0.5 * w + 0.5 * h * ri;
+                h0 = w0 / ri;
+            } else {
                 w0 = Math.min(w, h * ri);
                 h0 = Math.min(h, w / ri);
             }
@@ -627,6 +636,7 @@
             naturalWidth = 0;
             naturalHeight = 0;
             loadedImageEl = null;
+            for (const frame of stages) frame.style.removeProperty('--ag-ui-image-aspect');
             if (!previewImage) {
                 detectedImageFor = '';
                 detectedImageColor = '';
@@ -640,6 +650,10 @@
                         naturalWidth = img.naturalWidth;
                         naturalHeight = img.naturalHeight;
                         loadedImageEl = img;
+                        if (naturalWidth > 0 && naturalHeight > 0) {
+                            const aspect = String(Number((naturalWidth / naturalHeight).toFixed(6)));
+                            for (const frame of stages) frame.style.setProperty('--ag-ui-image-aspect', aspect);
+                        }
                         if (ensureTileEdgeColor() && ready && !busy && !saving) {
                             changed();
                             return;
@@ -651,6 +665,7 @@
                     if (previewImage === captured) {
                         brokenPreviewImage = captured;
                         loadedImageEl = null;
+                        for (const frame of stages) frame.style.removeProperty('--ag-ui-image-aspect');
                         for (const wp of wallpaperEls) wp.style.setProperty('--image', 'none');
                         emptyHint.hidden = false;
                         message('背景图片无法解码，请重新选择图片。', true);
@@ -679,18 +694,18 @@
         }
 
         const rules = [];
+        const css = wallpaperStyle(
+            naturalWidth > 0 && naturalHeight > 0
+                ? { ...settings, imageWidth: naturalWidth, imageHeight: naturalHeight }
+                : settings,
+            'var(--image)'
+        );
         for (let i = 0; i < stages.length; i++) {
             const width = stageWidths[i];
             if (!width) continue;
             const frame = stages[i];
             const ratio = width / metrics.width;
             for (const item of SURFACES) setSurfacePreview(frame, ratio, item);
-            const css = wallpaperStyle({
-                ...settings,
-                blur: settings.blur * ratio,
-                imageWidth: settings.imageWidth * ratio,
-                imageHeight: settings.imageHeight * ratio,
-            }, 'var(--image)');
             if (css) rules.push('#' + frame.id + ' .wallpaper {' + css + '}');
         }
         dragStage.dataset.draggable = String(draggable);
@@ -1386,6 +1401,9 @@
     });
     window.addEventListener('pagehide', () => {
         clearTimeout(previewTimer);
+        clearTimeout(resizeSyncTimer);
+        clearTimeout(resizeFollowUpTimer);
+        if (dprMedia && onDprChange) dprMedia.removeEventListener('change', onDprChange);
         updateController.cleanup();
     });
 
@@ -1628,10 +1646,55 @@
         }
         void syncFromServer();
     }
+    function scheduleLayoutSync() {
+        const nextSig = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
+        if (nextSig === lastViewportSig) return;
+        lastViewportSig = nextSig;
+        if (!ready || document.hidden) return;
+        const prevLayoutKey = hostLayout ? `${hostLayout.width}x${hostLayout.height}` : '';
+        clearTimeout(resizeSyncTimer);
+        clearTimeout(resizeFollowUpTimer);
+        resizeSyncTimer = setTimeout(() => {
+            resizeSyncTimer = undefined;
+            if (!ready || document.hidden) return;
+            if (isInteractionBusy()) {
+                syncQueued = true;
+                return;
+            }
+            void syncFromServer().then(() => {
+                const curLayoutKey = hostLayout ? `${hostLayout.width}x${hostLayout.height}` : '';
+                if (curLayoutKey === prevLayoutKey && ready && !document.hidden) {
+                    clearTimeout(resizeFollowUpTimer);
+                    resizeFollowUpTimer = setTimeout(() => {
+                        resizeFollowUpTimer = undefined;
+                        if (!ready || document.hidden) return;
+                        if (isInteractionBusy()) {
+                            syncQueued = true;
+                            return;
+                        }
+                        void syncFromServer();
+                    }, 1600);
+                }
+            });
+        }, 300);
+    }
+
+    function watchDevicePixelRatio() {
+        if (dprMedia && onDprChange) dprMedia.removeEventListener('change', onDprChange);
+        dprMedia = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+        onDprChange = () => {
+            watchDevicePixelRatio();
+            scheduleLayoutSync();
+        };
+        dprMedia.addEventListener('change', onDprChange, { once: true });
+    }
+
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) handleActivation();
     });
     window.addEventListener('focus', handleActivation);
+    window.addEventListener('resize', scheduleLayoutSync, { passive: true });
+    watchDevicePixelRatio();
 
     async function initialize() {
         updateHostTheme();

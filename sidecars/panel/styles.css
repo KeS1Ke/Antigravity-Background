@@ -127,7 +127,7 @@ main { flex: 1; min-height: 0; width: 100%; overflow-y: auto; scrollbar-gutter: 
     border: 0;
     border-radius: 8px;
 }
-.sample-window { position: absolute; inset: 0; display: flex; flex-direction: column; font-size: 1.65cqw; line-height: 1.5; color: var(--ag-ui-text); }
+.sample-window { position: absolute; inset: 0; container-type: size; display: flex; flex-direction: column; font-size: 1.65cqw; line-height: 1.5; color: var(--ag-ui-text); }
 .sample-titlebar { height: var(--ag-host-titlebar, 3.39%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 2cqw; border-bottom: 1px solid var(--ag-ui-border); font-size: 1.25cqw; line-height: 1; overflow: hidden; }
 .sample-workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--ag-host-left, 13.33%) minmax(0,1fr) var(--ag-host-right, 39.01%); }
 .sample-side { position: relative; z-index: 1001; min-width: 0; overflow: hidden; display: flex; flex-direction: column; gap: 1.2cqw; padding: 2cqw 1.4cqw; background: var(--preview-left-sidebar, var(--ag-ui-surface)); backdrop-filter: blur(var(--preview-left-sidebar-blur, 0px)); border-right: 1px solid var(--ag-ui-border); }

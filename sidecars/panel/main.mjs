@@ -57,8 +57,10 @@ const enabled = async () => {
         throw error;
     }
 };
-const lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS;
-const hostPort = new URL(lsAddress.includes('://') ? lsAddress : 'https://' + lsAddress).port;
+const lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS?.trim() || '';
+const hostPort = lsAddress
+    ? (new URL(lsAddress.includes('://') ? lsAddress : 'https://' + lsAddress).port || undefined)
+    : undefined;
 const digestCache = new Map();
 function imageDigest(image) {
     if (!image) return '';
@@ -242,19 +244,22 @@ const files = {
     '/styles.css': ['styles.css', 'text/css'],
     '/appearance.js': ['../../plugin/appearance.cjs', 'text/javascript'],
 };
-function preloadStaticAssets() {
-    return Promise.all(Object.entries(files).map(async ([route, [path, type]]) => [
+let staticAssetsPromise;
+function getStaticAssets() {
+    staticAssetsPromise ??= Promise.all(Object.entries(files).map(async ([route, [path, type]]) => [
         route,
         { body: await readFile(join(directory, path)), contentType: type + '; charset=utf-8' },
-    ]));
+    ])).then(entries => new Map(entries)).catch(error => {
+        staticAssetsPromise = undefined;
+        throw error;
+    });
+    return staticAssetsPromise;
 }
 if (await hasPendingUpdateTx(join(data, 'updates'))) {
     await getUpdater();
 }
 const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
-const assetsPromise = preloadStaticAssets();
 void sdkPromise.catch(() => {});
-void assetsPromise.catch(() => {});
 await syncStore({ initial: true });
 let heartbeatPending = false;
 runtime.start(() => {
@@ -268,16 +273,19 @@ runtime.start(() => {
     }).finally(() => { heartbeatPending = false; });
 });
 try {
-    const [sdk, staticAssets] = await Promise.all([sdkPromise, assetsPromise]);
+    const sdk = await sdkPromise;
     const { SidecarApp } = sdk;
     SdkResponse = sdk.Response;
     const staticHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
     app = new SidecarApp();
-    for (const [route, asset] of staticAssets) {
-        app.api(route, () => new SdkResponse(asset.body, {
-            contentType: asset.contentType,
-            headers: staticHeaders,
-        }), 'GET');
+    for (const route of Object.keys(files)) {
+        app.api(route, async () => {
+            const asset = (await getStaticAssets()).get(route);
+            return new SdkResponse(asset.body, {
+                contentType: asset.contentType,
+                headers: staticHeaders,
+            });
+        }, 'GET');
     }
     app.api('/api/settings', () => enqueueRequest(async () => {
         const reloaded = await syncStore();

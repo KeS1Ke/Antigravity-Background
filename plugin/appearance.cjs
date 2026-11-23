@@ -34,15 +34,15 @@
         return mode === 'tile' ? controls.scale.min : 100;
     }
 
-    function clampDimensions(rawWidth, rawHeight, fallbackWidth, fallbackHeight, requireInteger) {
-        const valid = value => (requireInteger ? Number.isInteger(value) : Number.isFinite(value)) && value > 0;
+    function clampDimensions(rawWidth, rawHeight, fallbackWidth, fallbackHeight) {
+        const valid = value => Number.isInteger(value) && value > 0;
         let imageWidth = valid(rawWidth) ? rawWidth : fallbackWidth;
         let imageHeight = valid(rawHeight) ? rawHeight : fallbackHeight;
         const longest = Math.max(imageWidth, imageHeight);
         if (longest > maxDimension) {
             const ratio = maxDimension / longest;
-            imageWidth = requireInteger ? Math.max(1, Math.round(imageWidth * ratio)) : imageWidth * ratio;
-            imageHeight = requireInteger ? Math.max(1, Math.round(imageHeight * ratio)) : imageHeight * ratio;
+            imageWidth = Math.max(1, Math.round(imageWidth * ratio));
+            imageHeight = Math.max(1, Math.round(imageHeight * ratio));
         }
         return { imageWidth, imageHeight };
     }
@@ -98,7 +98,7 @@
             const legacy = key.startsWith('composer') ? input['bubble' + key.slice('composer'.length)] : undefined;
             colors[key] = typeof legacy === 'string' && HEX_COLOR_RE.test(legacy) ? legacy.toLowerCase() : '';
         }
-        const { imageWidth, imageHeight } = clampDimensions(input.imageWidth, input.imageHeight, 512, 512, true);
+        const { imageWidth, imageHeight } = clampDimensions(input.imageWidth, input.imageHeight, 512, 512);
         return {
             ...options, ...colors, image, imageColor, mode, theme, enabled: input.enabled !== false,
             leftSidebarCover: input.leftSidebarCover !== false,
@@ -132,26 +132,27 @@
         if (imageSource !== undefined && !isSafeImageSource(source)) {
             throw new Error('背景图片来源无效。');
         }
-        const blur = Number.isFinite(input.blur)
-            ? Math.min(controls.blur.max, Math.max(controls.blur.min, input.blur))
-            : base.blur;
-        const { imageWidth, imageHeight } = clampDimensions(
-            input.imageWidth,
-            input.imageHeight,
-            base.imageWidth,
-            base.imageHeight,
-            false
-        );
         const effectiveScale = Math.max(minScale(base.mode), base.scale);
+        const scaleFactor = effectiveScale / 100;
+        const fallbackAspect = Number((base.imageWidth / base.imageHeight).toFixed(6));
+        const imageAspect = `var(--ag-ui-image-aspect, ${fallbackAspect})`;
+        const containWidth = `min(100cqw, 100cqh * ${imageAspect})`;
+        const coverWidth = `max(100cqw, 100cqh * ${imageAspect})`;
+        const balancedWidth = `(50cqw + 50cqh * ${imageAspect})`;
         const backgroundSize = {
-            fill: 'cover', stretch: '100% 100%', fit: 'contain',
-            tile: (imageWidth * effectiveScale / 100) + 'px ' + (imageHeight * effectiveScale / 100) + 'px',
+            fill: effectiveScale === 100 ? 'cover' : `calc(${coverWidth} * ${scaleFactor}) auto`,
+            stretch: effectiveScale === 100 ? '100% 100%' : `${effectiveScale}% ${effectiveScale}%`,
+            fit: effectiveScale === 100 ? 'contain' : `calc(${containWidth} * ${scaleFactor}) auto`,
+            tile: `calc(${balancedWidth} * ${scaleFactor}) auto`,
         }[base.mode];
+        const blurFilter = base.blur > 0
+            ? `blur(calc(${base.blur} * min(100cqw, 100cqh * 16 / 9) / 1920))`
+            : 'blur(0px)';
         const fadeMask = base.fade > 0 ? `mask-image: linear-gradient(to right, transparent, black ${base.fade}%);` : '';
         const tileBg = base.mode === 'tile' && base.imageColor
             ? `background-color: ${base.imageColor};`
             : '';
-        // A full-width transparent canvas makes the fade independent of the image's width.
+        // A full-width transparent canvas makes the fade and scale independent of viewport pixel density.
         return `
             position: absolute;
             inset: 0;
@@ -162,10 +163,8 @@
             background-position: ${base.x}% ${base.y}%;
             background-size: ${backgroundSize};
             ${tileBg}
-            transform: scale(${base.mode === 'tile' ? 1 : effectiveScale / 100});
-            transform-origin: ${base.x}% ${base.y}%;
             opacity: ${base.opacity / 100};
-            filter: blur(${blur}px) brightness(${base.brightness}%);
+            filter: ${blurFilter} brightness(${base.brightness}%);
             ${fadeMask}
         `;
     }
