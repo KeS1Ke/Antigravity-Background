@@ -168,7 +168,9 @@ try {
     // Reject path traversal, symlinks, reserved names, duplicate case-insensitive entries, and version mismatch
     assert.throws(() => parseTarGz(buildTarBuffer([{ name: '../escape.txt', content: 'x' }])), /Unsafe archive path/);
     assert.throws(() => parseTarGz(buildTarBuffer([{ name: 'link', type: '2', content: '' }])), /Unsupported tar entry type/);
+    assert.throws(() => parseTarGz(buildTarBuffer([{ name: 'CONOUT$.txt', content: 'x' }])), /Unsafe archive path/);
     assert.throws(() => parseZip(buildZipBuffer([{ name: 'CON.txt', content: 'x' }])), /Unsafe archive path/);
+    assert.throws(() => parseZip(buildZipBuffer([{ name: 'CONIN$.js', content: 'x' }])), /Unsafe archive path/);
     assert.throws(() => parseZip(buildZipBuffer([{ name: 'sym', content: 'x', externalAttr: (0o120777 << 16) }])), /Unsupported zip entry mode/);
     assert.throws(() => parseZip(buildZipBuffer([{ name: 'Plugin.json', content: '{}' }, { name: 'plugin.json', content: '{}' }])), /Duplicate archive path/);
     await assert.rejects(
@@ -492,6 +494,7 @@ export class SidecarApp {
             ...process.env,
             AG_UI_HOME: mixedHome,
             AG_UI_RESOURCES: join(tempRoot, 'missing-sdk-fixture'),
+            ANTIGRAVITY_LS_ADDRESS: 'http://127.0.0.1:1',
             ANTIGRAVITY_EXECUTABLE_DATA_DIR: mixedData,
         },
         encoding: 'utf8',
@@ -519,6 +522,38 @@ export class SidecarApp {
     assert.equal(cleanLockCalls, 0);
     assert.equal(cleanInfo.currentVersion, '0.3.8');
     assert.equal(cleanInfo.canApply, true);
+
+    // 4a-extra. Corrupted journal with path traversal is rejected and inspectTargetEligibility errors degrade gracefully
+    const badJournalUpdater = new PluginUpdater({
+        pluginDir: installedPlugin,
+        dataDir: join(tempRoot, 'bad-journal-data'),
+        home: installHome,
+    });
+    const badTxDir = join(tempRoot, 'bad-journal-data', 'updates', 'tx-bad-path');
+    await mkdir(join(badTxDir, 'backup'), { recursive: true });
+    await writeFile(join(badTxDir, 'backup', 'plugin.json'), '{}');
+    await writeFile(join(badTxDir, 'journal.json'), JSON.stringify({
+        schema: 1,
+        phase: 'installing',
+        oldFiles: ['../escape.txt'],
+        stagedFiles: ['plugin.json'],
+        hadSourceMeta: false,
+    }));
+    await assert.rejects(badJournalUpdater.recoverInterruptedTransactions(), { code: 'rollback' });
+    await assert.rejects(readFile(join(dirname(installedPlugin), 'escape.txt')), { code: 'ENOENT' });
+
+    const throwingEligibilityUpdater = new PluginUpdater({
+        pluginDir: installedPlugin,
+        dataDir: join(tempRoot, 'throw-eligibility-data'),
+        home: installHome,
+    });
+    throwingEligibilityUpdater.inspectTargetEligibility = () => {
+        throw Object.assign(new Error('Simulated lstat failure'), { code: 'EACCES' });
+    };
+    const degradedInfo = await throwingEligibilityUpdater.initializeLocalInfo();
+    assert.equal(degradedInfo.canApply, false);
+    assert.equal(degradedInfo.applyDisabledReason, 'install-location');
+    assert.equal(degradedInfo.currentVersion, '0.3.8');
 
     // 4b. Dev workspace check -> canApply false
     const defaultUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'def-data'), home: installHome });

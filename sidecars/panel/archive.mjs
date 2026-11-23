@@ -41,7 +41,7 @@ export function isProtectedRuntimePath(pathOrParts) {
 export const MAX_ARCHIVE_ENTRIES = 2048;
 export const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
 const WINDOWS_RESERVED = new Set([
-    'CON', 'PRN', 'AUX', 'NUL',
+    'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$',
     ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
     ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`),
 ]);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -2008,6 +2008,7 @@ try {
         assert.ok(Date.now() - attachStart < 1000, `Expected adaptive attach < 1000ms, took ${Date.now() - attachStart}ms`);
     } finally {
         await delayedRuntime.stop();
+        assert.equal(delayedRuntime.timer, undefined);
     }
 
     // Launch a lightweight Sidecar pointing at missing DevToolsActivePort to verify /api/repair-shortcuts + #repair-launch UI
@@ -2047,6 +2048,41 @@ try {
         await until(() => evalOn(missClient, 'document.querySelector("#status").textContent.includes("已为 1 个快捷方式")', 'Repair status'), '#repair-launch did not update desktop shortcut via /api/repair-shortcuts');
         const restoredAfterUi = persistence.restoreShortcuts({ backupPath: fakeBackupJson });
         assert.equal(restoredAfterUi.restored, 1);
+        assert.equal(restoredAfterUi.failed, 0);
+
+        // Read-only shortcut write failure must retain backup and retry cleanly once writable
+        const scResReadOnly = persistence.patchShortcuts({ home: fakeHome, installation: fakeInstall, backupPath: fakeBackupJson });
+        assert.equal(scResReadOnly.repaired, 1);
+        await chmod(desktopLnk, 0o444);
+        try {
+            const failedRestore = persistence.restoreShortcuts({ backupPath: fakeBackupJson });
+            assert.equal(failedRestore.restored, 0);
+            assert.equal(failedRestore.failed, 1);
+            const retainedBackup = JSON.parse(await readFile(fakeBackupJson, 'utf8'));
+            assert.equal(Object.keys(retainedBackup).length, 1);
+        } finally {
+            await chmod(desktopLnk, 0o666);
+        }
+        const retryRestore = persistence.restoreShortcuts({ backupPath: fakeBackupJson });
+        assert.equal(retryRestore.restored, 1);
+        assert.equal(retryRestore.failed, 0);
+        await assert.rejects(readFile(fakeBackupJson), { code: 'ENOENT' });
+
+        // Custom installation path is persisted on install so parameterless uninstall restores its app.asar
+        const customApp = join(persistTestRoot, 'custom-app');
+        const customRes = join(customApp, 'resources');
+        const customHome = join(persistTestRoot, 'custom-home');
+        await mkdir(customRes, { recursive: true });
+        await mkdir(customHome, { recursive: true });
+        await writeFile(join(customApp, 'Antigravity.exe'), '');
+        await writeFile(join(customRes, 'app.asar'), origAsar);
+        execFileSync(process.execPath, [join(project, 'manage.cjs'), 'install', customApp, customHome], { stdio: 'pipe' });
+        assert.equal(persistence.inspectAsarPersist(customApp).patched, true);
+        const installMetaFile = join(customHome, '.gemini', 'config', 'antigravity-ui.install.json');
+        assert.equal(JSON.parse(await readFile(installMetaFile, 'utf8')).installation, customApp);
+        execFileSync(process.execPath, [join(project, 'manage.cjs'), 'uninstall', '', customHome], { stdio: 'pipe' });
+        assert.equal(persistence.inspectAsarPersist(customApp).patched, false);
+        await assert.rejects(readFile(installMetaFile), { code: 'ENOENT' });
     } finally {
         missClient?.close();
         missSidecar.kill('SIGTERM');

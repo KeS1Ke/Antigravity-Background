@@ -189,6 +189,7 @@
     let hostThemeColor;
     let hostLayout;
     let previewImage;
+    let brokenPreviewImage = '';
     let naturalWidth = 0;
     let naturalHeight = 0;
     let loadedImageEl = null;
@@ -213,6 +214,13 @@
 
     function isInteractionBusy() {
         return saving || previewInFlight || previewQueued || busy || Boolean(previewTimer);
+    }
+
+    function flushPendingSync() {
+        if (syncQueued && ready && !syncInFlight && !isInteractionBusy()) {
+            syncQueued = false;
+            void syncFromServer();
+        }
     }
 
     function applyRuntimeLayout(runtime) {
@@ -301,6 +309,8 @@
             if (previewQueued && !saving) {
                 previewQueued = false;
                 flushPreview();
+            } else {
+                flushPendingSync();
             }
         });
     }
@@ -529,13 +539,13 @@
     }
 
     function detectImageEdgeColor(img) {
-        if (!extractCanvasBorderColor || !img.naturalWidth || !img.naturalHeight) return '';
+        if (!extractCanvasBorderColor || !img.naturalWidth || !img.naturalHeight) return null;
         const ratio = Math.min(1, 2560 / Math.max(img.naturalWidth, img.naturalHeight));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(img.naturalWidth * ratio));
         canvas.height = Math.max(1, Math.round(img.naturalHeight * ratio));
         const ctx = canvas.getContext('2d');
-        if (!ctx) return '';
+        if (!ctx) return null;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         return extractCanvasBorderColor(ctx, canvas.width, canvas.height);
     }
@@ -545,7 +555,9 @@
             detectedImageFor === settings.image || !loadedImageEl) {
             return false;
         }
-        detectedImageColor = detectImageEdgeColor(loadedImageEl);
+        const detected = detectImageEdgeColor(loadedImageEl);
+        if (detected === null) return false;
+        detectedImageColor = detected;
         detectedImageFor = settings.image;
         if (detectedImageColor) {
             settings.imageColor = detectedImageColor;
@@ -555,6 +567,9 @@
     }
 
     function render() {
+        // Batch layout reads before style writes to avoid forced reflow interleaving.
+        let stageWidths = stages.map(frame => frame.clientWidth);
+        let span = !dragModal.hidden ? dragSpan(dragStage) : null;
         const locked = !ready || busy;
         const actionLocked = locked || saving;
         const draggable = canDragWallpaper();
@@ -591,7 +606,7 @@
         discard.disabled = actionLocked || !hasDraft;
         save.disabled = actionLocked;
         modeLabel.textContent = names[settings.mode];
-        emptyHint.hidden = Boolean(settings.image);
+        emptyHint.hidden = Boolean(settings.image) && brokenPreviewImage !== settings.image;
         for (const button of modes) {
             button.disabled = locked;
             button.setAttribute('aria-pressed', String(button.dataset.mode === settings.mode));
@@ -606,6 +621,7 @@
         }
         if (previewImage !== settings.image) {
             previewImage = settings.image;
+            brokenPreviewImage = '';
             const bg = previewImage ? 'url("' + previewImage + '")' : 'none';
             for (const wp of wallpaperEls) wp.style.setProperty('--image', bg);
             naturalWidth = 0;
@@ -620,6 +636,7 @@
                 const img = new Image();
                 img.onload = () => {
                     if (previewImage === captured) {
+                        brokenPreviewImage = '';
                         naturalWidth = img.naturalWidth;
                         naturalHeight = img.naturalHeight;
                         loadedImageEl = img;
@@ -628,6 +645,15 @@
                             return;
                         }
                         if (!dragModal.hidden) render();
+                    }
+                };
+                img.onerror = () => {
+                    if (previewImage === captured) {
+                        brokenPreviewImage = captured;
+                        loadedImageEl = null;
+                        for (const wp of wallpaperEls) wp.style.setProperty('--image', 'none');
+                        emptyHint.hidden = false;
+                        message('背景图片无法解码，请重新选择图片。', true);
                     }
                 };
                 img.src = captured;
@@ -648,11 +674,10 @@
                 frame.style.setProperty('--ag-host-right', metrics.rightPct + '%');
                 frame.style.setProperty('--ag-host-tab-strip', metrics.tabStripPct + '%');
             }
+            stageWidths = stages.map(frame => frame.clientWidth);
+            span = !dragModal.hidden ? dragSpan(dragStage) : null;
         }
 
-        // Batch layout reads before style writes to avoid forced reflow interleaving.
-        const stageWidths = stages.map(frame => frame.clientWidth);
-        const span = !dragModal.hidden ? dragSpan(dragStage) : null;
         const rules = [];
         for (let i = 0; i < stages.length; i++) {
             const width = stageWidths[i];
@@ -1513,6 +1538,8 @@
             if (previewQueued && !previewInFlight) {
                 previewQueued = false;
                 flushPreview();
+            } else {
+                flushPendingSync();
             }
         }
     });
@@ -1534,6 +1561,9 @@
             const nextSettings = normalize(result.settings);
             const nextHasDraft = result.hasDraft;
             if (!initial && (token !== syncToken || revision !== startRevision || isInteractionBusy())) {
+                if (token === syncToken && revision === startRevision && isInteractionBusy()) {
+                    syncQueued = true;
+                }
                 return;
             }
             applyRuntimeLayout(result.runtime);
@@ -1592,7 +1622,10 @@
             if (!syncInFlight) void syncFromServer({ initial: true });
             return;
         }
-        if (isInteractionBusy()) return;
+        if (isInteractionBusy()) {
+            syncQueued = true;
+            return;
+        }
         void syncFromServer();
     }
     document.addEventListener('visibilitychange', () => {

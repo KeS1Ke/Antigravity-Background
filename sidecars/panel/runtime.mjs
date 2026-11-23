@@ -149,7 +149,7 @@ export class WallpaperRuntime {
         }
     }
 
-    start(tick = () => void this.update(false, true)) {
+    start(tick = () => this.update(false, true)) {
         this.stopTimer();
         const token = ++this.timerToken;
         let retryStep = 0;
@@ -166,12 +166,16 @@ export class WallpaperRuntime {
             this.timer = setTimeout(() => {
                 this.timer = undefined;
                 if (this.stopped || token !== this.timerToken) return;
-                tick();
-                scheduleNext();
+                runTick();
             }, delayMs);
         };
-        tick();
-        scheduleNext();
+        const runTick = () => {
+            Promise.resolve()
+                .then(() => tick())
+                .catch(() => {})
+                .finally(() => { scheduleNext(); });
+        };
+        runTick();
     }
 
     update(activate = false, discover = !activate) {
@@ -419,13 +423,21 @@ export class WallpaperRuntime {
     async stop() {
         this.stopped = true;
         this.stopTimer();
-        await this.operation;
+        if (this.operation) {
+            await Promise.race([
+                this.operation.catch(() => {}),
+                new Promise(resolve => setTimeout(resolve, 1200)),
+            ]);
+        }
         const expression = '(' + INSTALL_WALLPAPER_SOURCE + ')(' +
             JSON.stringify({ enabled: false, owner: this.owner, generation: this.generation }) + ')';
         await Promise.allSettled([...this.connections.values()].map(async connection => {
             try {
                 if (!connection.nonHost) {
-                    await connection.command('Runtime.evaluate', { expression, awaitPromise: true });
+                    await Promise.race([
+                        connection.command('Runtime.evaluate', { expression, awaitPromise: true }),
+                        new Promise(resolve => setTimeout(resolve, 1500)),
+                    ]);
                 }
             } finally { connection.close(); }
         }));

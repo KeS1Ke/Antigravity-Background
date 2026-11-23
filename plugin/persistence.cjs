@@ -14,11 +14,26 @@ const DEBUG_FLAGS = ['--remote-debugging-port=0', '--remote-debugging-address=12
 const isPlainObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
+const RETRYABLE_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
+function renameSyncWithRetry(from, to, attempts = 5) {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            fs.renameSync(from, to);
+            return;
+        } catch (error) {
+            if (attempt >= attempts || !RETRYABLE_RENAME_CODES.has(error?.code)) throw error;
+            Atomics.wait(SLEEP_BUFFER, 0, 0, 25 * attempt);
+        }
+    }
+}
+
 function replaceAtomic(target, bytes) {
     const temporary = target + '.' + randomUUID() + '.tmp';
     try {
         fs.writeFileSync(temporary, bytes, { flag: 'wx' });
-        fs.renameSync(temporary, target);
+        renameSyncWithRetry(temporary, target);
     } finally {
         fs.rmSync(temporary, { force: true });
     }
@@ -189,7 +204,7 @@ function installAsarPersist(installation) {
     if (fs.existsSync(backupPath)) {
         if (digest(fs.readFileSync(backupPath)) !== originalSha) throw new Error('现有 app.asar 备份与当前原文件校验不一致。');
     } else {
-        fs.writeFileSync(backupPath, baseBytes, { flag: 'wx' });
+        replaceAtomic(backupPath, baseBytes);
     }
 
     const mainEntry = readAsarEntry(baseBytes, 'dist/main.js');
@@ -204,11 +219,13 @@ function installAsarPersist(installation) {
 
     // Clean stale backups from older Antigravity versions after verified replacement
     const resourceDir = dirname(asarPath);
-    for (const file of fs.readdirSync(resourceDir)) {
-        if (file.startsWith('app.asar.antigravity-ui.persist.') && file.endsWith('.bak') && join(resourceDir, file) !== backupPath) {
-            fs.rmSync(join(resourceDir, file), { force: true });
+    try {
+        for (const file of fs.readdirSync(resourceDir)) {
+            if (file.startsWith('app.asar.antigravity-ui.persist.') && file.endsWith('.bak') && join(resourceDir, file) !== backupPath) {
+                try { fs.rmSync(join(resourceDir, file), { force: true }); } catch {}
+            }
         }
-    }
+    } catch {}
     return { status: 'patched', sha256: originalSha };
 }
 
@@ -408,9 +425,26 @@ function restoreShortcuts({ backupPath } = {}) {
         if (!cur || resolve(cur.target).toLowerCase() !== resolve(entry.target).toLowerCase()) continue;
         updates.push({ path: entry.path, setArguments: entry.args || '' });
     }
-    if (updates.length > 0) runShortcutScript({ items: updates });
-    fs.rmSync(backupPath, { force: true });
-    return { restored: updates.length };
+    const saved = updates.length > 0 ? runShortcutScript({ items: updates }) : [];
+    const savedPaths = new Set(saved.map(item => resolve(item.path).toLowerCase()));
+    const remaining = {};
+    for (const entry of entries) {
+        const key = resolve(entry.path).toLowerCase();
+        const cur = byPath.get(key);
+        if (!cur) {
+            remaining[key] = entry;
+            continue;
+        }
+        if (resolve(cur.target).toLowerCase() !== resolve(entry.target).toLowerCase()) continue;
+        if (!savedPaths.has(key)) remaining[key] = entry;
+    }
+    const remainingCount = Object.keys(remaining).length;
+    if (remainingCount > 0) {
+        replaceAtomic(backupPath, Buffer.from(JSON.stringify(remaining, null, 2) + '\n', 'utf8'));
+    } else {
+        fs.rmSync(backupPath, { force: true });
+    }
+    return { restored: savedPaths.size, failed: remainingCount };
 }
 
 module.exports = {

@@ -63,8 +63,18 @@ async function askInstallation(fallback) {
     }
 }
 
-async function resolveInstallation(command, appOverride, home, running) {
+function readSavedInstallation(metaPath) {
+    try {
+        const data = json(metaPath, null);
+        return isPlainObject(data) && typeof data.installation === 'string' ? data.installation.trim() : '';
+    } catch {
+        return '';
+    }
+}
+
+async function resolveInstallation(command, appOverride, home, running, savedInstallation = '') {
     if (appOverride) return appOverride;
+    if (savedInstallation && hasInstallation(savedInstallation)) return savedInstallation;
     const activeDir = running.find(process => process.path && !isHelperProcess(process.commandLine))?.path;
     if (activeDir) return dirname(activeDir);
     const defaultInstallation = join(home, 'AppData', 'Local', 'Programs', 'antigravity');
@@ -208,6 +218,8 @@ async function manage() {
     const configDir = join(home, '.gemini', 'config');
     const configuration = join(configDir, 'config.json');
     const shortcutBackup = join(configDir, 'antigravity-ui.shortcuts.bak.json');
+    const installMetaPath = join(configDir, 'antigravity-ui.install.json');
+    const savedInstallation = readSavedInstallation(installMetaPath);
     const destination = join(configDir, 'plugins', name);
     if (command === 'status') {
         const manifestRaw = json(join(destination, 'plugin.json'), null);
@@ -220,7 +232,7 @@ async function manage() {
             ? 'Antigravity Background ' + manifest.version + ' ｜ 自定义插件已安装 ｜ ' + (plugin && sidecar ? '已启用' : '已停用')
             : 'Antigravity Background 尚未安装到自定义目录。');
         const running = process.platform === 'win32' ? runningAntigravity() : [];
-        const installation = await resolveInstallation(command, appOverride, home, running);
+        const installation = await resolveInstallation(command, appOverride, home, running, savedInstallation);
         const asarInfo = inspectAsarPersist(installation);
         const shortcuts = process.platform === 'win32' ? inspectShortcuts({ home, installation }) : [];
         const readyShortcuts = shortcuts.filter(item => item.ready).length;
@@ -236,7 +248,7 @@ async function manage() {
         return;
     }
     const running = runningAntigravity();
-    const installation = await resolveInstallation(command, appOverride, home, running);
+    const installation = await resolveInstallation(command, appOverride, home, running, savedInstallation);
     desktopClosed(installation, runningAntigravity());
     safeDirectory(destination);
     fs.mkdirSync(dirname(configuration), { recursive: true });
@@ -290,9 +302,17 @@ async function manage() {
         if (Boolean(before) !== Boolean(now) || (before && !before.equals(now))) throw new Error('配置已被其他操作修改，请重试。');
         if (before) fs.writeFileSync(configuration + '.antigravity-ui.' + randomUUID() + '.bak', before, { flag: 'wx' });
         replace(configuration, JSON.stringify(config, null, 2) + '\n');
+        if (command === 'install') {
+            replace(installMetaPath, Buffer.from(JSON.stringify({ installation: resolve(installation) }, null, 2) + '\n', 'utf8'));
+        } else {
+            fs.rmSync(installMetaPath, { force: true });
+        }
     } catch (error) {
         if (command === 'install' && persistInfo?.status === 'patched') {
             try { restoreAsarPersist(installation); } catch {}
+        }
+        if (command === 'uninstall' && persistInfo?.status === 'restored') {
+            try { installAsarPersist(installation); } catch {}
         }
         if (command === 'install' && shortcutInfo?.repaired > 0) {
             try { restoreShortcuts({ backupPath: shortcutBackup }); } catch {}

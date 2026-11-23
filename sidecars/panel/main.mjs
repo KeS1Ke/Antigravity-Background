@@ -26,15 +26,15 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const pluginDir = resolve(directory, '..', '..');
 try { releaseRuntimeDirectory(pluginDir); } catch {}
 const home = process.env.AG_UI_HOME || homedir();
-const profile = process.env.AG_UI_PROFILE || join(homedir(), 'AppData', 'Roaming', 'Antigravity');
+const profile = process.env.AG_UI_PROFILE || join(home, 'AppData', 'Roaming', 'Antigravity');
 const data = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR ||
-    join(homedir(), '.gemini', 'antigravity', 'sidecar_data', 'antigravity-ui', 'panel', 'data');
-const resources = process.env.AG_UI_RESOURCES || join(homedir(), 'AppData', 'Local', 'Programs', 'antigravity', 'resources');
+    join(home, '.gemini', 'antigravity', 'sidecar_data', 'antigravity-ui', 'panel', 'data');
+const resources = process.env.AG_UI_RESOURCES || join(home, 'AppData', 'Local', 'Programs', 'antigravity', 'resources');
 const installation = process.env.AG_UI_INSTALLATION ||
     (basename(process.execPath).toLowerCase() === 'antigravity.exe' ? dirname(process.execPath) : dirname(resources));
 const shortcutBackup = join(home, '.gemini', 'config', 'antigravity-ui.shortcuts.bak.json');
 const store = new SettingsStore(data, profile);
-const configPath = join(homedir(), '.gemini', 'config', 'config.json');
+const configPath = join(home, '.gemini', 'config', 'config.json');
 let configSignature;
 let configEnabled = true;
 const enabled = async () => {
@@ -87,6 +87,7 @@ function resolveImage(input, saved) {
     return null;
 }
 let app;
+let SdkResponse;
 let exiting = false;
 async function shutdown() {
     if (exiting) return;
@@ -101,7 +102,7 @@ process.once('SIGTERM', () => void shutdown());
 process.once('SIGINT', () => void shutdown());
 
 function jsonResponse(status, body) {
-    return new Response(JSON.stringify(body), { contentType: 'application/json', status });
+    return new SdkResponse(JSON.stringify(body), { contentType: 'application/json', status });
 }
 function updateErrorResponse(error) {
     if (['verification', 'location', 'busy', 'install', 'rollback', 'network'].includes(error?.code)) {
@@ -201,7 +202,10 @@ async function hasPendingUpdateTx(updatesDir) {
         const entries = await readdir(updatesDir, { withFileTypes: true });
         return entries.some(entry => entry.isDirectory() && entry.name.startsWith('tx-'));
     } catch (error) {
-        return error?.code !== 'ENOENT';
+        if (error?.code !== 'ENOENT') {
+            console.warn('检查待恢复更新事务失败：' + (error?.code || error?.message || error));
+        }
+        return false;
     }
 }
 let updaterPromise;
@@ -249,108 +253,130 @@ if (await hasPendingUpdateTx(join(data, 'updates'))) {
 }
 const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 const assetsPromise = preloadStaticAssets();
+void sdkPromise.catch(() => {});
+void assetsPromise.catch(() => {});
 await syncStore({ initial: true });
 let heartbeatPending = false;
 runtime.start(() => {
     if (heartbeatPending) return;
     heartbeatPending = true;
-    void enqueueRequest(async () => {
+    return enqueueRequest(async () => {
         await syncStore();
         await runtime.update(false, true);
     }).catch(error => {
         runtime.health = { ...runtime.health, error: error.message };
     }).finally(() => { heartbeatPending = false; });
 });
-const [{ SidecarApp, Response }, staticAssets] = await Promise.all([sdkPromise, assetsPromise]);
-const staticHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
-app = new SidecarApp();
-for (const [route, asset] of staticAssets) {
-    app.api(route, () => new Response(asset.body, {
-        contentType: asset.contentType,
-        headers: staticHeaders,
+try {
+    const [sdk, staticAssets] = await Promise.all([sdkPromise, assetsPromise]);
+    const { SidecarApp } = sdk;
+    SdkResponse = sdk.Response;
+    const staticHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+    app = new SidecarApp();
+    for (const [route, asset] of staticAssets) {
+        app.api(route, () => new SdkResponse(asset.body, {
+            contentType: asset.contentType,
+            headers: staticHeaders,
+        }), 'GET');
+    }
+    app.api('/api/settings', () => enqueueRequest(async () => {
+        const reloaded = await syncStore();
+        if (reloaded || pendingActivate) await activateRuntime(true);
+        return stateResponse({ saved: store.settings });
     }), 'GET');
-}
-app.api('/api/settings', () => enqueueRequest(async () => {
-    const reloaded = await syncStore();
-    if (reloaded || pendingActivate) await activateRuntime(true);
-    return stateResponse({ saved: store.settings });
-}), 'GET');
-app.api('/api/preview', input => enqueueRequest(async () => {
-    const reloaded = await syncStore();
-    const saved = store.settings;
-    const resolved = resolveImage(input, saved);
-    if (resolved === null && input !== null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
-    let next;
-    try {
-        next = appearance.normalize(resolved);
-    } catch (error) {
-        return jsonResponse(400, { error: error.message });
-    }
-    const previous = draft || saved;
-    draft = sameSettings(next, saved) ? undefined : next;
-    if (reloaded || pendingActivate || !sameSettings(previous, next, true) || runtime.dirty) {
-        await activateRuntime(reloaded || pendingActivate);
-    }
-    return stateResponse();
-}), 'POST');
-app.api('/api/preview/discard', () => enqueueRequest(async () => {
-    const previous = draft || store.settings;
-    const reloaded = await syncStore();
-    const saved = store.settings;
-    draft = undefined;
-    if (reloaded || pendingActivate || !sameSettings(previous, saved, true) || runtime.dirty) {
-        await activateRuntime(true);
-    }
-    return stateResponse();
-}), 'POST');
-app.api('/api/settings', input => enqueueRequest(async () => {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length === 0) {
-        return jsonResponse(400, { error: '背景设置无效。' });
-    }
-    await syncStore();
-    const resolved = resolveImage(input, store.settings);
-    if (resolved === null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
-    if (settingsError && (!resolved || !Object.keys(store.settings).every(key => Object.hasOwn(resolved, key)))) {
-        return jsonResponse(400, { error: settingsError });
-    }
-    try {
-        await store.save(resolved);
-        settingsError = undefined;
-        draft = undefined;
-        await activateRuntime(true);
+    app.api('/api/preview', input => enqueueRequest(async () => {
+        const reloaded = await syncStore();
+        const saved = store.settings;
+        const resolved = resolveImage(input, saved);
+        if (resolved === null && input !== null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+        let next;
+        try {
+            next = appearance.normalize(resolved);
+        } catch (error) {
+            return jsonResponse(400, { error: error.message });
+        }
+        const previous = draft || saved;
+        draft = sameSettings(next, saved) ? undefined : next;
+        if (reloaded || pendingActivate || !sameSettings(previous, next, true) || runtime.dirty) {
+            await activateRuntime(reloaded || pendingActivate);
+        }
         return stateResponse();
-    } catch (error) {
-        return jsonResponse(400, { error: error.message });
-    }
-}), 'POST');
-app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
-    try {
-        const persistence = await loadPersistence();
-        const result = process.platform === 'win32'
-            ? persistence.patchShortcuts({ home, installation, backupPath: shortcutBackup })
-            : { total: 0, repaired: 0, ready: 0, shortcuts: [] };
-        const asarPatched = persistence.inspectAsarPersist(installation).patched;
-        return { ...result, asarPatched };
-    } catch (error) {
-        return jsonResponse(500, { error: error.message });
-    }
-}), 'POST');
-app.api('/api/update', async () => (await getUpdater()).publicState(), 'GET');
-app.api('/api/update/check', async () => (await getUpdater()).requestCheck(), 'POST');
-app.api('/api/update/apply', async input => {
-    try {
-        const updater = await getUpdater();
-        return await updater.apply(input || {});
-    } catch (error) {
-        return updateErrorResponse(error);
-    }
-}, 'POST');
-app.api('/api/update/reload', async () => {
-    try {
-        const updater = await getUpdater();
-        return updater.requestReload();
-    } catch (error) {
-        return updateErrorResponse(error);
-    }
-}, 'POST');
-await app.run();
+    }), 'POST');
+    app.api('/api/preview/discard', () => enqueueRequest(async () => {
+        const previous = draft || store.settings;
+        const reloaded = await syncStore();
+        const saved = store.settings;
+        draft = undefined;
+        if (reloaded || pendingActivate || !sameSettings(previous, saved, true) || runtime.dirty) {
+            await activateRuntime(true);
+        }
+        return stateResponse();
+    }), 'POST');
+    app.api('/api/settings', input => enqueueRequest(async () => {
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length === 0) {
+            return jsonResponse(400, { error: '背景设置无效。' });
+        }
+        await syncStore();
+        const resolved = resolveImage(input, store.settings);
+        if (resolved === null) return jsonResponse(409, { error: '图片缓存未命中，请重新同步。', code: 'IMAGE_CACHE_MISS' });
+        if (settingsError && (!resolved || !Object.keys(store.settings).every(key => Object.hasOwn(resolved, key)))) {
+            return jsonResponse(400, { error: settingsError });
+        }
+        try {
+            await store.save(resolved);
+            settingsError = undefined;
+            draft = undefined;
+            await activateRuntime(true);
+            return stateResponse();
+        } catch (error) {
+            return jsonResponse(400, { error: error.message });
+        }
+    }), 'POST');
+    app.api('/api/repair-shortcuts', () => enqueueRequest(async () => {
+        try {
+            const persistence = await loadPersistence();
+            const result = process.platform === 'win32'
+                ? persistence.patchShortcuts({ home, installation, backupPath: shortcutBackup })
+                : { total: 0, repaired: 0, ready: 0, shortcuts: [] };
+            const asarPatched = persistence.inspectAsarPersist(installation).patched;
+            return { ...result, asarPatched };
+        } catch (error) {
+            return jsonResponse(500, { error: error.message });
+        }
+    }), 'POST');
+    app.api('/api/update', async () => {
+        try {
+            return (await getUpdater()).publicState();
+        } catch (error) {
+            return updateErrorResponse(error);
+        }
+    }, 'GET');
+    app.api('/api/update/check', async () => {
+        try {
+            return (await getUpdater()).requestCheck();
+        } catch (error) {
+            return updateErrorResponse(error);
+        }
+    }, 'POST');
+    app.api('/api/update/apply', async input => {
+        try {
+            const updater = await getUpdater();
+            return await updater.apply(input || {});
+        } catch (error) {
+            return updateErrorResponse(error);
+        }
+    }, 'POST');
+    app.api('/api/update/reload', async () => {
+        try {
+            const updater = await getUpdater();
+            return updater.requestReload();
+        } catch (error) {
+            return updateErrorResponse(error);
+        }
+    }, 'POST');
+    await app.run();
+} catch (error) {
+    await runtime.stop().catch(() => {});
+    console.error(error);
+    process.exit(1);
+}

@@ -15,7 +15,7 @@
 - 前端将连续输入合帧窗口收敛为 **16ms**，并在请求在途（`previewInFlight`）时合并后续变更为待发标记，待当前请求完成后立即提交最新一帧、跳过中间过时帧；保存操作通过串行队列等待在途预览完成并在并发拖动时保持状态同步。
 - 前后端与宿主渲染器围绕图片 SHA-256 摘要 `imageHash` 做轻量增量缓存：
   - 前端 `POST /api/preview` 与 `POST /api/settings` 在图片未变化时省略 `image` 仅传 `imageHash`；若后端缓存未命中返回 `409 IMAGE_CACHE_MISS`，前端自动携带完整 `image` 重试一次。
-  - `WallpaperRuntime` 优先复用健康 CDP 连接（仅在启动、1500ms 周期心跳、空连接或失败时重发现），按连接记录 `lastImageHash` 按需省略 `image`，主窗口重载等场景丢失缓存时 `renderer` 返回 `'NEED_IMAGE'` 触发自动补发一次完整图片。
+  - `WallpaperRuntime` 优先复用健康 CDP 连接（初始重发现采用渐进退避并在成功附加后保持 1500ms 周期心跳，详见 §16），按连接记录 `lastImageHash` 按需省略 `image`，主窗口重载等场景丢失缓存时 `renderer` 返回 `'NEED_IMAGE'` 触发自动补发一次完整图片。
   - 运行时合并并发 `update()` 并在异步读取配置后核对 `generation`，防止旧配置配新 `generation`；多目标更新按 target 隔离异常，并在 `renderer` 缓存 `titlebar` 颜色以避免拖动时重复阻塞 `setTitleBarOverlay`。
 
 ## 3. 无图 / 0% 壁纸透明度与总开关语义
@@ -106,3 +106,16 @@
 ## 15. 输入框与用户气泡共用设置（`renderer` `revision = 24`）
 
 `normalize()`、设置写盘和 `surfaceConfig()` 统一使用 `composer*` 字段。旧配置缺少对应 `composer*` 字段时，仍会读取合法的 `bubble*` 值完成迁移。渲染器从同一组设置派生输入框和用户气泡的样式，Overview 面板仍使用独立的 `overview*` 字段。模糊值为 0 时，宿主底层使用 `backdrop-filter: none`。
+
+## 16. 启动/首次附加性能优化与健壮性加固（`renderer` `revision = 25`）
+
+- **冷启动与首次附加加速（`97ff25e`）**：
+  - `main.mjs` 改为按需懒加载 `updater.mjs` 与 `persistence.cjs`（仅在检测到 `updates/tx-*` 中断事务或面板调用更新/修复接口时载入），启动时并行预读静态资源、`loadSdk` 与 `syncStore({ initial: true })`，并缓存 `config.json` 的 `stat` 签名避免心跳重复读盘解析。
+  - `sdk.mjs` 将嵌入式 SDK/Preload 提取从整文件读取改为 4MB 分块 + 64KB 重叠流式扫描，大幅降低大体积可执行文件的冷启动内存峰值。
+  - `runtime.mjs` 将 `runtime.start()` 提前至 `app.run()` 之前并采用 `[150, 250, 400, 600, 1000, 1500]ms` 自适应附加退避（附加成功后恢复 `1500ms` 心跳）；稳态心跳命中同版本 `RENDERER_KEY` 时走 `FAST_EVAL_PREFIX` 轻量求值路径，避免重复投递完整 `installWallpaper` 源码与大图。
+  - `plugin/appearance.cjs` 为 `DATA_IMAGE_RE` 增加最多 4 张图片的校验结果缓存 `verifiedImages`；`app.js` 新增 `ensureTileEdgeColor()` 仅在 `tile` 模式下按需执行边缘取色，跳过默认 `fit` 模式的首屏 Canvas 开销。
+- **审查加固与边界修复**：
+  - `main.mjs` 对启动并发 Promise、HTTP `/api/update*` 路由与 `app.run()` 失败路径补齐异常捕获及 `runtime.stop()` 清理，并统一使用 `AG_UI_HOME` 派生隔离配置路径；`runtime.mjs` 改为 tick 完成后再调度下次退避，并在 `stop()` 中对在途操作和 disable 求值施加超时上界。
+  - `updater.mjs` 与 `archive.mjs` 保持“正式 Release 优先于同版本 `main` 提交”的更新策略，将 `inspectTargetEligibility()` 纳入 `initializeLocalInfo()` 异常边界，为 `ensureParentDir`、事务恢复路径及 `CONIN$`/`CONOUT$` 补齐校验，并将删除操作纳入 Windows 文件占用重试。
+  - `manage.cjs` 与 `persistence.cjs` 持久化自定义安装目录路径以支持无参卸载还原、补全卸载回滚 `app.asar` 对称补偿、对 `replaceAtomic` 增加 Windows 重试并原子写入备份，且仅在全部快捷方式写回确认成功后才清理备份。
+  - `app.js` 将 `render()` 布局读取移至样式写入前（仅在宿主比例变化时重读）、补全 `img.onerror` 提示与 `syncQueued` 忙时补跑机制，并区分边缘取色 2D 上下文不可用与透明图片结果。

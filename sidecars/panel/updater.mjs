@@ -641,20 +641,47 @@ async function retryFileOperation(operation) {
     }
 }
 
+const JOURNAL_WINDOWS_RESERVED = new Set([
+    'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$',
+    ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`),
+    ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`),
+]);
+
+function isSafeJournalRuntimePath(rel) {
+    if (typeof rel !== 'string' || !rel || rel.length > 1024) return false;
+    if (rel.includes('\\') || rel.includes(':') || rel.includes('\0') || rel.startsWith('/') || rel.endsWith('/')) {
+        return false;
+    }
+    const parts = rel.split('/');
+    for (const part of parts) {
+        if (!part || part === '.' || part === '..') return false;
+        if (part.replace(/[ .]+$/, '') !== part) return false;
+        if (/[\x00-\x1f<>"|?*]/.test(part)) return false;
+        if (JOURNAL_WINDOWS_RESERVED.has(part.split('.')[0].toUpperCase())) return false;
+        if (isExcludedRuntimeSegment(part)) return false;
+    }
+    return parts.length >= 1;
+}
+
 async function ensureParentDir(targetPath, boundaryRoot = null) {
     const parent = dirname(targetPath);
     if (boundaryRoot) {
         const root = resolve(boundaryRoot);
         const resolvedParent = resolve(parent);
         const sep = process.platform === 'win32' ? '\\' : '/';
-        if (resolvedParent !== root && resolvedParent.startsWith(root + sep)) {
+        const cmpRoot = process.platform === 'win32' ? root.toLowerCase() : root;
+        const cmpParent = process.platform === 'win32' ? resolvedParent.toLowerCase() : resolvedParent;
+        if (cmpParent !== cmpRoot && !cmpParent.startsWith(cmpRoot + sep)) {
+            throw new UpdateError('rollback');
+        }
+        if (cmpParent !== cmpRoot) {
             const relSegments = resolvedParent.slice(root.length + 1).split(/[\\/]/).filter(Boolean);
             let current = root;
             for (const segment of relSegments) {
                 current = join(current, segment);
                 const info = lstatSync(current, { throwIfNoEntry: false });
                 if (info && !info.isDirectory()) {
-                    await rm(current, { force: true });
+                    await retryFileOperation(() => rm(current, { force: true }));
                 }
             }
         }
@@ -674,13 +701,13 @@ async function removeEmptyRuntimeDirectory(path) {
         }
         await removeEmptyRuntimeDirectory(join(path, entry.name));
     }
-    await rmdir(path);
+    await retryFileOperation(() => rmdir(path));
 }
 
 async function removeRuntimeFile(path) {
     try {
         const info = lstatSync(path, { throwIfNoEntry: false });
-        if (info && !info.isDirectory()) await unlink(path);
+        if (info && !info.isDirectory()) await retryFileOperation(() => unlink(path));
     } catch (error) {
         if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
     }
@@ -835,14 +862,14 @@ export class PluginUpdater {
     }
 
     inspectTargetEligibility() {
-        if (existsSync(join(this.pluginDir, '.git'))) {
-            return { canApply: false, reason: 'dev-workspace' };
-        }
-        if (isSymlink(this.pluginDir)) {
-            return { canApply: false, reason: 'install-location' };
-        }
-        if (!this.allowCustomTarget) {
-            try {
+        try {
+            if (existsSync(join(this.pluginDir, '.git'))) {
+                return { canApply: false, reason: 'dev-workspace' };
+            }
+            if (isSymlink(this.pluginDir)) {
+                return { canApply: false, reason: 'install-location' };
+            }
+            if (!this.allowCustomTarget) {
                 if (!existsSync(this.expectedPluginDir) || isSymlink(this.expectedPluginDir)) {
                     return { canApply: false, reason: 'install-location' };
                 }
@@ -854,11 +881,11 @@ export class PluginUpdater {
                 if (!samePath) {
                     return { canApply: false, reason: 'install-location' };
                 }
-            } catch {
-                return { canApply: false, reason: 'install-location' };
             }
+            return { canApply: true, reason: null };
+        } catch {
+            return { canApply: false, reason: 'install-location' };
         }
-        return { canApply: true, reason: null };
     }
 
     async hasInterruptedTransactions() {
@@ -871,8 +898,9 @@ export class PluginUpdater {
     }
 
     async initializeLocalInfo() {
-        const target = this.inspectTargetEligibility();
+        let target = { canApply: false, reason: 'install-location' };
         try {
+            target = this.inspectTargetEligibility();
             if (target.canApply && await this.hasInterruptedTransactions()) {
                 let lock = null;
                 try {
@@ -1186,6 +1214,7 @@ export class PluginUpdater {
                     hasUpdate = true;
                     updateReason = 'version';
                 } else if (cmp === 0 && remote.sourceKind === 'main' && currentCommit && remote.latestCommit && currentCommit !== remote.latestCommit) {
+                    // Published releases are authoritative over same-version main commits.
                     hasUpdate = true;
                     updateReason = 'commit';
                 }
@@ -1544,6 +1573,11 @@ export class PluginUpdater {
     }
 
     async restoreBackupSnapshot(backupDir, journalPath, journal) {
+        if (!Array.isArray(journal?.oldFiles) || !Array.isArray(journal?.stagedFiles) ||
+            journal.oldFiles.some(rel => !isSafeJournalRuntimePath(rel)) ||
+            journal.stagedFiles.some(rel => !isSafeJournalRuntimePath(rel))) {
+            throw new UpdateError('rollback');
+        }
         const failures = [];
         const oldSet = new Set(journal.oldFiles.map(item => item.toLowerCase()));
         for (const stagedRel of journal.stagedFiles) {
@@ -1609,7 +1643,9 @@ export class PluginUpdater {
                 await rm(txDir, { recursive: true, force: true }).catch(() => {});
                 continue;
             }
-            if (journal?.phase !== 'installing' || !Array.isArray(journal.oldFiles) || !Array.isArray(journal.stagedFiles)) {
+            if (journal?.phase !== 'installing' || !Array.isArray(journal.oldFiles) || !Array.isArray(journal.stagedFiles) ||
+                journal.oldFiles.some(rel => !isSafeJournalRuntimePath(rel)) ||
+                journal.stagedFiles.some(rel => !isSafeJournalRuntimePath(rel))) {
                 throw new UpdateError('rollback');
             }
             await this.restoreBackupSnapshot(join(txDir, 'backup'), journalPath, journal);

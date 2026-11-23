@@ -76,7 +76,7 @@
 ### 环境要求
 
 - **系统**：Windows
-- **运行时**：[Node.js](https://nodejs.org/) **22** 或更高版本
+- **运行时**：[Node.js](https://nodejs.org/) **22.2** 或更高版本
 - **宿主**：已安装桌面版 Antigravity
 
 ### 一键安装 / 卸载 / 状态检查
@@ -126,7 +126,7 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 
 ## 原生交互与兼容修复
 
-针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 23`）持续做了系统性适配：
+针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 25`）持续做了系统性适配：
 
 - **对话区与原生控件层级还原**：恢复左侧对话圆点进度条（`conversation-navigator`）点击跳转、主滚动条与回到底部按钮、`Ctrl+F` 查找栏、选中浮窗/批注弹框、底部终端上边缘拖拽调整高度、分栏拖拽手柄（`[data-split-sash]` / `[data-testid="tiling-splitter"]`）及侧栏收起 Peek 热区/窄窗抽屉交互。
 - **工作状态框浮动滚动条视口裁剪**：为宿主全局挂载到 `document.body` 的浮动滚动条（`body > [data-overlay-scrollbar-track]`）建立几何反查与祖先裁剪链，通过 `clip-path: inset(...)` 限制其严格在 `[data-testid="autoscroll-viewport"]` 等容器视口内渲染与响应点击，杜绝长工作流状态框滚出会话区域时遮挡顶部标题栏、会话头或底部输入框。
@@ -198,7 +198,7 @@ antigravity-UI/
 │   ├── styles.css                  # 设置页深浅主题与嵌入式样式
 │   └── app.js                      # 实时预览、BroadcastChannel 同步与更新/交互控制
 ├── docs/
-│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §14）
+│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §16）
 │   └── images/                     # README 展示截图
 ├── GLOSSARY.md                     # 核心术语说明
 └── tests/
