@@ -12,6 +12,8 @@
 [![Runtime](https://img.shields.io/badge/runtime-Sidecar%20%2B%20CDP-7b61ff?style=flat-square)](docs/adr/0001-live-preview.md)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
 
+**简体中文** · [English](README.en.md)
+
 [效果展示](#效果展示) · [核心功能](#核心功能) · [安装与入口](#安装与入口) · [持久化机制](#跨重启持久化与自修复) · [交互兼容](#原生交互与兼容修复) · [仓库结构](#仓库结构)
 
 </div>
@@ -192,6 +194,8 @@ antigravity-UI/
 ├── manage.cjs                      # CLI 安装管理与旧版补丁迁移
 ├── plugin.json                     # Antigravity 插件清单
 ├── LICENSE                         # MIT 开源协议
+├── README.md                       # 简体中文说明
+├── README.en.md                    # English documentation
 ├── AGENTS.md                       # 维护者与 Agent 路由指南
 ├── ARCHITECTURE.md                 # 当前态架构、状态机与接口索引
 ├── GLOSSARY.md                     # 核心术语说明

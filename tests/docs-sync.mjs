@@ -10,6 +10,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 
 const DOC_FILES = [
     'README.md',
+    'README.en.md',
     'ARCHITECTURE.md',
     'AGENTS.md',
     'GLOSSARY.md',
@@ -57,12 +58,19 @@ function collectRuntimeSourceFiles() {
     const manifest = JSON.parse(readRepoFile('plugin.json'));
     const sidecar = JSON.parse(readRepoFile('sidecars/panel/sidecar.json'));
     const readme = readRepoFile('README.md');
+    const readmeEn = readRepoFile('README.en.md');
 
     assert.ok(manifest.version, 'plugin.json must declare a version');
-    assert.ok(
-        readme.includes(`version-${manifest.version}-`),
-        `README.md version badge is out of sync with plugin.json (${manifest.version})`,
-    );
+    for (const [name, content] of [['README.md', readme], ['README.en.md', readmeEn]]) {
+        assert.ok(
+            content.includes(`version-${manifest.version}-`),
+            `${name} version badge is out of sync with plugin.json (${manifest.version})`,
+        );
+        assert.ok(
+            content.includes(`version = ${RENDERER_VERSION} / revision = ${RENDERER_REVISION}`),
+            `${name} renderer version/revision is out of sync with renderer.mjs (${RENDERER_VERSION} / ${RENDERER_REVISION})`,
+        );
+    }
     assert.ok(
         manifest.logo && fs.existsSync(path.join(REPO_ROOT, manifest.logo)),
         `plugin.json logo does not exist: ${manifest.logo}`,
@@ -77,10 +85,6 @@ function collectRuntimeSourceFiles() {
         `sidecars/panel/sidecar.json entrypoint missing: ${sidecar.args[0]}`,
     );
 
-    assert.ok(
-        readme.includes(`version = ${RENDERER_VERSION} / revision = ${RENDERER_REVISION}`),
-        `README.md renderer version/revision is out of sync with renderer.mjs (${RENDERER_VERSION} / ${RENDERER_REVISION})`,
-    );
     const pluginSurfaceMeta = await installPluginPanelSurface({ __inspectHelpers: true });
     assert.equal(pluginSurfaceMeta.version, RENDERER_VERSION, 'installPluginPanelSurface version must match RENDERER_VERSION');
     assert.equal(pluginSurfaceMeta.revision, RENDERER_REVISION, 'installPluginPanelSurface revision must match RENDERER_REVISION');
