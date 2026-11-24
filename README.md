@@ -10,6 +10,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square)](#安装与入口)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A5%2022-3c873a?style=flat-square)](#安装与入口)
 [![Runtime](https://img.shields.io/badge/runtime-Sidecar%20%2B%20CDP-7b61ff?style=flat-square)](docs/adr/0001-live-preview.md)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
 
 [效果展示](#效果展示) · [核心功能](#核心功能) · [安装与入口](#安装与入口) · [持久化机制](#跨重启持久化与自修复) · [交互兼容](#原生交互与兼容修复) · [仓库结构](#仓库结构)
 
@@ -190,6 +191,7 @@ antigravity-UI/
 ├── Antigravity-UI.cmd              # Windows 交互式安装 / 卸载 / 状态入口
 ├── manage.cjs                      # CLI 安装管理与旧版补丁迁移
 ├── plugin.json                     # Antigravity 插件清单
+├── LICENSE                         # MIT 开源协议
 ├── AGENTS.md                       # 维护者与 Agent 路由指南
 ├── ARCHITECTURE.md                 # 当前态架构、状态机与接口索引
 ├── GLOSSARY.md                     # 核心术语说明
@@ -227,3 +229,9 @@ antigravity-UI/
 - 维护约定与验证回路：[AGENTS.md](AGENTS.md)
 - 架构演进与技术细节记录：[docs/adr/0001-live-preview.md](docs/adr/0001-live-preview.md)
 - 术语定义：[GLOSSARY.md](GLOSSARY.md)
+
+---
+
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。
