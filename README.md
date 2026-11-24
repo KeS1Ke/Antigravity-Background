@@ -34,12 +34,12 @@
     <td width="50%" align="center">
       <img src="docs/images/settings-panel-dark.png" alt="深色主题设置面板" />
       <br />
-      <sub><b>深色主题设置页</b> · 全页 10 组折叠卡（含左侧栏选中会话、输入框、对话框独立/同步 &amp; Overview 面板）</sub>
+      <sub><b>深色主题设置页</b> · 全页 10 组折叠卡，支持「左侧栏选中会话」「输入框」「对话框」一键同步三项设置与镂空薄环外圈</sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/images/settings-panel-light.png" alt="浅色主题设置面板" />
       <br />
-      <sub><b>浅色主题设置页</b> · 「左侧边栏」「右侧面板」「输入框与对话框」「Overview 面板」各自独立配置</sub>
+      <sub><b>浅色主题设置页</b> · 关闭同步后三表面与「Overview 面板」各自独立配色，镂空薄环仅染最外层不穿透内部卡片</sub>
     </td>
   </tr>
   <tr>
