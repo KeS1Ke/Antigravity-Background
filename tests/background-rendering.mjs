@@ -7,8 +7,8 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Connection, WallpaperRuntime } from '../sidecars/panel/runtime.mjs';
-import { installWallpaper, RENDERER_REVISION } from '../sidecars/panel/renderer.mjs';
+import { Connection, WallpaperRuntime, validIframeTarget } from '../sidecars/panel/runtime.mjs';
+import { installWallpaper, RENDERER_REVISION, computePluginSurfaceMetrics } from '../sidecars/panel/renderer.mjs';
 import { SettingsStore } from '../sidecars/panel/store.mjs';
 import appearance from '../plugin/appearance.cjs';
 import persistence from '../plugin/persistence.cjs';
@@ -30,7 +30,8 @@ assert.equal(appearance.normalize().composerOuterColor, '');
 assert.equal(appearance.normalize().overviewOuterColor, '');
 assert.equal(appearance.normalize().overviewInnerColor, '');
 assert.equal(appearance.normalize().composerLayered, true);
-assert.equal('bubbleLayered' in appearance.normalize(), false);
+assert.equal(appearance.normalize().bubbleLayered, true);
+assert.equal(appearance.normalize().selectedRowLayered, true);
 assert.equal(appearance.normalize({ composerInnerColor: '#AABBCC' }).composerInnerColor, '#aabbcc');
 assert.deepEqual(
     (() => {
@@ -100,6 +101,47 @@ assert.deepEqual(
     appearance.normalize({ bubbleCover: false, bubbleLayered: false, bubbleBlur: 9, bubbleOuterColor: '#ABCDEF' }),
     appearance.normalize({ composerCover: false, composerLayered: false, composerBlur: 9, composerOuterColor: '#abcdef' })
 );
+assert.equal(appearance.normalize().syncDialogSurfaces, true);
+assert.deepEqual(
+    (() => {
+        const s = appearance.normalize({
+            syncDialogSurfaces: true,
+            composerCover: false, composerLayered: false, composerOpacity: 44, composerBlur: 7,
+            composerOuterColor: '#112233', composerInnerColor: '#445566',
+            bubbleOuterColor: '#ff0000', selectedRowOpacity: 88,
+        });
+        return [
+            s.syncDialogSurfaces,
+            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur, s.bubbleOuterColor, s.bubbleInnerColor,
+            s.selectedRowCover, s.selectedRowLayered, s.selectedRowOpacity, s.selectedRowBlur, s.selectedRowOuterColor, s.selectedRowInnerColor,
+        ];
+    })(),
+    [true, false, false, 44, 7, '#112233', '#445566', false, false, 44, 7, '#112233', '#445566']
+);
+assert.deepEqual(
+    (() => {
+        const s = appearance.normalize({
+            syncDialogSurfaces: false,
+            composerOuterColor: '#111111', composerInnerColor: '#222222', composerOpacity: 40, composerBlur: 4,
+            bubbleCover: false, bubbleLayered: false, bubbleOuterColor: '#333333', bubbleInnerColor: '#444444', bubbleOpacity: 50, bubbleBlur: 8,
+            selectedRowCover: true, selectedRowLayered: false, selectedRowOuterColor: '#555555', selectedRowInnerColor: '#666666', selectedRowOpacity: 60, selectedRowBlur: 12,
+        });
+        return [
+            s.syncDialogSurfaces,
+            s.composerCover, s.composerLayered, s.composerOpacity, s.composerBlur, s.composerOuterColor, s.composerInnerColor,
+            s.bubbleCover, s.bubbleLayered, s.bubbleOpacity, s.bubbleBlur, s.bubbleOuterColor, s.bubbleInnerColor,
+            s.selectedRowCover, s.selectedRowLayered, s.selectedRowOpacity, s.selectedRowBlur, s.selectedRowOuterColor, s.selectedRowInnerColor,
+        ];
+    })(),
+    [
+        false,
+        true, true, 40, 4, '#111111', '#222222',
+        false, false, 50, 8, '#333333', '#444444',
+        true, false, 60, 12, '#555555', '#666666',
+    ]
+);
+assert.throws(() => appearance.normalize({ syncDialogSurfaces: true, bubbleOuterColor: 'not-a-color' }), /颜色/);
+assert.throws(() => appearance.normalize({ syncDialogSurfaces: true, selectedRowInnerColor: '#12' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewOuterColor: 'blue' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜色/);
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
@@ -133,6 +175,10 @@ await new Promise(resolve => probe.close(resolve));
 
 const embedServer = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    if (request.url?.startsWith('/hidden')) {
+        response.end(`<!doctype html><body style="margin:0;background:#1d1c1c"><div id="panel-slot" style="display:none;width:0;height:0"><iframe id="panel-frame" src="http://127.0.0.1:${webPort}/?token=test" style="width:100%;height:100%;border:0"></iframe></div></body>`);
+        return;
+    }
     response.end(`<!doctype html><body style="margin:0;background:#1d1c1c"><iframe id="panel-frame" src="http://127.0.0.1:${webPort}/?token=test" style="width:320px;height:640px;border:0"></iframe></body>`);
 });
 await new Promise(resolve => embedServer.listen(0, 'localhost', resolve));
@@ -269,12 +315,14 @@ try {
     assert.deepEqual(await geometry(), initialGeometry);
 
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerOpacity: 55, composerBlur: 6 });
-    const surfaceState = () => evaluate("(()=>{const sidebar=getComputedStyle(document.querySelector('.pane .flex-grow'));const composer=getComputedStyle(document.querySelector('.surface-composer-card'));const outer=getComputedStyle(document.querySelector('.surface-composer'));const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');function rgba(color){g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return [...g.getImageData(0,0,1,1).data]}return{sidebarAlpha:rgba(sidebar.backgroundColor)[3],sidebarBlur:sidebar.backdropFilter,composerAlpha:rgba(composer.backgroundColor)[3],composerRgb:rgba(composer.backgroundColor).slice(0,3),composerBlur:composer.backdropFilter,composerShadow:composer.boxShadow,outerBg:outer.backgroundColor,outerBgAlpha:rgba(outer.backgroundColor)[3],outerBlur:outer.backdropFilter,outerShadow:outer.boxShadow,tools:getComputedStyle(document.querySelector('#window-tools')).backgroundColor}})()");
+    const surfaceState = () => evaluate("(()=>{const sidebar=getComputedStyle(document.querySelector('.pane .flex-grow'));const composer=getComputedStyle(document.querySelector('.surface-composer-card'));const outerEl=document.querySelector('.surface-composer');const outer=getComputedStyle(outerEl);const outerRing=getComputedStyle(outerEl,'::before');const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');function rgba(color){g.clearRect(0,0,1,1);g.fillStyle=color;g.fillRect(0,0,1,1);return [...g.getImageData(0,0,1,1).data]}return{sidebarAlpha:rgba(sidebar.backgroundColor)[3],sidebarBlur:sidebar.backdropFilter,composerAlpha:rgba(composer.backgroundColor)[3],composerRgb:rgba(composer.backgroundColor).slice(0,3),composerBlur:composer.backdropFilter,composerShadow:composer.boxShadow,outerBg:outer.backgroundColor,outerBgAlpha:rgba(outer.backgroundColor)[3],outerRingBg:outerRing.backgroundColor,outerRingBgAlpha:rgba(outerRing.backgroundColor)[3],outerRingMask:outerRing.maskComposite,outerBlur:outer.backdropFilter,outerShadow:outer.boxShadow,tools:getComputedStyle(document.querySelector('#window-tools')).backgroundColor}})()");
     const surfaces = await surfaceState();
     assert(Math.abs(surfaces.sidebarAlpha - 89) <= 1);
     assert.equal(surfaces.sidebarBlur, 'blur(10px)');
     assert(Math.abs(surfaces.composerAlpha - 140) <= 1);
-    assert(Math.abs(surfaces.outerBgAlpha - 140) <= 1);
+    assert.equal(surfaces.outerBg, 'rgba(0, 0, 0, 0)');
+    assert(Math.abs(surfaces.outerRingBgAlpha - 140) <= 1);
+    assert.equal(surfaces.outerRingMask, 'exclude, exclude');
     assert.equal(surfaces.outerBlur, 'blur(6px)');
     assert.equal(surfaces.composerBlur, 'none');
     assert.notEqual(surfaces.composerShadow, 'none');
@@ -287,16 +335,18 @@ try {
 
     await save(webPort, 40, false, { composerOuterColor: '#ff0000', composerInnerColor: '#00ff00' });
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer-card')).backgroundColor"), 'color(srgb 0 1 0)');
-    assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer')).backgroundColor"), 'color(srgb 1 0 0)');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer')).backgroundColor"), 'rgba(0, 0, 0, 0)');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.surface-composer'),'::before').backgroundColor"), 'color(srgb 1 0 0)');
     assert.match(await evaluate("getComputedStyle(document.querySelector('.surface-composer')).boxShadow"), /color\(srgb 1 0 0\).*inset/);
     assert.equal(surfaces.tools, 'rgba(0, 0, 0, 0)');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#window-tools > .right-full')).backgroundImage"), 'none');
 
-    // Q3: Default empty composerOuterColor retains layered frame & inset border; composerCover: false removes fill while keeping transparent layered rim
+    // Q3: Default empty composerOuterColor retains layered hollow ring & inset border; composerCover: false removes fill while keeping transparent layered rim
     const insetBorder = /(?:0px ){3}1px.*inset|inset.*(?:0px ){3}1px/;
     await save(webPort, 40, false, { composerCover: true, composerOuterColor: '' });
     const defaultOuter = await surfaceState();
-    assert.notEqual(defaultOuter.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(defaultOuter.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.notEqual(defaultOuter.outerRingBg, 'rgba(0, 0, 0, 0)');
     assert.match(defaultOuter.outerShadow, insetBorder);
 
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerCover: false, composerOpacity: 55, composerBlur: 6 });
@@ -304,6 +354,7 @@ try {
     assert.equal(uncovered.composerAlpha, 0);
     assert.equal(uncovered.outerBlur, 'none');
     assert.equal(uncovered.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(uncovered.outerRingBg, 'rgba(0, 0, 0, 0)');
     assert.match(uncovered.outerShadow, insetBorder);
     assert.notEqual(uncovered.composerShadow, 'none', 'Layered transparent mode must retain inner glass highlight/shadow');
     assert.equal(uncovered.sidebarAlpha, surfaces.sidebarAlpha);
@@ -312,6 +363,7 @@ try {
     await save(webPort, 40, false, { sidebarOpacity: 35, sidebarBlur: 10, composerCover: false, composerOuterColor: '#ffffff', composerOpacity: 55, composerBlur: 6 });
     const uncoveredWithColor = await surfaceState();
     assert.equal(uncoveredWithColor.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(uncoveredWithColor.outerRingBg, 'rgba(0, 0, 0, 0)');
     assert.match(uncoveredWithColor.outerShadow, insetBorder);
     assert.equal(uncoveredWithColor.outerShadow, uncovered.outerShadow);
 
@@ -499,8 +551,8 @@ try {
     await waitDiscard();
 
     // Existing accordion, color save, default outer border save, independent controls save, delayed preview/save, invalid 400
-    assert.equal(await panel("document.querySelectorAll('input[type=range]').length"), 15);
-    assert.equal(await panel("document.querySelectorAll('details').length"), 8);
+    assert.equal(await panel("document.querySelectorAll('input[type=range]').length"), 19);
+    assert.equal(await panel("document.querySelectorAll('details').length"), 10);
     assert.equal(await panel("document.querySelector('#composer-cover').closest('details').open"), false);
     await panel("document.querySelector('#composer-cover').closest('details').querySelector('summary').click()");
     assert.equal(await panel("document.querySelector('#composer-cover').closest('details').open"), true);
@@ -903,12 +955,64 @@ try {
     await until(() => evaluate("Boolean(document.querySelector('#antigravity-ui-background'))"), 'Sidecar did not restore wallpaper after host reload');
     assert.equal(await evaluate("getComputedStyle(window.testRoots.get(document.querySelector('#antigravity-ui-background')).querySelector('.image')).opacity"), '0.79');
 
-    // Close embed page cleanly before multi-panel & 0.3.8 surface tests
+    // Close embed page cleanly before hidden-iframe deferred hydration & multi-panel tests
     embedClient?.close();
     iframeClient?.close();
     embedClient = undefined;
     iframeClient = undefined;
     await fetch('http://127.0.0.1:' + port + '/json/close/' + embedTarget.id);
+
+    // Cold-start optimization: hidden (0x0 / display:none) preloaded panel iframe defers API fetches & template cloning until revealed
+    const hiddenEmbedTarget = await fetch('http://127.0.0.1:' + port + '/json/new?' + encodeURIComponent(embedUrl + 'hidden'), { method: 'PUT' }).then(r => r.json());
+    const hiddenEmbedClient = new Connection(hiddenEmbedTarget.webSocketDebuggerUrl);
+    let hiddenIframeClient;
+    try {
+        await hiddenEmbedClient.open();
+        const hiddenIframeTarget = await until(async () => (await fetch('http://127.0.0.1:' + port + '/json/list').then(r => r.json())).find(t => t.type === 'iframe' && t.parentId === hiddenEmbedTarget.id && t.url.startsWith('http://127.0.0.1:' + webPort)), 'Hidden embedded panel iframe target missing');
+        hiddenIframeClient = new Connection(hiddenIframeTarget.webSocketDebuggerUrl);
+        await hiddenIframeClient.open();
+        await hiddenIframeClient.command('Page.enable');
+        await hiddenIframeClient.command('Page.addScriptToEvaluateOnNewDocument', {
+            source: "window.__deferredFetches=[];const origFetch=window.fetch.bind(window);window.fetch=(input,init)=>{window.__deferredFetches.push(String(typeof input==='string'?input:input?.url||''));return origFetch(input,init);};",
+        });
+        await hiddenIframeClient.command('Runtime.evaluate', { expression: 'location.reload()' });
+        await until(() => evalOn(hiddenIframeClient, 'document.readyState==="complete"&&Array.isArray(window.__deferredFetches)', 'Hidden iframe ready'), 'Hidden iframe did not finish parsing');
+        await delay(250);
+        const hiddenState = await evalOn(hiddenIframeClient, `({
+            fetches: window.__deferredFetches,
+            innerW: window.innerWidth,
+            innerH: window.innerHeight,
+            previewCloned: Boolean(document.querySelector('#preview .sample-window')),
+            dragCloned: Boolean(document.querySelector('#drag-preview-stage .sample-window')),
+            saveDisabled: Boolean(document.querySelector('#save')?.disabled),
+        })`, 'Hidden iframe deferred state');
+        assert.equal(hiddenState.innerW, 0);
+        assert.equal(hiddenState.innerH, 0);
+        assert.equal(hiddenState.fetches.length, 0, 'Hidden preloaded panel iframe must not call /api/settings or /api/update during cold start: ' + JSON.stringify(hiddenState.fetches));
+        assert.equal(hiddenState.previewCloned, false, 'Hidden preloaded panel iframe must not clone #preview template before reveal');
+        assert.equal(hiddenState.dragCloned, false, 'Hidden preloaded panel iframe must not clone #drag-preview-stage template before opening modal');
+        assert.equal(hiddenState.saveDisabled, true);
+
+        await evalOn(hiddenEmbedClient, "const s=document.querySelector('#panel-slot');s.style.display='block';s.style.width='320px';s.style.height='640px';", 'Reveal hidden panel slot');
+        await until(() => evalOn(hiddenIframeClient, 'Boolean(document.querySelector("#save")&&!document.querySelector("#save").disabled)', 'Revealed panel ready'), 'Revealed panel iframe did not hydrate');
+        const revealedState = await evalOn(hiddenIframeClient, `({
+            fetches: window.__deferredFetches,
+            previewCloned: Boolean(document.querySelector('#preview .sample-window')),
+            dragCloned: Boolean(document.querySelector('#drag-preview-stage .sample-window')),
+        })`, 'Revealed panel state');
+        assert.equal(revealedState.previewCloned, true, 'Revealed panel must hydrate #preview template');
+        assert.equal(revealedState.dragCloned, false, 'Drag preview modal template must remain lazy until modal opens');
+        assert.ok(revealedState.fetches.some(u => u.includes('/api/settings')), 'Revealed panel must fetch /api/settings');
+        assert.ok(revealedState.fetches.some(u => u.includes('/api/update')), 'Revealed panel must fetch /api/update');
+        await evalOn(hiddenIframeClient, 'document.querySelector("#open-drag-preview").click()', 'Open lazy drag modal');
+        const dragModalHydrated = await evalOn(hiddenIframeClient, 'Boolean(document.querySelector("#drag-preview-stage .sample-window"))&&!document.querySelector("#drag-preview-modal").hidden', 'Drag modal lazy hydration');
+        assert.equal(dragModalHydrated, true, 'Opening drag preview modal must hydrate #drag-preview-stage on demand');
+    } finally {
+        hiddenIframeClient?.close();
+        hiddenEmbedClient.close();
+        await fetch('http://127.0.0.1:' + port + '/json/close/' + hiddenEmbedTarget.id).catch(() => {});
+    }
+
     await panelClient.command('Page.reload');
     await waitReady('Panel reload before 0.3.8 suite failed');
 
@@ -933,16 +1037,22 @@ try {
         const vp=document.querySelector('[data-testid="autoscroll-viewport"]');
         const vps=getComputedStyle(vp);
         const readBubble=(frameSel,bubbleSel)=>{
-            const f=getComputedStyle(document.querySelector(frameSel));
+            const fEl=document.querySelector(frameSel);
+            const f=getComputedStyle(fEl);
+            const fr=getComputedStyle(fEl,'::before');
             const b=getComputedStyle(document.querySelector(bubbleSel));
-            return{frameBg:f.backgroundColor,frameBgRgba:rgba(f.backgroundColor),frameBlur:f.backdropFilter,frameShadow:f.boxShadow,frameRgba:shadowRgba(f.boxShadow),bgRgba:rgba(b.backgroundColor),blur:b.backdropFilter,shadow:b.boxShadow};
+            return{frameBg:f.backgroundColor,frameBgRgba:rgba(f.backgroundColor),frameRingBg:fr.backgroundColor,frameRingRgba:rgba(fr.backgroundColor),frameRingContent:fr.content,frameRingMask:fr.maskComposite,frameBlur:f.backdropFilter,frameShadow:f.boxShadow,frameRgba:shadowRgba(f.boxShadow),bgRgba:rgba(b.backgroundColor),blur:b.backdropFilter,shadow:b.boxShadow};
         };
         const bd=getComputedStyle(document.querySelector('[data-testid="overview-panel-overlay-backdrop"]'));
         const ov=getComputedStyle(document.querySelector('[data-testid="overview-panel-host-overlay"]'));
         const zw=getComputedStyle(document.querySelector('.z-\\\\[1\\\\]'));
-        const hc=getComputedStyle(document.querySelector('#home-composer'));
+        const hcEl=document.querySelector('#home-composer');
+        const hc=getComputedStyle(hcEl);
+        const hcr=getComputedStyle(hcEl,'::before');
         const hcc=getComputedStyle(document.querySelector('#home-composer-card'));
-        const nc=getComputedStyle(document.querySelector('.relative.z-10 .surface-composer'));
+        const ncEl=document.querySelector('.relative.z-10 .surface-composer');
+        const nc=getComputedStyle(ncEl);
+        const ncr=getComputedStyle(ncEl,'::before');
         const ncc=getComputedStyle(document.querySelector('.relative.z-10 .surface-composer-card'));
         return{
             wallpaperOpacity:img?getComputedStyle(img).opacity:null,
@@ -950,27 +1060,31 @@ try {
             regularBubble:readBubble('#regular-bubble-frame','#regular-bubble'),
             proceededBubble:readBubble('#proceeded-bubble-frame','#proceeded-bubble'),
             overview:{backdropZ:bd.zIndex,hostZ:ov.zIndex,bgRgba:rgba(ov.backgroundColor),blur:ov.backdropFilter,shadow:ov.boxShadow,borderColor:ov.borderTopColor,borderRgba:rgba(ov.borderTopColor)},
-            homeComposer:{wrapperZ:zw.zIndex,outerBg:hc.backgroundColor,outerBgRgba:rgba(hc.backgroundColor),outerBlur:hc.backdropFilter,outerShadow:hc.boxShadow,outerShadowRgba:shadowRgba(hc.boxShadow),cardBg:hcc.backgroundColor,cardBgRgba:rgba(hcc.backgroundColor),cardBlur:hcc.backdropFilter,cardShadow:hcc.boxShadow},
-            normalComposer:{outerBg:nc.backgroundColor,outerBgRgba:rgba(nc.backgroundColor),outerBlur:nc.backdropFilter,outerShadow:nc.boxShadow,outerShadowRgba:shadowRgba(nc.boxShadow),cardBg:ncc.backgroundColor,cardBgRgba:rgba(ncc.backgroundColor),cardBlur:ncc.backdropFilter,cardShadow:ncc.boxShadow},
+            homeComposer:{wrapperZ:zw.zIndex,outerBg:hc.backgroundColor,outerBgRgba:rgba(hc.backgroundColor),outerRingBg:hcr.backgroundColor,outerRingRgba:rgba(hcr.backgroundColor),outerRingContent:hcr.content,outerRingMask:hcr.maskComposite,outerBlur:hc.backdropFilter,outerShadow:hc.boxShadow,outerShadowRgba:shadowRgba(hc.boxShadow),cardBg:hcc.backgroundColor,cardBgRgba:rgba(hcc.backgroundColor),cardBlur:hcc.backdropFilter,cardShadow:hcc.boxShadow},
+            normalComposer:{outerBg:nc.backgroundColor,outerBgRgba:rgba(nc.backgroundColor),outerRingBg:ncr.backgroundColor,outerRingRgba:rgba(ncr.backgroundColor),outerRingContent:ncr.content,outerRingMask:ncr.maskComposite,outerBlur:nc.backdropFilter,outerShadow:nc.boxShadow,outerShadowRgba:shadowRgba(nc.boxShadow),cardBg:ncc.backgroundColor,cardBgRgba:rgba(ncc.backgroundColor),cardBlur:ncc.backdropFilter,cardShadow:ncc.boxShadow},
         };
     })()`, 'Read host surfaces');
 
-    // (c) Bound "输入框与对话框" card: composer + user bubbles + HOME_VIEW .z-[1] two-layer frame/card & flat toggle, never syncing Overview
+    // (c) Synced by default across "输入框" / "对话框" / "左侧栏选中会话", hollow outer ring (no bleed through center), flat toggle, never syncing Overview
     await panel("(()=>{const d=document.querySelector('#composer-cover').closest('details');if(!d.open)d.querySelector('summary').click();const cov=document.querySelector('#composer-cover');if(!cov.checked)cov.click();const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};set('#composerOuterColor','#ff0000');set('#composerInnerColor','#00ff00');set('#wallpaper-composerOpacity',55);set('#wallpaper-composerBlur',6);})()");
     await until(async () => {
         const s = await readHostSurfaces(client);
         return s.homeComposer.outerBlur === 'blur(6px)' && s.regularBubble.frameBlur === 'blur(6px)';
-    }, 'Bound composer + bubble layered preview did not update');
+    }, 'Synced composer + bubble layered preview did not update');
     const unifiedHome = await readHostSurfaces(client);
     assert.equal(unifiedHome.homeComposer.wrapperZ, '1001');
-    approxRgba(unifiedHome.homeComposer.outerBgRgba, [255, 0, 0, 140]);
+    assert.equal(unifiedHome.homeComposer.outerBg, 'rgba(0, 0, 0, 0)');
+    approxRgba(unifiedHome.homeComposer.outerRingRgba, [255, 0, 0, 140]);
+    assert.equal(unifiedHome.homeComposer.outerRingMask, 'exclude, exclude');
     assert.equal(unifiedHome.homeComposer.outerBlur, 'blur(6px)');
     assert.match(unifiedHome.homeComposer.outerShadow, insetBorder);
     approxRgba(unifiedHome.homeComposer.outerShadowRgba, [255, 0, 0, 140]);
     approxRgba(unifiedHome.homeComposer.cardBgRgba, [0, 255, 0, 140]);
     assert.equal(unifiedHome.homeComposer.cardBlur, 'none');
     assert.notEqual(unifiedHome.homeComposer.cardShadow, 'none');
-    approxRgba(unifiedHome.normalComposer.outerBgRgba, [255, 0, 0, 140]);
+    assert.equal(unifiedHome.normalComposer.outerBg, 'rgba(0, 0, 0, 0)');
+    approxRgba(unifiedHome.normalComposer.outerRingRgba, [255, 0, 0, 140]);
+    assert.equal(unifiedHome.normalComposer.outerRingMask, 'exclude, exclude');
     assert.equal(unifiedHome.normalComposer.outerBlur, 'blur(6px)');
     assert.match(unifiedHome.normalComposer.outerShadow, insetBorder);
     approxRgba(unifiedHome.normalComposer.outerShadowRgba, [255, 0, 0, 140]);
@@ -978,7 +1092,9 @@ try {
     assert.equal(unifiedHome.normalComposer.cardBlur, 'none');
     assert.notEqual(unifiedHome.normalComposer.cardShadow, 'none');
     for (const bubble of [unifiedHome.regularBubble, unifiedHome.proceededBubble]) {
-        approxRgba(bubble.frameBgRgba, [255, 0, 0, 140]);
+        assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
+        approxRgba(bubble.frameRingRgba, [255, 0, 0, 140]);
+        assert.equal(bubble.frameRingMask, 'exclude, exclude');
         assert.equal(bubble.frameBlur, 'blur(6px)');
         assert.match(bubble.frameShadow, insetBorder);
         approxRgba(bubble.frameRgba, [255, 0, 0, 140]);
@@ -991,7 +1107,7 @@ try {
     const homeEditorHit = await evaluate("(()=>{const e=document.querySelector('#home-editor'),b=e.getBoundingClientRect();return document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===e})()");
     assert.equal(homeEditorHit, true, 'HOME_VIEW composer editor must be interactive above wallpaper');
 
-    // Toggle #composer-layered off -> flattens BOTH composers and user bubbles together
+    // Toggle #composer-layered off -> flattens synced composers and user bubbles together and removes hollow ring
     await panel("document.querySelector('#composer-layered').click()");
     await until(async () => {
         const s = await readHostSurfaces(client);
@@ -999,12 +1115,15 @@ try {
     }, 'Disabling composerLayered did not flatten composer + bubbles');
     const flatHome = await readHostSurfaces(client);
     approxRgba(flatHome.homeComposer.outerBgRgba, [0, 255, 0, 140]);
+    assert.equal(flatHome.homeComposer.outerRingContent, 'none');
     assert.equal(flatHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
     assert.equal(flatHome.normalComposer.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(flatHome.normalComposer.outerRingContent, 'none');
     assert.equal(flatHome.normalComposer.cardBlur, 'blur(6px)');
     assert.equal(flatHome.normalComposer.cardShadow, 'none');
     for (const bubble of [flatHome.regularBubble, flatHome.proceededBubble]) {
         assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(bubble.frameRingContent, 'none');
         assert.equal(bubble.frameBlur, 'none');
         approxRgba(bubble.bgRgba, [0, 255, 0, 140]);
         assert.equal(bubble.blur, 'blur(6px)');
@@ -1019,16 +1138,19 @@ try {
     await panel("document.querySelector('#composer-cover').click()");
     await until(async () => {
         const s = await readHostSurfaces(client);
-        return s.homeComposer.outerBgRgba[3] === 0 && s.regularBubble.bgRgba[3] === 0;
+        return s.homeComposer.outerRingRgba[3] === 0 && s.regularBubble.bgRgba[3] === 0;
     }, 'Disabling composerCover did not clear composer + bubble colors');
     const uncoveredHome = await readHostSurfaces(client);
     assert.equal(uncoveredHome.homeComposer.outerBlur, 'none');
+    assert.equal(uncoveredHome.homeComposer.outerBg, 'rgba(0, 0, 0, 0)');
+    assert.equal(uncoveredHome.homeComposer.outerRingRgba[3], 0);
     assert.match(uncoveredHome.homeComposer.outerShadow, insetBorder);
     assert.notDeepEqual(uncoveredHome.homeComposer.outerShadowRgba.slice(0, 3), [255, 0, 0]);
     assert.equal(uncoveredHome.homeComposer.cardBg, 'rgba(0, 0, 0, 0)');
     assert.notEqual(uncoveredHome.homeComposer.cardShadow, 'none', 'Layered transparent HOME_VIEW composer retains raised glass rim/shadow');
     for (const bubble of [uncoveredHome.regularBubble, uncoveredHome.proceededBubble]) {
         assert.equal(bubble.frameBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(bubble.frameRingRgba[3], 0);
         assert.equal(bubble.bgRgba[3], 0);
         assert.equal(bubble.frameBlur, 'none');
         assert.match(bubble.frameShadow, insetBorder);
@@ -1112,7 +1234,7 @@ try {
         leftDock.id='test-left-dock';
         leftDock.className='flex';
         leftDock.style.cssText='width:180px;height:100%;flex-shrink:0;';
-        leftDock.innerHTML='<div class="h-full w-full flex flex-col pb-2 bg-sidebar" id="test-left-shell"><div class="px-2">Nav</div><div class="flex-1 min-h-0 overflow-y-auto outline-none flex flex-col py-3" id="test-left-inner"><div class="w-full relative flex-1 min-h-0 h-full"><div data-testid="conversation-list-sidebar" class="relative w-full h-full overflow-y-auto px-2"><div class="bg-sidebar" id="test-left-sticky" style="background:rgb(60,60,60)">Sticky</div><div class="agy-sidebar-row bg-sidebar-secondary" data-selected="true" id="test-left-selected"><span class="agy-row-actions">Row</span></div></div></div></div></div>';
+        leftDock.innerHTML='<div class="h-full w-full flex flex-col pb-2 bg-sidebar" id="test-left-shell"><div class="px-2">Nav</div><div class="flex-1 min-h-0 overflow-y-auto outline-none flex flex-col py-3" id="test-left-inner"><div class="w-full relative flex-1 min-h-0 h-full"><div data-testid="conversation-list-sidebar" class="relative w-full h-full overflow-y-auto px-2"><div class="bg-sidebar" id="test-left-sticky" style="background:rgb(60,60,60)">Sticky</div><div data-sidebar-row-id="row-selected" id="test-left-selected-host" style="position:relative;z-index:1"><div class="agy-sidebar-row py-1.5 bg-sidebar-secondary" data-testid="conversation-row-sidebar" data-selected="true" id="test-left-selected" style="position:relative;height:35px;box-sizing:border-box;border-top:1px solid transparent;padding:5px 8px 6px 30px;display:flex;align-items:center;justify-content:space-between"><a id="test-left-selected-link" href="#selected" style="position:absolute;inset:0"></a><span style="position:relative;pointer-events:none">Selected</span><span class="agy-row-actions" style="position:relative;z-index:10"><button id="test-left-selected-action" type="button" style="width:18px;height:18px">x</button></span></div></div><div data-sidebar-row-id="row-idle" id="test-left-idle-host" style="position:relative;z-index:1"><div class="agy-sidebar-row py-1.5" data-testid="conversation-row-sidebar" data-selected="false" id="test-left-idle" style="position:relative;height:35px;box-sizing:border-box;border-top:1px solid transparent;padding:5px 8px 6px 30px">Idle</div></div></div></div></div></div>';
         shell.insertBefore(split, sheet);
         split.append(leftDock, sheet);
         document.querySelector('#tabs').setAttribute('data-side-panel-strip','true');
@@ -1136,15 +1258,28 @@ try {
             const ls=getComputedStyle(document.querySelector('#test-left-shell'));
             const lstick=getComputedStyle(document.querySelector('#test-left-sticky'));
             const li=getComputedStyle(document.querySelector('#test-left-inner'));
-            const lsel=getComputedStyle(document.querySelector('#test-left-selected'));
+            const lselEl=document.querySelector('#test-left-selected');
+            const lsel=getComputedStyle(lselEl);
+            const lselBefore=getComputedStyle(lselEl,'::before');
+            const lselAfter=getComputedStyle(lselEl,'::after');
+            const lselHost=getComputedStyle(document.querySelector('#test-left-selected-host'));
+            const lidleEl=document.querySelector('#test-left-idle');
+            const lidle=getComputedStyle(lidleEl);
+            const lidleBefore=getComputedStyle(lidleEl,'::before');
+            const lidleHost=getComputedStyle(document.querySelector('#test-left-idle-host'));
             const rs=getComputedStyle(document.querySelector('.pane .browser-hole-ancestor'));
             const rtEl=document.querySelector('#tabs');
             const rt=getComputedStyle(rtEl);
             const rbEl=document.querySelector('.pane [data-side-panel-body]');
             const rb=getComputedStyle(rbEl);
             const mainEl=document.querySelector('[data-main-content-body]');
+            const linkRect=document.querySelector('#test-left-selected-link').getBoundingClientRect();
+            const linkHit=document.elementFromPoint(linkRect.left+12,linkRect.top+linkRect.height/2)?.id;
+            const actEl=document.querySelector('#test-left-selected-action');
+            const actRect=actEl.getBoundingClientRect();
+            const actHit=document.elementFromPoint(actRect.left+actRect.width/2,actRect.top+actRect.height/2)?.id;
             return {
-                left:{dockZ:ld.zIndex,shellZ:ls.zIndex,shellBg:rgba(ls.backgroundColor),shellBlur:ls.backdropFilter,shellShadow:ls.boxShadow,stickyBg:lstick.backgroundColor,innerBg:rgba(li.backgroundColor),innerShadow:li.boxShadow,innerRadius:li.borderRadius,selectedShadow:lsel.boxShadow},
+                left:{dockZ:ld.zIndex,shellZ:ls.zIndex,shellBg:rgba(ls.backgroundColor),shellBlur:ls.backdropFilter,shellShadow:ls.boxShadow,stickyBg:lstick.backgroundColor,innerBg:rgba(li.backgroundColor),innerShadow:li.boxShadow,innerRadius:li.borderRadius,selectedHostZ:lselHost.zIndex,idleHostZ:lidleHost.zIndex,selectedBg:rgba(lsel.backgroundColor),selectedAfterContent:lselAfter.content,selectedAfterBg:rgba(lselAfter.backgroundColor),selectedAfterMask:lselAfter.maskComposite,selectedBlur:lsel.backdropFilter,selectedShadow:lsel.boxShadow,selectedBorderTop:lsel.borderTopWidth,selectedPaddingTop:lsel.paddingTop,selectedRadius:lsel.borderRadius,selectedBeforeContent:lselBefore.content,selectedBeforeBg:rgba(lselBefore.backgroundColor),selectedBeforeBlur:lselBefore.backdropFilter,selectedBeforeShadow:lselBefore.boxShadow,selectedBeforePointer:lselBefore.pointerEvents,idleShadow:lidle.boxShadow,idleBeforeContent:lidleBefore.content,linkHit,actHit},
                 right:{shellZ:rs.zIndex,shellBg:rgba(rs.backgroundColor),shellBlur:rs.backdropFilter,tabsBg:rt.backgroundColor,tabsTop:Math.round(rtEl.getBoundingClientRect().top),mainTop:Math.round(mainEl.getBoundingClientRect().top),bodyTop:Math.round(rbEl.getBoundingClientRect().top),bodyBg:rgba(rb.backgroundColor),bodyBlur:rb.backdropFilter,bodyShadow:rb.boxShadow,bodyRadius:rb.borderRadius},
             };
         })()`);
@@ -1159,7 +1294,20 @@ try {
         assert.equal(flatSides.left.innerBg[3], 0);
         assert.equal(flatSides.left.innerShadow, 'none');
         assert.equal(flatSides.left.innerRadius, '0px');
-        assert.equal(flatSides.left.selectedShadow, 'none');
+        assert.equal(flatSides.left.selectedHostZ, '2', 'Selected sidebar virtual row host must lift above sibling rows (z-index: 1) without overtaking sticky headers (z-index: 10)');
+        assert.equal(flatSides.left.idleHostZ, '1');
+        assert.equal(flatSides.left.selectedBorderTop, '0px', 'Selected sidebar row must drop 1px transparent border-top so inset shadows align with outer edge');
+        assert.equal(flatSides.left.selectedPaddingTop, '6px', 'Selected .py-1.5 row must compensate 1px top padding to preserve 35px row height');
+        assert.match(flatSides.left.selectedShadow, insetBorder, 'Selected sidebar row must share layered outer frame shadow with composer/bubble');
+        assert.notEqual(flatSides.left.selectedAfterContent, 'none', 'Layered selected sidebar row must render hollow outer ring via ::after');
+        assert.equal(flatSides.left.selectedAfterMask, 'exclude, exclude');
+        assert.notEqual(flatSides.left.selectedBeforeContent, 'none', 'Layered selected sidebar row must render inner raised card via ::before');
+        assert.notEqual(flatSides.left.selectedBeforeShadow, 'none', 'Layered selected sidebar row ::before must render raised inner highlight/shadow');
+        assert.equal(flatSides.left.selectedBeforePointer, 'none');
+        assert.equal(flatSides.left.idleShadow, 'none', 'Unselected sidebar rows must remain unaffected');
+        assert.equal(flatSides.left.idleBeforeContent, 'none');
+        assert.equal(flatSides.left.linkHit, 'test-left-selected-link', 'Selected sidebar row link must remain clickable above ::before inner card');
+        assert.equal(flatSides.left.actHit, 'test-left-selected-action', 'Selected sidebar row actions must remain clickable above ::before inner card');
         assert.equal(flatSides.right.shellZ, 'auto');
         assert.equal(flatSides.right.shellBg[3], 0);
         assert.equal(flatSides.right.shellBlur, 'none');
@@ -1182,17 +1330,127 @@ try {
         assert.equal(clearSides.right.bodyBg[3], 0);
         assert.equal(clearSides.right.bodyShadow, 'none');
 
+        // Selected sidebar row syncs colors, blur, layered/flat toggle & cover toggle when syncDialogSurfaces is enabled
+        await panel(`(()=>{
+            const set=(s,v)=>{const el=document.querySelector(s);el.value=v;el.dispatchEvent(new Event('input'));};
+            if(!document.querySelector('#composer-cover').checked)document.querySelector('#composer-cover').click();
+            if(!document.querySelector('#composer-layered').checked)document.querySelector('#composer-layered').click();
+            set('#composerOuterColor','#ff0000');
+            set('#composerInnerColor','#00ff00');
+            set('#wallpaper-composerOpacity',55);
+            set('#wallpaper-composerBlur',6);
+        })()`);
+        await until(async () => (await readSideSurfaces()).left.selectedBlur === 'blur(6px)', 'Selected sidebar row did not sync composer layered colors/blur');
+        const layeredSelected = await readSideSurfaces();
+        assert.equal(layeredSelected.left.selectedBg[3], 0);
+        approxRgba(layeredSelected.left.selectedAfterBg, [255, 0, 0, 140]);
+        assert.equal(layeredSelected.left.selectedAfterMask, 'exclude, exclude');
+        assert.equal(layeredSelected.left.selectedBlur, 'blur(6px)');
+        assert.match(layeredSelected.left.selectedShadow, insetBorder);
+        approxRgba(layeredSelected.left.selectedBeforeBg, [0, 255, 0, 140]);
+        assert.equal(layeredSelected.left.selectedBeforeBlur, 'none');
+        assert.notEqual(layeredSelected.left.selectedBeforeShadow, 'none');
+
+        await panel("document.querySelector('#composer-layered').click()");
+        await until(async () => (await readSideSurfaces()).left.selectedBeforeContent === 'none', 'Disabling composerLayered did not flatten selected sidebar row');
+        const flatSelected = await readSideSurfaces();
+        approxRgba(flatSelected.left.selectedBg, [0, 255, 0, 140]);
+        assert.equal(flatSelected.left.selectedBlur, 'blur(6px)');
+        assert.match(flatSelected.left.selectedShadow, insetBorder);
+        assert.equal(flatSelected.left.selectedBeforeContent, 'none');
+        assert.equal(flatSelected.left.selectedAfterContent, 'none');
+
+        await panel("document.querySelector('#composer-layered').click()");
+        await until(async () => (await readSideSurfaces()).left.selectedBeforeContent !== 'none', 'Re-enabling composerLayered did not restore selected sidebar row inner card');
+        await panel("document.querySelector('#composer-cover').click()");
+        await until(async () => (await readSideSurfaces()).left.selectedAfterBg[3] === 0 && (await readSideSurfaces()).left.selectedBlur === 'none', 'Disabling composerCover did not clear selected sidebar row fill/blur');
+        const uncoveredSelected = await readSideSurfaces();
+        assert.equal(uncoveredSelected.left.selectedBg[3], 0);
+        assert.equal(uncoveredSelected.left.selectedAfterBg[3], 0);
+        assert.equal(uncoveredSelected.left.selectedBeforeBg[3], 0);
+        assert.match(uncoveredSelected.left.selectedShadow, insetBorder);
+        assert.notEqual(uncoveredSelected.left.selectedBeforeShadow, 'none', 'Layered transparent selected sidebar row must retain inner glass rim/shadow');
+
+        // Turn off syncDialogSurfaces -> composer, bubble, and selectedRow become fully independent
+        await panel(`(()=>{
+            for (const sel of ['#selected-row-cover', '#bubble-cover']) {
+                const d = document.querySelector(sel).closest('details');
+                if (!d.open) d.querySelector('summary').click();
+            }
+            const syncBox = document.querySelector('[data-sync-dialog-surfaces="bubble"]');
+            if (syncBox.checked) syncBox.click();
+            const set = (s, v) => { const el = document.querySelector(s); el.value = v; el.dispatchEvent(new Event('input')); };
+            if (!document.querySelector('#composer-cover').checked) document.querySelector('#composer-cover').click();
+            if (!document.querySelector('#composer-layered').checked) document.querySelector('#composer-layered').click();
+            set('#composerOuterColor', '#ff0000');
+            set('#composerInnerColor', '#00ff00');
+            set('#wallpaper-composerOpacity', 50);
+            set('#wallpaper-composerBlur', 10);
+
+            if (!document.querySelector('#bubble-cover').checked) document.querySelector('#bubble-cover').click();
+            if (document.querySelector('#bubble-layered').checked) document.querySelector('#bubble-layered').click();
+            set('#bubbleOuterColor', '#0000ff');
+            set('#bubbleInnerColor', '#ffff00');
+            set('#wallpaper-bubbleOpacity', 60);
+            set('#wallpaper-bubbleBlur', 0);
+
+            if (!document.querySelector('#selected-row-cover').checked) document.querySelector('#selected-row-cover').click();
+            if (!document.querySelector('#selected-row-layered').checked) document.querySelector('#selected-row-layered').click();
+            set('#selectedRowOuterColor', '#ff00ff');
+            set('#selectedRowInnerColor', '#00ffff');
+            set('#wallpaper-selectedRowOpacity', 70);
+            set('#wallpaper-selectedRowBlur', 4);
+        })()`);
+        await until(async () => {
+            const h = await readHostSurfaces(client);
+            const side = await readSideSurfaces();
+            return h.homeComposer.outerBlur === 'blur(10px)' && h.regularBubble.shadow === 'none' && side.left.selectedBlur === 'blur(4px)';
+        }, 'Independent composer / bubble / selectedRow controls did not apply separately');
+        const splitThreeHost = await readHostSurfaces(client);
+        const splitThreeSide = await readSideSurfaces();
+        approxRgba(splitThreeHost.homeComposer.outerRingRgba, [255, 0, 0, 128]);
+        approxRgba(splitThreeHost.homeComposer.cardBgRgba, [0, 255, 0, 128]);
+        assert.equal(splitThreeHost.homeComposer.outerBlur, 'blur(10px)');
+        assert.equal(splitThreeHost.regularBubble.frameRingContent, 'none');
+        approxRgba(splitThreeHost.regularBubble.bgRgba, [255, 255, 0, 153]);
+        assert.equal(splitThreeHost.regularBubble.blur, 'none');
+        assert.match(splitThreeHost.viewport.maskImage, /linear-gradient/, 'Viewport fade mask must stay intact when composerBlur > 0 but bubbleBlur === 0');
+        approxRgba(splitThreeSide.left.selectedAfterBg, [255, 0, 255, 179]);
+        approxRgba(splitThreeSide.left.selectedBeforeBg, [0, 255, 255, 179]);
+        assert.equal(splitThreeSide.left.selectedBlur, 'blur(4px)');
+
+        const splitPreviewVars = await panel("(()=>{const s=document.querySelector('#preview').style;const get=k=>s.getPropertyValue(k).trim();return{cOut:get('--preview-composer-outer-bg'),bIn:get('--preview-bubble-inner'),sOut:get('--preview-selected-row-outer-bg')}})()");
+        assert.match(splitPreviewVars.cOut, /#ff0000.*50%/);
+        assert.match(splitPreviewVars.bIn, /#ffff00.*60%/);
+        assert.match(splitPreviewVars.sOut, /#ff00ff.*70%/);
+
+        // Increasing bubbleBlur while composerBlur stays independent removes viewport mask-image
+        await panel("(()=>{const b=document.querySelector('#wallpaper-bubbleBlur');b.value=8;b.dispatchEvent(new Event('input'));})()");
+        await until(async () => (await readHostSurfaces(client)).regularBubble.blur === 'blur(8px)', 'Independent bubbleBlur did not apply');
+        assert.equal((await readHostSurfaces(client)).viewport.maskImage, 'none');
+
+        // Re-enable sync from bubble card -> syncs bubble values to composer & selectedRow
+        await panel("document.querySelector('[data-sync-dialog-surfaces=\"bubble\"]').click()");
+        await until(async () => {
+            const h = await readHostSurfaces(client);
+            const side = await readSideSurfaces();
+            return h.homeComposer.cardShadow === 'none' && side.left.selectedBeforeContent === 'none' && side.left.selectedBlur === 'blur(8px)';
+        }, 'Re-enabling sync from bubble card did not synchronize composer & selectedRow');
+        assert.equal(await panel("document.querySelectorAll('[data-sync-dialog-surfaces]').length"), 3);
+        assert.equal(await panel("[...document.querySelectorAll('[data-sync-dialog-surfaces]')].every(el=>el.checked)"), true);
+
         // Default empty OuterColor/InnerColor under native Antigravity dark & light body[data-agy-theme] produces two-tone depth
         await panel(`(()=>{
             const d=document.querySelector('#composer-cover').closest('details');
             if(!d.open)d.querySelector('summary').click();
             if(!document.querySelector('#composer-cover').checked)document.querySelector('#composer-cover').click();
+            if(!document.querySelector('#composer-layered').checked)document.querySelector('#composer-layered').click();
             for(const key of ['composerOuterColor','composerInnerColor']){
                 const btn=document.querySelector('[data-reset-color="'+key+'"]');
                 if(!btn.disabled)btn.click();
             }
         })()`);
-        await until(async () => (await readHostSurfaces(client)).homeComposer.outerBgRgba[3] > 0 && (await readHostSurfaces(client)).homeComposer.cardBgRgba[3] > 0, 'Composer cover with default colors did not apply');
+        await until(async () => (await readHostSurfaces(client)).homeComposer.outerRingRgba[3] > 0 && (await readHostSurfaces(client)).homeComposer.cardBgRgba[3] > 0, 'Composer cover with default colors did not apply');
         const checkNativeThemes = await evaluate(`(()=>{
             const root=document.documentElement;
             const c=document.createElement('canvas');c.width=c.height=1;const g=c.getContext('2d');
@@ -1201,20 +1459,108 @@ try {
             document.body.classList.add('dark');
             root.style.setProperty('--onyx-frame','#424141');
             root.style.setProperty('--onyx-raised','#4a4949');
-            const darkOuter=rgba(getComputedStyle(document.querySelector('#home-composer')).backgroundColor);
+            const darkOuter=rgba(getComputedStyle(document.querySelector('#home-composer'),'::before').backgroundColor);
             const darkInner=rgba(getComputedStyle(document.querySelector('#home-composer-card')).backgroundColor);
+            const darkRowOuter=rgba(getComputedStyle(document.querySelector('#test-left-selected'),'::after').backgroundColor);
+            const darkRowInner=rgba(getComputedStyle(document.querySelector('#test-left-selected'),'::before').backgroundColor);
             document.body.classList.remove('dark');
             root.style.setProperty('--onyx-frame','#f1f3f6');
             root.style.setProperty('--onyx-raised','#ffffff');
-            const lightOuter=rgba(getComputedStyle(document.querySelector('#home-composer')).backgroundColor);
+            const lightOuter=rgba(getComputedStyle(document.querySelector('#home-composer'),'::before').backgroundColor);
             const lightInner=rgba(getComputedStyle(document.querySelector('#home-composer-card')).backgroundColor);
+            const lightRowOuter=rgba(getComputedStyle(document.querySelector('#test-left-selected'),'::after').backgroundColor);
+            const lightRowInner=rgba(getComputedStyle(document.querySelector('#test-left-selected'),'::before').backgroundColor);
             delete document.body.dataset.agyTheme;
             root.style.removeProperty('--onyx-frame');
             root.style.removeProperty('--onyx-raised');
-            return {darkOuter,darkInner,lightOuter,lightInner};
+            return {darkOuter,darkInner,darkRowOuter,darkRowInner,lightOuter,lightInner,lightRowOuter,lightRowInner};
         })()`);
         assert(checkNativeThemes.darkOuter[3] > 0 && checkNativeThemes.darkOuter[0] < checkNativeThemes.darkInner[0], `Dark default outer frame (${checkNativeThemes.darkOuter}) must be darker than raised inner card (${checkNativeThemes.darkInner})`);
         assert(checkNativeThemes.lightOuter[3] > 0 && checkNativeThemes.lightOuter[0] < checkNativeThemes.lightInner[0], `Light default outer frame (${checkNativeThemes.lightOuter}) must be softer than bright white inner card (${checkNativeThemes.lightInner})`);
+        assert.deepEqual(checkNativeThemes.darkRowOuter, checkNativeThemes.darkOuter, 'Dark selected sidebar row outer color must match composer outer frame');
+        assert.deepEqual(checkNativeThemes.darkRowInner, checkNativeThemes.darkInner, 'Dark selected sidebar row inner card color must match composer raised card');
+        assert.deepEqual(checkNativeThemes.lightRowOuter, checkNativeThemes.lightOuter, 'Light selected sidebar row outer color must match composer outer frame');
+        assert.deepEqual(checkNativeThemes.lightRowInner, checkNativeThemes.lightInner, 'Light selected sidebar row inner card color must match composer raised card');
+
+        // Sidebar conversation row title & hover/expanded action buttons must never overlap
+        const rowOverlapSetup = await evaluate(`(()=>{
+            const list = document.querySelector('[data-testid="conversation-list-sidebar"]');
+            const makeRow = (id, withButtons) => {
+                const host = document.createElement('div');
+                host.setAttribute('data-sidebar-row-id', id);
+                host.innerHTML = '<div class="agy-sidebar-row py-1.5" data-testid="conversation-row-sidebar" data-selected="false" id="' + id + '" style="position:relative;width:180px;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;justify-content:space-between;padding:5px 8px 6px 30px">' +
+                    '<a href="#' + id + '" style="position:absolute;inset:0"></a>' +
+                    '<div style="position:relative;display:flex;flex-grow:1;min-width:0;align-items:center;pointer-events:none"><div style="display:flex;flex-direction:column;min-width:0;width:100%"><span class="truncate" style="display:inline-block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Clone Uvrlite GitHub Repository Long Title</span></div></div>' +
+                    '<div style="position:relative;display:flex;align-items:center;flex-shrink:0;margin-left:8px;pointer-events:none"><div style="position:relative;display:flex;align-items:center">' +
+                        '<div class="agy-row-actions" style="position:absolute;top:0;bottom:0;right:-4px;padding-left:24px;display:flex;align-items:center;justify-content:flex-end;gap:2px;z-index:10">' +
+                            (withButtons ? '<button type="button" id="' + id + '-btn1" style="width:24px;height:24px;flex-shrink:0;pointer-events:auto">1</button><button type="button" id="' + id + '-btn2" style="width:24px;height:24px;flex-shrink:0;pointer-events:auto">2</button><button type="button" id="' + id + '-btn3" aria-expanded="false" style="width:24px;height:24px;flex-shrink:0;pointer-events:auto">3</button>' : '') +
+                        '</div>' +
+                        '<div class="agy-row-status" style="display:flex;align-items:center;width:16px;height:16px">1h</div>' +
+                    '</div></div>' +
+                '</div>';
+                list.append(host);
+                return host.firstElementChild.getBoundingClientRect().toJSON();
+            };
+            const fullRect = makeRow('test-row-overlap-full', true);
+            const emptyRect = makeRow('test-row-overlap-empty', false);
+            return { fullRect, emptyRect };
+        })()`);
+        const measureOverlapRow = id => evaluate(`(()=>{
+            const r = document.querySelector('#${id}');
+            const t = r.querySelector('.truncate');
+            const a = r.querySelector('.agy-row-actions');
+            const s = r.querySelector('.agy-row-status');
+            const b1 = r.querySelector('#${id}-btn1');
+            const b1Rect = b1?.getBoundingClientRect();
+            return {
+                rowH: r.getBoundingClientRect().height,
+                titleRight: t.getBoundingClientRect().right,
+                actionsLeft: a.getBoundingClientRect().left,
+                actionsRight: a.getBoundingClientRect().right,
+                actionsPos: getComputedStyle(a).position,
+                actionsHeight: getComputedStyle(a).height,
+                statusDisplay: getComputedStyle(s).display,
+                btn1Hit: b1Rect ? document.elementFromPoint(b1Rect.left + b1Rect.width / 2, b1Rect.top + b1Rect.height / 2)?.id : null,
+            };
+        })()`);
+        const idleRow = await measureOverlapRow('test-row-overlap-full');
+        assert.equal(idleRow.actionsPos, 'absolute');
+        assert.notEqual(idleRow.statusDisplay, 'none');
+
+        await client.command('Page.bringToFront');
+        await client.command('Input.dispatchMouseEvent', {
+            type: 'mouseMoved',
+            x: Math.round(rowOverlapSetup.fullRect.left + 40),
+            y: Math.round(rowOverlapSetup.fullRect.top + rowOverlapSetup.fullRect.height / 2),
+        });
+        const hoveredRow = await measureOverlapRow('test-row-overlap-full');
+        assert.equal(hoveredRow.actionsPos, 'relative', 'Hovered sidebar row actions must switch to in-flow layout');
+        assert.equal(hoveredRow.actionsHeight, '16px');
+        assert.equal(hoveredRow.statusDisplay, 'none', 'Hovered sidebar row status must hide when actions are shown');
+        assert.equal(hoveredRow.rowH, idleRow.rowH, 'Hovered sidebar row must preserve exact row height');
+        assert(hoveredRow.titleRight + 7 <= hoveredRow.actionsLeft, `Hovered title (${hoveredRow.titleRight}) must not overlap action buttons (${hoveredRow.actionsLeft})`);
+        assert.equal(hoveredRow.btn1Hit, 'test-row-overlap-full-btn1', 'In-flow action button must remain clickable above row link');
+
+        // Empty .agy-row-actions must not hide .agy-row-status on hover
+        await client.command('Input.dispatchMouseEvent', {
+            type: 'mouseMoved',
+            x: Math.round(rowOverlapSetup.emptyRect.left + 40),
+            y: Math.round(rowOverlapSetup.emptyRect.top + rowOverlapSetup.emptyRect.height / 2),
+        });
+        const emptyHoveredRow = await measureOverlapRow('test-row-overlap-empty');
+        assert.equal(emptyHoveredRow.actionsPos, 'absolute');
+        assert.notEqual(emptyHoveredRow.statusDisplay, 'none', 'Row with empty .agy-row-actions must keep .agy-row-status visible');
+
+        // Expanded menu button (aria-expanded="true") keeps actions in-flow even when pointer leaves row
+        await client.command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+        await evaluate("document.querySelector('#test-row-overlap-full-btn3').setAttribute('aria-expanded', 'true')");
+        const expandedRow = await measureOverlapRow('test-row-overlap-full');
+        assert.equal(expandedRow.actionsPos, 'relative', 'Expanded menu button must keep actions in-flow');
+        assert(expandedRow.titleRight + 7 <= expandedRow.actionsLeft, 'Title must not overlap actions while kebab menu is expanded');
+        await evaluate("document.querySelector('#test-row-overlap-full-btn3').setAttribute('aria-expanded', 'false')");
+        const restoredRow = await measureOverlapRow('test-row-overlap-full');
+        assert.equal(restoredRow.actionsPos, 'absolute');
+        assert.notEqual(restoredRow.statusDisplay, 'none');
     } finally {
         await evaluate(`(()=>{
             const shell=document.querySelector('.agy-inset-shell');
@@ -1252,10 +1598,13 @@ try {
     assert.equal(await panel2('window.__fetchLog.length'), 0, 'BroadcastChannel save sync must not trigger loopback requests on Panel 2');
     const savedMulti = JSON.parse(await readFile(join(data, 'settings.json'), 'utf8'));
     assert.equal(savedMulti.opacity, 47);
+    assert.equal(savedMulti.syncDialogSurfaces, true);
     assert.equal(savedMulti.composerBlur, 5);
-    assert.equal('bubbleBlur' in savedMulti, false);
+    assert.equal(savedMulti.bubbleBlur, 5);
+    assert.equal(savedMulti.selectedRowBlur, 5);
     assert.equal(savedMulti.composerInnerColor, '#336699');
-    assert.equal('bubbleInnerColor' in savedMulti, false);
+    assert.equal(savedMulti.bubbleInnerColor, '#336699');
+    assert.equal(savedMulti.selectedRowInnerColor, '#336699');
 
     // Panel 1 modify + discard -> BroadcastChannel -> Panel 2 (zero loopback)
     await panel("(()=>{const o=document.querySelector('#wallpaper-opacity');o.value=82;o.dispatchEvent(new Event('input'));})()");
@@ -1444,6 +1793,24 @@ try {
     assert.equal(await evaluate('window.__antigravityUiRenderer.revision'), RENDERER_REVISION);
     assert.equal(runtime.health.layout?.width, await evaluate('window.innerWidth'));
     assert.equal(runtime.health.layout?.height, await evaluate('window.innerHeight'));
+    // L3: Direct image swap without imageHash must still clear --ag-ui-image when css becomes empty
+    await installInHost({ enabled: true, css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'), image: settings.image, generation: activeGeneration + 2 });
+    await installInHost({ enabled: true, css: '', generation: activeGeneration + 3 });
+    assert.equal(await evaluate("window.testRoots.get(window.__antigravityUiRenderer ? document.body : document.documentElement) || true") &&
+        await evaluate("(() => { const img = document.querySelector('#antigravity-ui-background'); return img; })()"), null);
+    await runtime.update(true, false);
+    const directRootCheck = await evaluate(`(async () => {
+        const run = ${installWallpaper.toString()};
+        await run({ enabled: true, css: ${JSON.stringify(appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'))}, image: ${JSON.stringify(settings.image)}, generation: ${activeGeneration + 10} });
+        await run({ enabled: true, css: '', generation: ${activeGeneration + 11} });
+        await run({ enabled: true, css: ${JSON.stringify(appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'))}, image: '', generation: ${activeGeneration + 12} });
+        const layer = document.querySelector('#antigravity-ui-background');
+        const img = window.testRoots.get(layer).querySelector('.image');
+        return { varVal: img.style.getPropertyValue('--ag-ui-image'), aspect: layer.style.getPropertyValue('--ag-ui-image-aspect') };
+    })()`);
+    assert.equal(directRootCheck.varVal, '');
+    assert.equal(directRootCheck.aspect, '');
+    await runtime.update(true, false);
     const sashHits = await evaluate(`(()=>{
         const h=document.querySelector('[data-testid="side-panel-sash"]');
         const b=h.getBoundingClientRect();
@@ -1979,6 +2346,129 @@ try {
     assert.equal(stackingChecks.subagentSideBg, 'rgba(0, 0, 0, 0)', 'Subagent tab sidebar must stay transparent inside right side panel');
     assert.equal(stackingChecks.terminalSideBg, 'rgba(0, 0, 0, 0)', 'Terminals and tasks sidebar must stay transparent inside right side panel');
 
+    // Regression: title-menu-bar items, main-content-header content, and HOME_VIEW (.agy-home) greeting must rise above wallpaper (z-index: 1000) without trapping z-[8000] menus or elevating bar backgrounds
+    const headerAndHomeChecks = await evaluate(`(() => {
+        const inset = document.querySelector('.agy-inset-shell');
+        const mainBody = document.querySelector('[data-main-content-body]');
+        const cleanup = [];
+        try {
+            const titleBarWrap = document.createElement('div');
+            titleBarWrap.style.cssText = 'height:35px;';
+            const titleBar = document.createElement('div');
+            titleBar.setAttribute('data-testid', 'title-menu-bar');
+            titleBar.style.cssText = 'display:flex;align-items:center;height:100%;background:#222;';
+            const itemWrap = document.createElement('div');
+            itemWrap.className = 'relative';
+            itemWrap.style.cssText = 'position:relative;';
+            const itemBtn = document.createElement('button');
+            itemBtn.setAttribute('data-testid', 'title-menu-bar-item');
+            itemBtn.textContent = 'Antigravity';
+            itemBtn.style.cssText = 'height:28px;padding:0 10px;';
+            const itemDropdown = document.createElement('div');
+            itemDropdown.style.cssText = 'position:absolute;top:100%;left:0;width:160px;height:60px;z-index:8000;background:#333;';
+            itemWrap.append(itemBtn, itemDropdown);
+            titleBar.append(itemWrap);
+            titleBarWrap.append(titleBar);
+            document.body.prepend(titleBarWrap);
+            cleanup.push(() => titleBarWrap.remove());
+
+            const insetLeftCluster = document.createElement('div');
+            insetLeftCluster.className = 'absolute left-0 top-0';
+            insetLeftCluster.style.cssText = 'position:absolute;left:0;top:0;width:160px;height:40px;z-index:50;';
+            inset.append(insetLeftCluster);
+            cleanup.push(() => insetLeftCluster.remove());
+
+            const mainHeader = document.createElement('div');
+            mainHeader.setAttribute('data-main-content-header', 'true');
+            mainHeader.style.cssText = 'height:40px;background:#222;';
+            const mainHeaderRow = document.createElement('div');
+            mainHeaderRow.style.cssText = 'display:flex;align-items:center;height:100%;';
+            mainHeaderRow.textContent = 'antigravity-UI / session';
+            mainHeader.append(mainHeaderRow);
+            const holeHeader = document.createElement('div');
+            holeHeader.setAttribute('data-main-content-header', 'true');
+            holeHeader.setAttribute('data-has-browser-hole', 'true');
+            const holeHeaderRow = document.createElement('div');
+            holeHeader.append(holeHeaderRow);
+            mainBody.parentElement.insertBefore(mainHeader, mainBody);
+            mainBody.parentElement.insertBefore(holeHeader, mainBody);
+            cleanup.push(() => { mainHeader.remove(); holeHeader.remove(); });
+
+            const home = document.createElement('div');
+            home.className = 'agy-home';
+            home.style.cssText = 'width:100%;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+            const greeting = document.createElement('div');
+            greeting.setAttribute('data-testid', 'home-greeting');
+            const heading = document.createElement('h1');
+            heading.textContent = 'What shall we build?';
+            greeting.append(heading);
+            const composerWrap = document.createElement('div');
+            composerWrap.className = 'z-[1]';
+            composerWrap.innerHTML = '<div data-testid="agent-input-box"><div class="surface-composer"><div class="surface-composer-card"></div></div></div>';
+            home.append(greeting, composerWrap);
+            mainBody.prepend(home);
+            cleanup.push(() => home.remove());
+
+            const sideTabs = document.querySelector('#tabs');
+            const sideTabBtn = document.querySelector('#tab');
+            sideTabs.setAttribute('data-side-panel-strip', 'true');
+            const holeStrip = document.createElement('div');
+            holeStrip.setAttribute('data-side-panel-strip', 'true');
+            holeStrip.setAttribute('data-has-browser-hole', 'true');
+            const holeStripChild = document.createElement('div');
+            holeStrip.append(holeStripChild);
+            sideTabs.parentElement.insertBefore(holeStrip, sideTabs);
+            cleanup.push(() => {
+                sideTabs.removeAttribute('data-side-panel-strip');
+                holeStrip.remove();
+            });
+
+            const ddRect = itemDropdown.getBoundingClientRect();
+            const headingRect = heading.getBoundingClientRect();
+            const ddHit = document.elementFromPoint(Math.round(ddRect.left + 20), Math.round(ddRect.top + 15));
+            const headingHit = document.elementFromPoint(Math.round(headingRect.left + headingRect.width / 2), Math.round(headingRect.top + headingRect.height / 2));
+
+            return {
+                titleBarZ: getComputedStyle(titleBar).zIndex,
+                itemWrapZ: getComputedStyle(itemWrap).zIndex,
+                itemPos: getComputedStyle(itemBtn).position,
+                itemZ: getComputedStyle(itemBtn).zIndex,
+                dropdownAboveInsetCluster: ddHit === itemDropdown || itemDropdown.contains(ddHit),
+                mainHeaderZ: getComputedStyle(mainHeader).zIndex,
+                mainHeaderRowPos: getComputedStyle(mainHeaderRow).position,
+                mainHeaderRowZ: getComputedStyle(mainHeaderRow).zIndex,
+                holeHeaderRowZ: getComputedStyle(holeHeaderRow).zIndex,
+                sideStripZ: getComputedStyle(sideTabs).zIndex,
+                sideStripChildPos: getComputedStyle(sideTabBtn).position,
+                sideStripChildZ: getComputedStyle(sideTabBtn).zIndex,
+                holeStripChildZ: getComputedStyle(holeStripChild).zIndex,
+                homePos: getComputedStyle(home).position,
+                homeZ: getComputedStyle(home).zIndex,
+                homeComposerZ: getComputedStyle(composerWrap).zIndex,
+                headingHit: headingHit === heading || heading.contains(headingHit),
+            };
+        } finally {
+            while (cleanup.length) cleanup.pop()();
+        }
+    })()`);
+    assert.equal(headerAndHomeChecks.titleBarZ, 'auto', 'title-menu-bar container must stay below wallpaper so bg-sidebar does not paint an opaque bar');
+    assert.equal(headerAndHomeChecks.itemWrapZ, 'auto', 'title-menu-bar item wrapper must not create a stacking context that traps z-[8000] dropdowns');
+    assert.equal(headerAndHomeChecks.itemPos, 'relative');
+    assert.equal(headerAndHomeChecks.itemZ, '1001', 'title-menu-bar-item text must render above z-index 1000 wallpaper');
+    assert.equal(headerAndHomeChecks.dropdownAboveInsetCluster, true, 'title-menu-bar dropdown (z-8000) must paint above z-index 1003 inset controls');
+    assert.equal(headerAndHomeChecks.mainHeaderZ, 'auto', 'data-main-content-header container must stay below wallpaper to preserve browser-hole canvas layering');
+    assert.equal(headerAndHomeChecks.mainHeaderRowPos, 'relative');
+    assert.equal(headerAndHomeChecks.mainHeaderRowZ, '1001', 'data-main-content-header content must render above z-index 1000 wallpaper');
+    assert.equal(headerAndHomeChecks.holeHeaderRowZ, 'auto', 'browser-hole main-content-header must not be elevated');
+    assert.equal(headerAndHomeChecks.sideStripZ, 'auto', 'docked data-side-panel-strip container must stay below wallpaper to share wallpaper treatment and browser-hole canvas');
+    assert.equal(headerAndHomeChecks.sideStripChildPos, 'relative');
+    assert.equal(headerAndHomeChecks.sideStripChildZ, '1001', 'data-side-panel-strip tab items must render above z-index 1000 wallpaper');
+    assert.equal(headerAndHomeChecks.holeStripChildZ, 'auto', 'browser-hole side-panel-strip must not be elevated');
+    assert.equal(headerAndHomeChecks.homePos, 'relative');
+    assert.equal(headerAndHomeChecks.homeZ, '1001', 'HOME_VIEW (.agy-home) must render above z-index 1000 wallpaper');
+    assert.equal(headerAndHomeChecks.homeComposerZ, '1001');
+    assert.equal(headerAndHomeChecks.headingHit, true, 'HOME_VIEW center greeting text must be visible/hittable above wallpaper');
+
     // Regression: floating body > [data-overlay-scrollbar-track] on scrollable working-status blocks must stay clipped to autoscroll-viewport
     const floatingClipChecks = await evaluate(`(async () => {
         const mainBody = document.querySelector('[data-main-content-body]');
@@ -2135,7 +2625,8 @@ try {
     assert.equal(await store.reloadIfChanged(), true);
     assert.equal(store.settings.opacity, 64);
     assert.equal(store.settings.composerBlur, 7);
-    assert.equal('bubbleBlur' in store.settings, false);
+    assert.equal(store.settings.bubbleBlur, 7);
+    assert.equal(store.settings.selectedRowBlur, 7);
     assert.equal(await store.reloadIfChanged(), false);
 
     // Regression: persistence.cjs ASAR boot-switch install/idempotency/restore, shortcut backup/repair/restore & MISSING_DEVTOOLS_PORT UI flow
@@ -2194,6 +2685,13 @@ try {
     assert.match(patchedMainText, /\/\*antigravity-ui-persist\*\/[\s\S]*appendSwitch\('remote-debugging-port','0'\)/);
     assert.equal(patchedMainText.indexOf('/*antigravity-ui-persist*/') < patchedMainText.indexOf('whenReady'), true);
     assert.equal(persistence.installAsarPersist(fakeInstall).status, 'already-patched');
+    const badShaAsar = persistence.repackAsar(await readFile(fakeAsarPath), {
+        [persistence.PERSIST_ENTRY_PATH]: Buffer.from(JSON.stringify({ sha256: 'not-a-sha256' }), 'utf8'),
+    });
+    const savedPatchedAsar = await readFile(fakeAsarPath);
+    await writeFile(fakeAsarPath, badShaAsar);
+    assert.throws(() => persistence.installAsarPersist(fakeInstall), /持久化恢复记录无效/);
+    await writeFile(fakeAsarPath, savedPatchedAsar);
     assert.equal(persistence.inspectAsarPersist(fakeInstall).patched, true);
     assert.equal(persistence.restoreAsarPersist(fakeInstall).status, 'restored');
     assert.equal(Buffer.compare(await readFile(fakeAsarPath), origAsar), 0, 'Restored app.asar must match original bytes');
@@ -2334,7 +2832,433 @@ try {
         await new Promise(resolve => missSidecar.exitCode !== null ? resolve() : missSidecar.once('exit', resolve));
     }
 
-    console.log('Passed: 0.3.8 bound composer/dialog layered depth, flat leftSidebar/rightPanel (seam-free & aligned tab strip), independent flat Overview panel, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & unified top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), plus all Q1-Q5 rendering/save interactions.');
+    // Unit assertions for plugin iframe target filtering & surface metrics
+    assert.equal(validIframeTarget({
+        type: 'iframe', id: 'F1', parentId: 'H1',
+        url: 'plugin://swarm--swarm_board-14310/?token=abc',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/F1',
+    }, 9222, new Set(['H1'])), true);
+    assert.equal(validIframeTarget({
+        type: 'iframe', id: 'F2', parentId: 'H1',
+        url: 'blob:https://example.scf.usercontent.goog/uuid',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/F2',
+    }, 9222, new Set(['H1'])), true);
+    assert.equal(validIframeTarget({
+        type: 'iframe', id: 'SELF', parentId: 'H1',
+        url: 'plugin://antigravity-ui--panel-14300/?token=abc',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/SELF',
+    }, 9222, new Set(['H1'])), false, 'Must exclude antigravity-ui self panel');
+    assert.equal(validIframeTarget({
+        type: 'iframe', id: 'OTHER', parentId: 'H2',
+        url: 'plugin://swarm--swarm_board-14310/',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/OTHER',
+    }, 9222, new Set(['H1'])), false, 'Must reject iframe with unknown parentId');
+    assert.equal(validIframeTarget({
+        type: 'page', id: 'P1', parentId: 'H1',
+        url: 'http://127.0.0.1:1234/',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/P1',
+    }, 9222, new Set(['H1'])), false, 'Must reject non-iframe targets');
+    assert.deepEqual(computePluginSurfaceMetrics(30, 10), { alpha: 30, blur: 10, cardAlpha: 71, stickyAlpha: 20, stickyBlur: 10 });
+    assert.deepEqual(computePluginSurfaceMetrics(0, 0), { alpha: 0, blur: 0, cardAlpha: 58, stickyAlpha: 12, stickyBlur: 8 });
+    assert.deepEqual(computePluginSurfaceMetrics(100, 0), { alpha: 100, blur: 0, cardAlpha: 100, stickyAlpha: 40, stickyBlur: 8 });
+
+    // End-to-end real Chromium OOPIF right-sidebar plugin compatibility tests (Sidecar UI, MCP App, custom vars, sticky bars, light-in-dark, exclusions, live updates, lossless restore)
+    const pluginServer = createServer((req, res) => {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        if (req.url === '/mcp-swarm') {
+            res.end(`<!doctype html><html data-theme="dark" style="color-scheme:dark;--color-background-primary:#3c3b3b;--color-background-secondary:rgb(69,68,68)"><head><style>
+                html,body{margin:0;height:100%;background:var(--color-background-primary);color:#fff}
+                .header{background:var(--color-background-primary);padding:10px}
+                .toolbar{position:sticky;top:0;z-index:9;background:var(--color-background-primary);padding:8px}
+                .o2-card{background:var(--color-background-secondary);padding:10px;border-radius:8px}
+                .b-pri{background:rgb(106,159,203);color:#fff;border:0;padding:4px 8px}
+                .composer{background:var(--color-background-primary);padding:8px}
+                #gif-modal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.48)}
+                .gif-modal-body{background:var(--color-background-primary);padding:12px}
+            </style></head><body>
+                <header class="header">DS-Swarm</header>
+                <div class="toolbar">Search</div>
+                <div id="feed"><div class="o2-card">Goal card</div><button class="b-pri">Send</button></div>
+                <footer class="composer">Footer</footer>
+                <div id="gif-modal"><div class="gif-modal-body">Modal content</div></div>
+            </body></html>`);
+            return;
+        }
+        if (req.url === '/pulse-sidecar') {
+            res.end(`<!doctype html><html data-pulse-theme="dark" style="--pulse-background:rgb(60 59 59);--pulse-card:rgb(70 69 69)"><head><style>
+                body:not(.standalone){margin:0;background:var(--pulse-background) !important;color:#fff !important}
+                main.widget{background:var(--pulse-background);min-height:100vh}
+                article.detail-card{position:absolute;top:40px;left:10px;background:var(--pulse-card);padding:8px}
+                .swarm-toolbar{position:sticky;top:0;background:var(--pulse-background);box-shadow:0 0 0 100vmax var(--pulse-background);padding:6px}
+            </style></head><body>
+                <main class="widget"><div class="swarm-toolbar">Sticky bar</div><article class="detail-card">Metrics</article></main>
+            </body></html>`);
+            return;
+        }
+        if (req.url === '/light-plugin') {
+            res.end(`<!doctype html><html style="color-scheme:light"><head><style>
+                html,body{margin:0;height:100%;background:rgb(247,247,248);color:#1d1f21}
+                .panel-wrap{background:rgb(247,247,248);padding:8px}
+            </style></head><body><div class="panel-wrap">Light plugin</div></body></html>`);
+            return;
+        }
+        if (req.url === '/native-plugin') {
+            res.end(`<!doctype html><html data-ag-ui-panel-native="true"><head><style>
+                html,body{margin:0;height:100%;background:rgb(30,30,30);color:#fff}
+            </style></head><body><div>Self-managed plugin</div></body></html>`);
+            return;
+        }
+        res.end(`<!doctype html><html style="color-scheme:dark"><head><style>
+            html,body{margin:0;height:100%;background:rgb(60,59,59);color:#fff}
+        </style></head><body><div>Excluded plugin</div></body></html>`);
+    });
+    await new Promise(resolve => pluginServer.listen(0, 'localhost', resolve));
+    const pluginOrigin = 'http://localhost:' + pluginServer.address().port;
+
+    let pluginHostClient;
+    let mcpClient;
+    let pulseClient;
+    let lightClient;
+    let nativeClient;
+    let fullPageClient;
+    let inlineClient;
+    let pluginRuntime;
+    const pluginHostServer = createServer((req, res) => {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end(`<!doctype html><html class="dark" style="color-scheme:dark"><head><style>
+            html,body{margin:0;height:100%;background:#18191c}
+            .agy-inset-shell{position:absolute;inset:35px 0 0}
+            .agy-sheet{position:relative;height:100%;display:flex}
+            .outline-none{display:flex;width:100%;height:100%}
+            .main{flex:1;position:relative;height:100%}
+            .pane{width:420px;height:100%;position:relative}
+            .pointer-events-none.overflow-clip{position:absolute;inset:0;pointer-events:none;overflow:clip;z-index:20}
+        </style><script>
+            window.electronNative={setTitleBarOverlay:async ()=>{}};
+            window.nativeStorage={};
+        </script></head><body>
+            <div class="agy-inset-shell"><div class="agy-sheet" data-sheet-inset="true">
+                <div class="outline-none" data-split-root="true">
+                    <div data-split-fill-edge="right" style="flex:1;display:flex">
+                        <div class="main" data-main-content-body="true">
+                            <div data-testid="autoscroll-viewport">
+                                <iframe id="inline-chat-iframe" src="${pluginOrigin}/inline-chat" style="width:200px;height:100px;border:0"></iframe>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pane">
+                        <div class="h-full w-full" style="position:absolute;inset:0">
+                            <div class="browser-hole-ancestor" style="height:100%;display:flex;flex-direction:column">
+                                <div data-side-panel-strip="true" style="height:40px"></div>
+                                <div data-side-panel-body="true" style="flex:1;width:420px;height:600px"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="absolute inset-0 pointer-events-none overflow-clip z-20">
+                    <div id="mcp-slot" data-testid="mcp-app-frame-slot" data-frame-key="cascade:1|mcp_app__ds-swarm" data-visible="true" style="position:absolute;right:0;top:40px;width:420px;height:600px;background:rgb(40,40,40)">
+                        <div class="h-full w-full"><div><iframe id="mcp-iframe" data-testid="mcp-app-view" src="${pluginOrigin}/mcp-swarm" style="width:100%;height:100%;border:0"></iframe></div></div>
+                    </div>
+                    <div id="pulse-slot" data-testid="sidecar-iframe-slot" data-sidecar-id="antigravity-pulse/panel" data-visible="false" style="position:absolute;left:0;top:0;width:0;height:0">
+                        <div><div><iframe id="pulse-iframe" data-testid="sidecar-iframe" src="${pluginOrigin}/pulse-sidecar" style="width:100%;height:100%;border:0"></iframe></div></div>
+                    </div>
+                    <div id="light-slot" data-testid="sidecar-iframe-slot" data-sidecar-id="swarm/swarm_board" data-visible="false" style="position:absolute;left:0;top:0;width:0;height:0">
+                        <div><div><iframe id="light-iframe" data-testid="sidecar-iframe" src="${pluginOrigin}/light-plugin" style="width:100%;height:100%;border:0"></iframe></div></div>
+                    </div>
+                    <div id="native-slot" data-testid="sidecar-iframe-slot" data-sidecar-id="thirdparty/native" data-visible="false" style="position:absolute;left:0;top:0;width:0;height:0">
+                        <div><div><iframe id="native-iframe" data-testid="sidecar-iframe" src="${pluginOrigin}/native-plugin" style="width:100%;height:100%;border:0"></iframe></div></div>
+                    </div>
+                    <div id="fullpage-slot" data-testid="sidecar-iframe-slot" data-sidecar-id="thirdparty/fullpage" data-visible="true" style="position:absolute;left:0;top:0;width:500px;height:600px">
+                        <div><div><iframe id="fullpage-iframe" data-testid="sidecar-iframe" src="${pluginOrigin}/full-page" style="width:100%;height:100%;border:0"></iframe></div></div>
+                    </div>
+                </div>
+            </div></div>
+        </body></html>`);
+    });
+    await new Promise(resolve => pluginHostServer.listen(0, '127.0.0.1', resolve));
+    const pluginHostPort = String(pluginHostServer.address().port);
+    const pluginHostUrl = 'http://127.0.0.1:' + pluginHostPort + '/';
+    let pluginHostTargetId = '';
+    try {
+        const createdHost = await fetch('http://127.0.0.1:' + port + '/json/new?' + encodeURIComponent(pluginHostUrl), { method: 'PUT' }).then(r => r.json());
+        pluginHostTargetId = createdHost.id;
+        pluginHostClient = new Connection(createdHost.webSocketDebuggerUrl);
+        await pluginHostClient.open();
+
+        // Wait until all 6 cross-origin OOPIFs appear in /json/list under this host
+        let childTargets = [];
+        await until(async () => {
+            const list = await fetch('http://127.0.0.1:' + port + '/json/list').then(r => r.json());
+            childTargets = list.filter(t => t.type === 'iframe' && t.parentId === pluginHostTargetId);
+            return childTargets.length >= 6;
+        }, 'Cross-origin plugin OOPIF targets did not appear');
+
+        const openOopif = async pathSuffix => {
+            const target = childTargets.find(t => t.url.endsWith(pathSuffix));
+            assert.ok(target, 'Missing OOPIF target for ' + pathSuffix);
+            const conn = new Connection(target.webSocketDebuggerUrl);
+            await conn.open();
+            return conn;
+        };
+        mcpClient = await openOopif('/mcp-swarm');
+        pulseClient = await openOopif('/pulse-sidecar');
+        lightClient = await openOopif('/light-plugin');
+        nativeClient = await openOopif('/native-plugin');
+        fullPageClient = await openOopif('/full-page');
+        inlineClient = await openOopif('/inline-chat');
+
+        // Wait for inner documents to finish parsing
+        for (const conn of [mcpClient, pulseClient, lightClient, nativeClient, fullPageClient, inlineClient]) {
+            await until(() => evalOn(conn, 'document.readyState === "complete" && Boolean(document.body)', 'iframe ready'), 'Plugin iframe did not load');
+        }
+
+        let currentPluginState = {
+            enabled: true,
+            css: appearance.wallpaperStyle(settings, 'var(--ag-ui-image)'),
+            image: settings.image,
+            imageHash: expectedImageHash,
+            surfaces: appearance.surfaceConfig(appearance.normalize({ sidebarCover: true, sidebarOpacity: 30, sidebarBlur: 10 })),
+        };
+        pluginRuntime = new WallpaperRuntime(profile, () => currentPluginState, async () => currentPluginState.enabled, pluginHostPort);
+        await pluginRuntime.update(true, true);
+
+        // 1. Verify host slot & iframe transparency for MCP App
+        const hostSlotCheck = await evalOn(pluginHostClient, `(() => {
+            const slot = document.querySelector('#mcp-slot');
+            const ifr = document.querySelector('#mcp-iframe');
+            const lightIfr = document.querySelector('#light-iframe');
+            return {
+                slotBg: getComputedStyle(slot).backgroundColor,
+                ifrBg: getComputedStyle(ifr).backgroundColor,
+                lightSchemeAttr: lightIfr.getAttribute('data-ag-ui-iframe-scheme'),
+                lightComputedScheme: getComputedStyle(lightIfr).colorScheme,
+            };
+        })()`, 'host slot check');
+        assert.equal(hostSlotCheck.slotBg, 'rgba(0, 0, 0, 0)', 'MCP App overlay slot must be transparent');
+        assert.equal(hostSlotCheck.ifrBg, 'rgba(0, 0, 0, 0)', 'MCP App iframe must be transparent');
+        assert.equal(hostSlotCheck.lightSchemeAttr, 'light', 'Light-only plugin iframe must align host color-scheme attribute to light');
+        assert.equal(hostSlotCheck.lightComputedScheme, 'light', 'Host iframe computed color-scheme must align to light');
+
+        // 2. Verify Scenario A: MCP App (DS-Swarm pattern)
+        const mcpState = await evalOn(mcpClient, `(() => ({
+            active: document.documentElement.getAttribute('data-ag-ui-panel-active'),
+            htmlBg: getComputedStyle(document.documentElement).backgroundColor,
+            bodyBg: getComputedStyle(document.body).backgroundColor,
+            headerBg: getComputedStyle(document.querySelector('.header')).backgroundColor,
+            footerBg: getComputedStyle(document.querySelector('.composer')).backgroundColor,
+            toolbarBg: getComputedStyle(document.querySelector('.toolbar')).backgroundColor,
+            toolbarBlur: getComputedStyle(document.querySelector('.toolbar')).backdropFilter,
+            cardBg: getComputedStyle(document.querySelector('.o2-card')).backgroundColor,
+            cardAttr: document.querySelector('.o2-card').getAttribute('data-ag-ui-surface'),
+            btnBg: getComputedStyle(document.querySelector('.b-pri')).backgroundColor,
+            modalBodyBg: getComputedStyle(document.querySelector('.gif-modal-body')).backgroundColor,
+            modalBodyAttr: document.querySelector('.gif-modal-body').getAttribute('data-ag-ui-surface'),
+            scans: window.__antigravityUiPluginSurface?.diagnostics?.scans,
+        }))()`, 'mcp state');
+        assert.equal(mcpState.active, 'true');
+        assert.equal(mcpState.htmlBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(mcpState.bodyBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(mcpState.headerBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(mcpState.footerBg, 'rgba(0, 0, 0, 0)');
+        assert.match(mcpState.toolbarBlur, /blur\(10px\)/, 'Sticky toolbar must get frosted backdrop blur');
+        assert.notEqual(mcpState.toolbarBg, 'rgb(60, 59, 59)', 'Sticky toolbar must become translucent');
+        assert.equal(mcpState.cardAttr, 'card', 'Neutral secondary surface must be classified as card');
+        assert.notEqual(mcpState.cardBg, 'rgb(69, 68, 68)', 'Card surface must become translucent');
+        assert.equal(mcpState.btnBg, 'rgb(106, 159, 203)', 'Saturated primary button must remain untouched');
+        assert.equal(mcpState.modalBodyBg, 'rgb(60, 59, 59)', 'Modal dialog interior must remain untouched');
+        assert.equal(mcpState.modalBodyAttr, null, 'Modal subtree must be skipped');
+
+        // 3. Verify dynamic DOM addition inside MCP App is classified incrementally
+        await evalOn(mcpClient, `(() => {
+            const card = document.createElement('div');
+            card.id = 'late-card';
+            card.className = 'o2-card';
+            card.textContent = 'Dynamic card';
+            const bar = document.createElement('div');
+            bar.id = 'late-bar';
+            bar.className = 'header';
+            bar.textContent = 'Dynamic bar';
+            document.querySelector('#feed').append(card, bar);
+        })()`, 'append dynamic nodes');
+        await until(() => evalOn(mcpClient, 'document.querySelector("#late-card")?.getAttribute("data-ag-ui-surface") === "card" && document.querySelector("#late-bar")?.getAttribute("data-ag-ui-surface") === "canvas"', 'dynamic node classification'), 'Dynamic plugin nodes were not classified');
+
+        // 4. Verify live preview slider update uses fast path (no extra full rescan) & passive heartbeat skips redundant plugin evals
+        const scansBefore = await evalOn(mcpClient, 'window.__antigravityUiPluginSurface?.diagnostics?.scans', 'scans before');
+        let passivePluginEvals = 0;
+        const origEvalPlugin = pluginRuntime.evaluatePluginPanel.bind(pluginRuntime);
+        pluginRuntime.evaluatePluginPanel = async (...args) => {
+            passivePluginEvals++;
+            return origEvalPlugin(...args);
+        };
+        try {
+            await pluginRuntime.update(false, false);
+        } finally {
+            pluginRuntime.evaluatePluginPanel = origEvalPlugin;
+        }
+        assert.equal(passivePluginEvals, 0, 'Steady-state passive heartbeat within lease window must skip redundant plugin iframe evals');
+        currentPluginState = {
+            ...currentPluginState,
+            surfaces: appearance.surfaceConfig(appearance.normalize({ sidebarCover: true, sidebarOpacity: 60, sidebarBlur: 16 })),
+        };
+        await pluginRuntime.update(true, false);
+        const afterLive = await evalOn(mcpClient, `(() => ({
+            alpha: getComputedStyle(document.documentElement).getPropertyValue('--ag-ui-sidebar-alpha').trim(),
+            cardAlpha: getComputedStyle(document.documentElement).getPropertyValue('--ag-ui-card-alpha').trim(),
+            toolbarBlur: getComputedStyle(document.querySelector('.toolbar')).backdropFilter,
+            scans: window.__antigravityUiPluginSurface?.diagnostics?.scans,
+        }))()`, 'live slider update');
+        assert.equal(afterLive.alpha, '60%');
+        assert.equal(afterLive.cardAlpha, '83%');
+        assert.match(afterLive.toolbarBlur, /blur\(16px\)/);
+        assert.equal(afterLive.scans, scansBefore, 'Live opacity/blur drag must not trigger unnecessary full DOM rescans');
+
+        // 5. Verify Scenario B: Antigrative Dashboard (!important body + normal color-scheme + absolute detail-card + 100vmax shadow sticky bar)
+        const pulseState = await evalOn(pulseClient, `(() => ({
+            active: document.documentElement.getAttribute('data-ag-ui-panel-active'),
+            scheme: getComputedStyle(document.documentElement).colorScheme,
+            bodyBg: getComputedStyle(document.body).backgroundColor,
+            widgetBg: getComputedStyle(document.querySelector('main.widget')).backgroundColor,
+            cardAttr: document.querySelector('article.detail-card').getAttribute('data-ag-ui-surface'),
+            stickyAttr: document.querySelector('.swarm-toolbar').getAttribute('data-ag-ui-surface'),
+        }))()`, 'pulse sidecar state');
+        assert.equal(pulseState.active, 'true');
+        assert.equal(pulseState.scheme, 'dark', 'normal color-scheme on dark plugin must align to dark');
+        assert.equal(pulseState.bodyBg, 'rgba(0, 0, 0, 0)', '!important body background must be overridden');
+        assert.equal(pulseState.widgetBg, 'rgba(0, 0, 0, 0)', 'main.widget canvas wrapper must become transparent');
+        assert.equal(pulseState.cardAttr, 'card', 'absolute detail-card must be classified as card');
+        assert.equal(pulseState.stickyAttr, 'sticky', 'sticky toolbar must be classified as sticky');
+
+        // Show pulse slot so 100vmax shadow resolves > 100px and triggers resize rescan
+        await evalOn(pluginHostClient, `(() => {
+            const s = document.querySelector('#pulse-slot');
+            s.setAttribute('data-visible', 'true');
+            s.style.cssText = 'position:absolute;right:0;top:40px;width:420px;height:600px';
+        })()`, 'show pulse slot');
+        await until(() => evalOn(pulseClient, 'getComputedStyle(document.querySelector(".swarm-toolbar")).boxShadow === "none"', 'clear 100vmax shadow'), '100vmax sticky box-shadow was not cleared after becoming visible');
+
+        // M3: Body class/attribute theme change inside plugin OOPIF triggers fullRescan and updates --ag-ui-orig-bg
+        await evalOn(pulseClient, `(() => {
+            document.documentElement.style.setProperty('--pulse-background', 'rgb(36, 36, 36)');
+            document.documentElement.style.setProperty('--pulse-card', 'rgb(52, 52, 52)');
+            document.body.classList.add('alt-theme');
+        })()`, 'pulse body theme change');
+        await until(() => evalOn(pulseClient, 'document.querySelector("article.detail-card")?.style.getPropertyValue("--ag-ui-orig-bg") === "rgb(52, 52, 52)"', 'pulse body theme rescan'), 'Body class theme change did not trigger plugin rescan');
+
+        // H1: Concurrent stale known frameId (OOPIF replacement) + new unmarked iframe in same cycle must resolve both accurately
+        await evalOn(pluginHostClient, `(() => {
+            const mcpIfr = document.querySelector('#mcp-iframe');
+            mcpIfr.setAttribute('data-ag-ui-frame-id', 'STALE_FRAME_ID_999');
+            const extraSlot = document.createElement('div');
+            extraSlot.id = 'extra-right-slot';
+            extraSlot.setAttribute('data-testid', 'sidecar-iframe-slot');
+            extraSlot.setAttribute('data-sidecar-id', 'thirdparty/extra');
+            extraSlot.setAttribute('data-visible', 'true');
+            extraSlot.style.cssText = 'position:absolute;right:0;top:40px;width:420px;height:600px';
+            extraSlot.innerHTML = '<iframe id="extra-right-iframe" src="${pluginOrigin}/light-plugin" style="width:100%;height:100%;border:0"></iframe>';
+            document.querySelector('.pointer-events-none.overflow-clip').append(extraSlot);
+        })()`, 'inject stale frameId + new unmarked slot');
+        let extraClient;
+        try {
+            await until(async () => {
+                const list = await fetch('http://127.0.0.1:' + port + '/json/list').then(r => r.json());
+                const created = list.filter(t => t.type === 'iframe' && t.parentId === pluginHostTargetId);
+                return created.length >= 7;
+            }, 'Extra plugin OOPIF did not appear');
+            await pluginRuntime.update(true, true);
+            const mcpResolvedId = await evalOn(pluginHostClient, 'document.querySelector("#mcp-iframe").getAttribute("data-ag-ui-frame-id")', 'mcp re-resolved frameId');
+            assert.notEqual(mcpResolvedId, 'STALE_FRAME_ID_999', 'Stale frameId must be re-resolved even when an unmarked slot appears concurrently');
+            const hostConn = [...pluginRuntime.connections.values()].find(c => !c.nonHost && c.rightPanelFrameIds.size > 0);
+            assert.ok(hostConn.rightPanelFrameIds.has(mcpResolvedId), 'Re-resolved right-panel frameId must stay in rightPanelFrameIds');
+            const extraResolvedId = await evalOn(pluginHostClient, 'document.querySelector("#extra-right-iframe").getAttribute("data-ag-ui-frame-id")', 'extra resolved frameId');
+            assert.ok(hostConn.rightPanelFrameIds.has(extraResolvedId), 'Concurrent new right-panel iframe must also be classified as rightPanel');
+        } finally {
+            await evalOn(pluginHostClient, 'document.querySelector("#extra-right-slot")?.remove()', 'cleanup extra slot');
+            await pluginRuntime.update(true, true);
+        }
+
+        // M2: Host renderer dispose() clears iframe attributes; next update resets scheme cache and re-applies data-ag-ui-iframe-scheme
+        await evalOn(pluginHostClient, 'window.__antigravityUiRenderer.dispose()', 'simulate host renderer dispose');
+        assert.equal(await evalOn(pluginHostClient, 'document.querySelector("#light-iframe").getAttribute("data-ag-ui-iframe-scheme")', 'scheme cleared by dispose'), null);
+        await pluginRuntime.update(true, false);
+        assert.equal(await evalOn(pluginHostClient, 'document.querySelector("#light-iframe").getAttribute("data-ag-ui-iframe-scheme")', 'scheme re-applied after rebuild'), 'light');
+
+        // 6. Verify Scenario D: excluded iframes (native opt-out, full-page slot, inline chat iframe) remain untouched
+        for (const [label, conn] of [['native opt-out', nativeClient], ['full-page slot', fullPageClient], ['inline chat iframe', inlineClient]]) {
+            const check = await evalOn(conn, '({ active: document.documentElement.getAttribute("data-ag-ui-panel-active"), bodyBg: getComputedStyle(document.body).backgroundColor })', label);
+            assert.equal(check.active, null, label + ' must not be adapted');
+            assert.notEqual(check.bodyBg, 'rgba(0, 0, 0, 0)', label + ' must preserve native opaque background');
+        }
+
+        // 7. Verify Scenario E (M1): sidebarOpacity === 100 disposes cleanly, closes pluginConnections & skips passive heartbeats
+        currentPluginState = {
+            ...currentPluginState,
+            surfaces: appearance.surfaceConfig(appearance.normalize({ sidebarCover: true, sidebarOpacity: 100, sidebarBlur: 0 })),
+        };
+        await pluginRuntime.update(true, false);
+        assert.equal(pluginRuntime.pluginConnections.size, 0, 'Opaque sidebarOpacity === 100 must close and release pluginConnections');
+        let evalCountAt100 = 0;
+        pluginRuntime.evaluatePluginPanel = async (...args) => { evalCountAt100++; return origEvalPlugin(...args); };
+        try {
+            await pluginRuntime.update(false, false);
+        } finally {
+            pluginRuntime.evaluatePluginPanel = origEvalPlugin;
+        }
+        assert.equal(evalCountAt100, 0, 'Passive heartbeat at sidebarOpacity === 100 must send zero plugin evals');
+        const restoredAt100 = await evalOn(mcpClient, `(() => ({
+            active: document.documentElement.getAttribute('data-ag-ui-panel-active'),
+            bodyBg: getComputedStyle(document.body).backgroundColor,
+            headerBg: getComputedStyle(document.querySelector('.header')).backgroundColor,
+            cardBg: getComputedStyle(document.querySelector('.o2-card')).backgroundColor,
+            markedCount: document.querySelectorAll('[data-ag-ui-surface]').length,
+        }))()`, 'restored at 100%');
+        assert.equal(restoredAt100.active, null);
+        assert.equal(restoredAt100.bodyBg, 'rgb(60, 59, 59)');
+        assert.equal(restoredAt100.headerBg, 'rgb(60, 59, 59)');
+        assert.equal(restoredAt100.cardBg, 'rgb(69, 68, 68)');
+        assert.equal(restoredAt100.markedCount, 0);
+        const lightSchemeCleared = await evalOn(pluginHostClient, 'document.querySelector("#light-iframe").getAttribute("data-ag-ui-iframe-scheme")', 'scheme attr cleared');
+        assert.equal(lightSchemeCleared, null);
+
+        // 8. Re-enable with sidebarCover: false (0% alpha) then disable master switch (enabled: false) -> lossless restore & throttled lease renewal
+        currentPluginState = {
+            ...currentPluginState,
+            surfaces: appearance.surfaceConfig(appearance.normalize({ sidebarCover: false, sidebarOpacity: 80, sidebarBlur: 12 })),
+        };
+        await pluginRuntime.update(true, false);
+        const atZeroCover = await evalOn(mcpClient, '({ bodyBg: getComputedStyle(document.body).backgroundColor, alpha: getComputedStyle(document.documentElement).getPropertyValue("--ag-ui-sidebar-alpha").trim() })', 'sidebarCover false');
+        assert.equal(atZeroCover.bodyBg, 'rgba(0, 0, 0, 0)');
+        assert.equal(atZeroCover.alpha, '0%');
+
+        currentPluginState = { enabled: false, css: '', image: '', imageHash: '', surfaces: {} };
+        await pluginRuntime.update(true, false);
+        let disabledPassiveEvals = 0;
+        pluginRuntime.evaluatePluginPanel = async (...args) => { disabledPassiveEvals++; return origEvalPlugin(...args); };
+        try {
+            await pluginRuntime.update(false, false);
+        } finally {
+            pluginRuntime.evaluatePluginPanel = origEvalPlugin;
+        }
+        assert.equal(disabledPassiveEvals, 0, 'Passive heartbeat within 3s while disabled must throttle placeholder lease renewal');
+        const afterDisable = await evalOn(pulseClient, '({ active: document.documentElement.getAttribute("data-ag-ui-panel-active"), bodyBg: getComputedStyle(document.body).backgroundColor })', 'pulse after disable');
+        assert.equal(afterDisable.active, null);
+        assert.equal(afterDisable.bodyBg, 'rgb(36, 36, 36)');
+    } finally {
+        await pluginRuntime?.stop();
+        mcpClient?.close();
+        pulseClient?.close();
+        lightClient?.close();
+        nativeClient?.close();
+        fullPageClient?.close();
+        inlineClient?.close();
+        pluginHostClient?.close();
+        if (pluginHostTargetId) {
+            await fetch('http://127.0.0.1:' + port + '/json/close/' + pluginHostTargetId).catch(() => {});
+        }
+        pluginHostServer.close();
+        pluginServer.close();
+    }
+
+    console.log('Passed: 0.3.8 bound composer/dialog layered depth, flat leftSidebar/rightPanel (seam-free & aligned tab strip), independent flat Overview panel, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & unified top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), universal right-sidebar plugin panel OOPIF compatibility, plus all Q1-Q5 rendering/save interactions.');
     await Promise.race([client.command('Browser.close'), delay(300)]);
 } finally {
     client?.close();
@@ -2350,5 +3274,5 @@ try {
     server.close();
     embedServer.close();
     await delay(500);
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
 }

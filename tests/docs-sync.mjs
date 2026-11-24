@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RENDERER_VERSION, RENDERER_REVISION } from '../sidecars/panel/renderer.mjs';
+import { installPluginPanelSurface, RENDERER_VERSION, RENDERER_REVISION } from '../sidecars/panel/renderer.mjs';
 import { RUNTIME_ROOTS, REQUIRED_RUNTIME_FILES } from '../sidecars/panel/archive.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +81,9 @@ function collectRuntimeSourceFiles() {
         readme.includes(`version = ${RENDERER_VERSION} / revision = ${RENDERER_REVISION}`),
         `README.md renderer version/revision is out of sync with renderer.mjs (${RENDERER_VERSION} / ${RENDERER_REVISION})`,
     );
+    const pluginSurfaceMeta = await installPluginPanelSurface({ __inspectHelpers: true });
+    assert.equal(pluginSurfaceMeta.version, RENDERER_VERSION, 'installPluginPanelSurface version must match RENDERER_VERSION');
+    assert.equal(pluginSurfaceMeta.revision, RENDERER_REVISION, 'installPluginPanelSurface revision must match RENDERER_REVISION');
 }
 
 // 2. 运行时文件清单同步

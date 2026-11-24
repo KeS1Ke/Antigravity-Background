@@ -1,27 +1,83 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { installWallpaper, RENDERER_VERSION, RENDERER_REVISION } from './renderer.mjs';
+import { installWallpaper, installPluginPanelSurface, RENDERER_VERSION, RENDERER_REVISION } from './renderer.mjs';
 import { randomUUID } from 'node:crypto';
 
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
-const INSTALL_WALLPAPER_SOURCE = installWallpaper.toString();
+let cachedInstallWallpaperSource;
+let cachedInstallPluginPanelSource;
+function getInstallWallpaperSource() {
+    return (cachedInstallWallpaperSource ??= installWallpaper.toString());
+}
+function getInstallPluginPanelSource() {
+    return (cachedInstallPluginPanelSource ??= installPluginPanelSurface.toString());
+}
 const RENDERER_KEY = `${RENDERER_VERSION}:${RENDERER_REVISION}`;
+const PLUGIN_HEARTBEAT_SKIP_MS = 3000;
 const ATTACH_RETRY_DELAYS = [150, 250, 400, 600, 1000, 1500];
 const HOST_PROBE_EXPRESSION = 'window === window.top && Boolean(window.electronNative && window.nativeStorage)';
 const FAST_EVAL_PREFIX =
     '(async (p) => {' +
-    'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null };' +
+    'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null, hostColorScheme: null };' +
     'const active = window.__antigravityUiRenderer;' +
-    'if (!active) return { value: (p.css && p.image === undefined && p.imageHash) ? "NEED_IMAGE" : "NEED_FULL", layout: null };' +
-    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", layout: null };` +
+    'if (!active) return { value: (p.css && p.image === undefined && p.imageHash) ? "NEED_IMAGE" : "NEED_FULL", layout: null, hostColorScheme: null };' +
+    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", layout: null, hostColorScheme: null };` +
     'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
     'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
-    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", layout: null };' +
-    'if (p.css && p.image === undefined && p.imageHash && active.imageHash !== p.imageHash) return { value: "NEED_IMAGE", layout: null };' +
+    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", layout: null, hostColorScheme: null };' +
+    'if (p.css && p.image === undefined && p.imageHash && active.imageHash !== p.imageHash) return { value: "NEED_IMAGE", layout: null, hostColorScheme: null };' +
     'active.owner = p.owner; active.generation = p.generation;' +
     'active.update(p); await active.syncTitlebar();' +
-    'return { value: window.__antigravityUiRenderer === active ? "OK" : "IGNORED", layout: window.__antigravityUiRenderer === active ? (active.layout ?? null) : null };' +
+    'return { value: window.__antigravityUiRenderer === active ? "OK" : "IGNORED", layout: window.__antigravityUiRenderer === active ? (active.layout ?? null) : null, hostColorScheme: window.__antigravityUiRenderer === active ? (active.hostColorScheme ?? "dark") : null };' +
     '})(';
+const FAST_PLUGIN_EVAL_PREFIX =
+    '(async (p) => {' +
+    'if (window === window.top) return { value: false, colorScheme: null };' +
+    'if (document.documentElement?.dataset?.agUiPanelNative === "true") return { value: "NATIVE", colorScheme: null };' +
+    'const active = window.__antigravityUiPluginSurface;' +
+    'if (!active) return { value: "NEED_FULL", colorScheme: null };' +
+    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", colorScheme: null };` +
+    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
+    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
+    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", colorScheme: null };' +
+    'active.owner = p.owner; active.generation = p.generation;' +
+    'active.update(p);' +
+    'return { value: window.__antigravityUiPluginSurface === active ? "OK" : "IGNORED", colorScheme: window.__antigravityUiPluginSurface === active ? (active.colorScheme ?? null) : null };' +
+    '})(';
+const COLLECT_PLUGIN_SLOTS_BODY =
+    'const rightBody = document.querySelector(\'[data-side-panel-body]:not([data-has-browser-hole="true"])\');' +
+    'const rightRect = rightBody ? rightBody.getBoundingClientRect() : null;' +
+    'const hasRightRect = Boolean(rightRect && rightRect.width > 0 && rightRect.height > 0);' +
+    'const entries = [];' +
+    'const seen = new Set();' +
+    'const collect = (iframe, slot) => {' +
+    'if (!iframe || seen.has(iframe)) return;' +
+    'seen.add(iframe);' +
+    'const sidecarId = slot?.getAttribute("data-sidecar-id") || "";' +
+    'const src = iframe.getAttribute("src") || "";' +
+    'if (sidecarId === "antigravity-ui/panel" || /^plugin:\\/\\/antigravity-ui--panel-/i.test(src)) return;' +
+    'let isRightPanel = true;' +
+    'if (slot && slot.getAttribute("data-visible") === "true") {' +
+    'const r = slot.getBoundingClientRect();' +
+    'if (r.width > 0 && r.height > 0) {' +
+    'if (!hasRightRect) { isRightPanel = false; }' +
+    'else {' +
+    'const cx = r.left + r.width / 2; const cy = r.top + r.height / 2;' +
+    'isRightPanel = cx >= rightRect.left - 8 && cx <= rightRect.right + 8 && cy >= rightRect.top - 8 && cy <= rightRect.bottom + 8;' +
+    '}' +
+    '}' +
+    '}' +
+    'entries.push({ iframe, frameId: iframe.getAttribute("data-ag-ui-frame-id") || "", isRightPanel, sig: (slot?.getAttribute("data-testid") || "direct") + "|" + sidecarId + "|" + (slot?.getAttribute("data-frame-key") || "") + "|" + src + "|" + (slot?.getAttribute("data-visible") || "") + "|" + (isRightPanel ? "1" : "0") });' +
+    '};' +
+    'for (const slot of document.querySelectorAll(\'.agy-sheet > .pointer-events-none.overflow-clip > :is([data-testid="sidecar-iframe-slot"],[data-testid="mcp-app-frame-slot"],div:has(iframe))\')) { for (const iframe of slot.querySelectorAll("iframe")) collect(iframe, slot); }' +
+    'if (rightBody) { for (const iframe of rightBody.querySelectorAll("iframe")) collect(iframe, null); }';
+const PLUGIN_SLOT_SCAN_EXPRESSION =
+    '(() => {' + COLLECT_PLUGIN_SLOTS_BODY +
+    'const known = []; const unknownFlags = []; const allFlags = [];' +
+    'for (const e of entries) { allFlags.push(e.isRightPanel); if (e.frameId) known.push([e.frameId, e.isRightPanel]); else unknownFlags.push(e.isRightPanel); }' +
+    'return { sig: entries.map(e => e.sig).join("\\n"), known, unknownFlags, allFlags }; })()';
+const PLUGIN_SLOT_UNKNOWN_ELEMENTS_EXPRESSION = '(() => {' + COLLECT_PLUGIN_SLOTS_BODY + 'return entries.filter(e => !e.frameId).map(e => e.iframe); })()';
+const PLUGIN_SLOT_ELEMENTS_EXPRESSION = '(() => {' + COLLECT_PLUGIN_SLOTS_BODY + 'return entries.map(e => e.iframe); })()';
 
 function missingPortError(message, cause) {
     const error = new Error(message, cause ? { cause } : undefined);
@@ -36,9 +92,18 @@ export class Connection {
         this.nextId = 0;
         this.lastImageHash = undefined;
         this.lastLayout = null;
+        this.hostColorScheme = 'dark';
         this.installedKey = undefined;
         this.nonHost = false;
         this.hostVerified = false;
+        this.pluginSlotSignature = '';
+        this.rightPanelFrameIds = new Set();
+        this.nonRightPanelFrameIds = new Set();
+        this.iframeSchemeByFrameId = new Map();
+        this.lastPluginPayloadSig = undefined;
+        this.lastPluginSyncedAt = 0;
+        this.lastPluginColorScheme = null;
+        this.lastPluginDisabledAt = 0;
     }
 
     async open() {
@@ -120,6 +185,40 @@ export function validTarget(target, inspectorPort, hostPort) {
     }
 }
 
+export function validIframeTarget(target, inspectorPort, hostIds) {
+    try {
+        if (target?.type !== 'iframe' || !target.id || !target.parentId || !hostIds.has(target.parentId)) {
+            return false;
+        }
+        if (typeof target.url === 'string' && /^plugin:\/\/antigravity-ui--panel-/i.test(target.url)) {
+            return false;
+        }
+        const socket = new URL(target.webSocketDebuggerUrl);
+        return socket.protocol === 'ws:' && loopback.has(socket.hostname) &&
+            Number(socket.port) === inspectorPort;
+    } catch {
+        return false;
+    }
+}
+
+function computeSidebarPayload(surfaces) {
+    const opts = surfaces && typeof surfaces === 'object' && !Array.isArray(surfaces) ? surfaces : {};
+    const cover = opts.sidebarCover !== false;
+    const rawOpacity = opts.sidebarOpacity;
+    const opacity = typeof rawOpacity === 'number' && Number.isFinite(rawOpacity)
+        ? Math.min(100, Math.max(0, Math.round(rawOpacity)))
+        : 100;
+    const rawBlur = opts.sidebarBlur;
+    const blur = typeof rawBlur === 'number' && Number.isFinite(rawBlur)
+        ? Math.min(30, Math.max(0, Math.round(rawBlur)))
+        : 0;
+    return {
+        cover,
+        alpha: cover ? opacity : 0,
+        blur: cover && blur > 0 ? blur : 0,
+    };
+}
+
 export class WallpaperRuntime {
     constructor(profile, style, enabled, hostPort) {
         this.profile = profile;
@@ -127,6 +226,9 @@ export class WallpaperRuntime {
         this.enabled = enabled;
         this.hostPort = hostPort;
         this.connections = new Map();
+        this.pluginConnections = new Map();
+        this.hostTargetByUrl = new Map();
+        this.iframeTargetsByParent = new Map();
         this.lastLayout = null;
         this.health = { windows: 0, error: '等待 Antigravity 界面连接。' };
         this.stopped = false;
@@ -134,6 +236,7 @@ export class WallpaperRuntime {
         this.generation = Date.now();
         this.dirty = false;
         this.pendingDiscover = false;
+        this.pendingActivate = false;
         this.lastDiscoveryAt = 0;
         this.timer = undefined;
         this.timerToken = 0;
@@ -185,6 +288,7 @@ export class WallpaperRuntime {
         if (activate) this.generation = Math.max(Date.now(), this.generation + 1);
         this.dirty = true;
         this.pendingDiscover ||= discover;
+        this.pendingActivate ||= activate;
         this.operation ??= this.drain();
         return this.operation;
     }
@@ -194,8 +298,10 @@ export class WallpaperRuntime {
             while (this.dirty && !this.stopped) {
                 this.dirty = false;
                 const discover = this.pendingDiscover;
+                const activate = this.pendingActivate;
                 this.pendingDiscover = false;
-                await this.apply({ discover });
+                this.pendingActivate = false;
+                await this.apply({ discover, activate });
             }
         } finally {
             this.operation = undefined;
@@ -237,8 +343,35 @@ export class WallpaperRuntime {
         }
         const targets = list.filter(target => validTarget(target, port, this.hostPort));
         const live = new Set(targets.map(target => target.webSocketDebuggerUrl));
+        const hostIds = new Set();
+        this.hostTargetByUrl.clear();
+        for (const target of targets) {
+            if (target.id) {
+                hostIds.add(target.id);
+                this.hostTargetByUrl.set(target.webSocketDebuggerUrl, target.id);
+            }
+        }
+        const iframeTargets = list.filter(target => validIframeTarget(target, port, hostIds));
+        const liveIframeUrls = new Set();
+        this.iframeTargetsByParent.clear();
+        for (const target of iframeTargets) {
+            liveIframeUrls.add(target.webSocketDebuggerUrl);
+            let group = this.iframeTargetsByParent.get(target.parentId);
+            if (!group) {
+                group = new Map();
+                this.iframeTargetsByParent.set(target.parentId, group);
+            }
+            group.set(target.id, {
+                id: target.id,
+                url: target.url,
+                wsUrl: target.webSocketDebuggerUrl,
+            });
+        }
         for (const [key, connection] of this.connections) {
             if (!live.has(key)) { connection.close(); this.connections.delete(key); }
+        }
+        for (const [key, connection] of this.pluginConnections) {
+            if (!liveIframeUrls.has(key)) { connection.close(); this.pluginConnections.delete(key); }
         }
         this.lastDiscoveryAt = Date.now();
         return live;
@@ -257,6 +390,13 @@ export class WallpaperRuntime {
         }
     }
 
+    resetHostPluginState(connection) {
+        connection.iframeSchemeByFrameId.clear();
+        connection.pluginSlotSignature = '';
+        connection.rightPanelFrameIds.clear();
+        connection.nonRightPanelFrameIds.clear();
+    }
+
     async evaluate(connection, payload) {
         const serializedPayload = JSON.stringify(payload);
         if (connection.installedKey === RENDERER_KEY && payload.enabled) {
@@ -267,6 +407,7 @@ export class WallpaperRuntime {
             });
             if (fastResult.exceptionDetails) {
                 connection.installedKey = undefined;
+                this.resetHostPluginState(connection);
                 const detail = fastResult.exceptionDetails.exception?.description || fastResult.exceptionDetails.text || '';
                 throw new Error(detail ? '背景样式无法应用到界面：' + detail : '背景样式无法应用到界面。');
             }
@@ -277,27 +418,36 @@ export class WallpaperRuntime {
             if (fastValue !== 'NEED_FULL') {
                 if (fastValue === 'OK' || fastValue === true) {
                     connection.lastLayout = fastOutcome?.layout ?? null;
+                    if (fastOutcome?.hostColorScheme === 'dark' || fastOutcome?.hostColorScheme === 'light') {
+                        connection.hostColorScheme = fastOutcome.hostColorScheme;
+                    }
                 } else {
                     connection.installedKey = undefined;
                     connection.lastLayout = null;
+                    if (fastValue === false) this.resetHostPluginState(connection);
                 }
                 return fastValue;
             }
             connection.installedKey = undefined;
         }
         const result = await connection.command('Runtime.evaluate', {
-            expression: '(async () => { const value = await (' + INSTALL_WALLPAPER_SOURCE + ')(' + serializedPayload + '); return { value, layout: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.layout ?? null) : null }; })()',
+            expression: '(async () => { const value = await (' + getInstallWallpaperSource() + ')(' + serializedPayload + '); return { value, layout: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.layout ?? null) : null, hostColorScheme: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.hostColorScheme ?? "dark") : null }; })()',
             returnByValue: true,
             awaitPromise: true,
         });
         if (result.exceptionDetails) {
             connection.installedKey = undefined;
+            this.resetHostPluginState(connection);
             const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text || '';
             throw new Error(detail ? '背景样式无法应用到界面：' + detail : '背景样式无法应用到界面。');
         }
         const outcome = result.result?.value;
+        this.resetHostPluginState(connection);
         if (outcome && typeof outcome === 'object' && Object.hasOwn(outcome, 'value')) {
             connection.lastLayout = outcome.layout ?? null;
+            if (outcome.hostColorScheme === 'dark' || outcome.hostColorScheme === 'light') {
+                connection.hostColorScheme = outcome.hostColorScheme;
+            }
             connection.installedKey = (payload.enabled && (outcome.value === true || outcome.value === 'OK')) ? RENDERER_KEY : undefined;
             return outcome.value;
         }
@@ -349,7 +499,324 @@ export class WallpaperRuntime {
         return { applied: true, layout: connection.lastLayout ?? null };
     }
 
-    async apply({ discover = false } = {}) {
+    async describePluginSlotElements(hostConn, expression, flags, nextRightIds, nextNonRightIds) {
+        const elemsRes = await hostConn.command('Runtime.evaluate', {
+            expression,
+            returnByValue: false,
+        });
+        const arrayObjId = elemsRes.result?.objectId;
+        if (!arrayObjId) return flags.length === 0;
+        try {
+            const props = await hostConn.command('Runtime.getProperties', {
+                objectId: arrayObjId,
+                ownProperties: true,
+            });
+            const itemProps = (props.result || []).filter(p => /^\d+$/.test(p.name) && p.value?.objectId);
+            if (itemProps.length !== flags.length) {
+                await Promise.all(itemProps.map(prop =>
+                    hostConn.command('Runtime.releaseObject', { objectId: prop.value.objectId }).catch(() => {})
+                ));
+                return false;
+            }
+            await Promise.all(itemProps.map(async prop => {
+                const index = Number(prop.name);
+                const itemObjId = prop.value.objectId;
+                try {
+                    const desc = await hostConn.command('DOM.describeNode', { objectId: itemObjId });
+                    const frameId = desc?.node?.frameId;
+                    if (frameId) {
+                        if (flags[index] !== false) nextRightIds.add(frameId);
+                        else nextNonRightIds.add(frameId);
+                        await hostConn.command('Runtime.callFunctionOn', {
+                            objectId: itemObjId,
+                            functionDeclaration: 'function(id) { if (this.getAttribute("data-ag-ui-frame-id") !== id) this.setAttribute("data-ag-ui-frame-id", id); }',
+                            arguments: [{ value: frameId }],
+                        }).catch(() => {});
+                    }
+                } catch {
+                } finally {
+                    hostConn.command('Runtime.releaseObject', { objectId: itemObjId }).catch(() => {});
+                }
+            }));
+            return true;
+        } finally {
+            hostConn.command('Runtime.releaseObject', { objectId: arrayObjId }).catch(() => {});
+        }
+    }
+
+    async resolveHostRightPanelFrames(hostConn, childTargets) {
+        const scanRes = await hostConn.command('Runtime.evaluate', {
+            expression: PLUGIN_SLOT_SCAN_EXPRESSION,
+            returnByValue: true,
+        });
+        if (scanRes.exceptionDetails) return hostConn.rightPanelFrameIds;
+        const scan = scanRes.result?.value;
+        const nextSig = typeof scan?.sig === 'string' ? scan.sig : '';
+        const knownEntries = Array.isArray(scan?.known) ? scan.known : [];
+        const unknownFlags = Array.isArray(scan?.unknownFlags) ? scan.unknownFlags : [];
+        const allFlags = Array.isArray(scan?.allFlags) ? scan.allFlags : [];
+        let allKnown = true;
+        for (const targetId of childTargets.keys()) {
+            if (!hostConn.rightPanelFrameIds.has(targetId) && !hostConn.nonRightPanelFrameIds.has(targetId)) {
+                allKnown = false;
+                break;
+            }
+        }
+        if (nextSig === hostConn.pluginSlotSignature && allKnown && unknownFlags.length === 0) {
+            return hostConn.rightPanelFrameIds;
+        }
+
+        const nextRightIds = new Set();
+        const nextNonRightIds = new Set();
+        let scanConsistent = true;
+        if (nextSig) {
+            let hasStaleKnownId = false;
+            for (const [frameId, isRightPanel] of knownEntries) {
+                if (typeof frameId !== 'string' || !frameId) continue;
+                if (!childTargets.has(frameId)) hasStaleKnownId = true;
+                if (isRightPanel !== false) nextRightIds.add(frameId);
+                else nextNonRightIds.add(frameId);
+            }
+            if (!allKnown && hasStaleKnownId) {
+                nextRightIds.clear();
+                nextNonRightIds.clear();
+                scanConsistent = await this.describePluginSlotElements(
+                    hostConn,
+                    PLUGIN_SLOT_ELEMENTS_EXPRESSION,
+                    allFlags,
+                    nextRightIds,
+                    nextNonRightIds,
+                );
+            } else if (unknownFlags.length > 0) {
+                scanConsistent = await this.describePluginSlotElements(
+                    hostConn,
+                    PLUGIN_SLOT_UNKNOWN_ELEMENTS_EXPRESSION,
+                    unknownFlags,
+                    nextRightIds,
+                    nextNonRightIds,
+                );
+            }
+        }
+        if (!scanConsistent) {
+            hostConn.pluginSlotSignature = '';
+            return hostConn.rightPanelFrameIds;
+        }
+        for (const targetId of childTargets.keys()) {
+            if (!nextRightIds.has(targetId)) nextNonRightIds.add(targetId);
+        }
+        hostConn.pluginSlotSignature = nextSig;
+        hostConn.rightPanelFrameIds = nextRightIds;
+        hostConn.nonRightPanelFrameIds = nextNonRightIds;
+        return nextRightIds;
+    }
+
+    async evaluatePluginPanel(connection, payload) {
+        const serializedPayload = JSON.stringify(payload);
+        const wantActive = Boolean(payload.enabled && payload.sidebar?.alpha < 100);
+        if (connection.installedKey === RENDERER_KEY && wantActive) {
+            const fastResult = await connection.command('Runtime.evaluate', {
+                expression: FAST_PLUGIN_EVAL_PREFIX + serializedPayload + ')',
+                returnByValue: true,
+                awaitPromise: true,
+            });
+            if (!fastResult.exceptionDetails) {
+                const fastOutcome = fastResult.result?.value;
+                const fastValue = fastOutcome && typeof fastOutcome === 'object' ? fastOutcome.value : fastOutcome;
+                if (fastValue !== 'NEED_FULL') {
+                    if (fastValue !== 'OK' && fastValue !== 'NATIVE') connection.installedKey = undefined;
+                    return fastOutcome && typeof fastOutcome === 'object'
+                        ? fastOutcome
+                        : { value: fastValue, colorScheme: null };
+                }
+            }
+            connection.installedKey = undefined;
+        }
+        const result = await connection.command('Runtime.evaluate', {
+            expression: '(' + getInstallPluginPanelSource() + ')(' + serializedPayload + ')',
+            returnByValue: true,
+            awaitPromise: true,
+        });
+        if (result.exceptionDetails) {
+            connection.installedKey = undefined;
+            throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || '插件面板注入失败');
+        }
+        const outcome = result.result?.value;
+        const value = outcome && typeof outcome === 'object' ? outcome.value : outcome;
+        connection.installedKey = (wantActive && (value === 'OK' || value === 'NATIVE')) ? RENDERER_KEY : undefined;
+        return outcome && typeof outcome === 'object' ? outcome : { value, colorScheme: null };
+    }
+
+    async syncHostIframeSchemes(hostConn, entries) {
+        const updates = [];
+        for (const [frameId, scheme] of entries) {
+            const normalized = (scheme === 'dark' || scheme === 'light') ? scheme : '';
+            if ((hostConn.iframeSchemeByFrameId.get(frameId) || '') === normalized) continue;
+            updates.push([frameId, normalized]);
+        }
+        if (updates.length === 0) return;
+        const res = await hostConn.command('Runtime.evaluate', {
+            expression: `((list) => {
+                const applied = [];
+                for (const [id, next] of list) {
+                    const el = document.querySelector('iframe[data-ag-ui-frame-id=' + JSON.stringify(id) + ']');
+                    if (!el) continue;
+                    if (next) el.setAttribute('data-ag-ui-iframe-scheme', next);
+                    else el.removeAttribute('data-ag-ui-iframe-scheme');
+                    applied.push([id, next]);
+                }
+                return applied;
+            })(${JSON.stringify(updates)})`,
+            returnByValue: true,
+        }).catch(() => null);
+        const applied = (!res?.exceptionDetails && Array.isArray(res?.result?.value)) ? res.result.value : [];
+        for (const [frameId, next] of applied) {
+            if (next) hostConn.iframeSchemeByFrameId.set(frameId, next);
+            else hostConn.iframeSchemeByFrameId.delete(frameId);
+        }
+    }
+
+    async syncPluginPanels(desired, hostKeys, force = false) {
+        const sidebar = computeSidebarPayload(desired.surfaces);
+        const wantActive = Boolean(desired.enabled && sidebar.alpha < 100);
+        await Promise.allSettled([...hostKeys].map(async hostKey => {
+            const hostConn = this.connections.get(hostKey);
+            if (!hostConn || hostConn.nonHost || !hostConn.hostVerified) return;
+            const parentId = this.hostTargetByUrl.get(hostKey);
+            if (!parentId) return;
+            const childTargets = this.iframeTargetsByParent.get(parentId);
+            if (!childTargets || childTargets.size === 0) {
+                hostConn.iframeSchemeByFrameId.clear();
+                return;
+            }
+            for (const cachedFrameId of hostConn.iframeSchemeByFrameId.keys()) {
+                if (!childTargets.has(cachedFrameId)) hostConn.iframeSchemeByFrameId.delete(cachedFrameId);
+            }
+
+            const hostColorScheme = hostConn.hostColorScheme === 'light' ? 'light' : 'dark';
+            const pluginPayload = {
+                enabled: Boolean(desired.enabled),
+                owner: desired.owner,
+                generation: desired.generation,
+                sidebar,
+                hostColorScheme,
+            };
+            const payloadSig = `${pluginPayload.enabled ? 1 : 0}:${sidebar.cover ? 1 : 0}:${sidebar.alpha}:${sidebar.blur}:${hostColorScheme}`;
+            const schemeEntries = [];
+
+            if (!wantActive) {
+                const now = Date.now();
+                const disablePayload = {
+                    enabled: false,
+                    owner: desired.owner,
+                    generation: desired.generation,
+                    sidebar,
+                    hostColorScheme,
+                };
+                await Promise.allSettled([...childTargets.values()].map(async target => {
+                    const existing = this.pluginConnections.get(target.wsUrl);
+                    if (existing) {
+                        const shouldThrottle = !desired.enabled && !force && existing.lastPluginDisabledAt &&
+                            (now - existing.lastPluginDisabledAt < PLUGIN_HEARTBEAT_SKIP_MS);
+                        if (!shouldThrottle) {
+                            try {
+                                await this.evaluatePluginPanel(existing, disablePayload);
+                                existing.lastPluginPayloadSig = undefined;
+                                existing.lastPluginSyncedAt = 0;
+                                existing.lastPluginColorScheme = null;
+                                existing.lastPluginDisabledAt = Date.now();
+                            } catch {
+                                existing.close();
+                                this.pluginConnections.delete(target.wsUrl);
+                            }
+                        }
+                        if (desired.enabled && this.pluginConnections.get(target.wsUrl) === existing) {
+                            existing.close();
+                            this.pluginConnections.delete(target.wsUrl);
+                        }
+                    }
+                    schemeEntries.push([target.id, '']);
+                }));
+                if (!this.stopped) await this.syncHostIframeSchemes(hostConn, schemeEntries);
+                return;
+            }
+
+            let rightPanelFrameIds;
+            try {
+                rightPanelFrameIds = await this.resolveHostRightPanelFrames(hostConn, childTargets);
+            } catch {
+                return;
+            }
+            if (this.stopped) return;
+
+            const now = Date.now();
+            await Promise.allSettled([...childTargets.values()].map(async target => {
+                if (!rightPanelFrameIds.has(target.id)) {
+                    const existing = this.pluginConnections.get(target.wsUrl);
+                    if (existing) {
+                        try {
+                            await this.evaluatePluginPanel(existing, {
+                                enabled: false,
+                                owner: desired.owner,
+                                generation: desired.generation,
+                                sidebar,
+                                hostColorScheme,
+                            });
+                        } catch {}
+                        existing.close();
+                        this.pluginConnections.delete(target.wsUrl);
+                    }
+                    schemeEntries.push([target.id, '']);
+                    return;
+                }
+
+                let pluginConn = this.pluginConnections.get(target.wsUrl);
+                if (!force &&
+                    pluginConn &&
+                    pluginConn.installedKey === RENDERER_KEY &&
+                    pluginConn.lastPluginPayloadSig === payloadSig &&
+                    now - pluginConn.lastPluginSyncedAt < PLUGIN_HEARTBEAT_SKIP_MS) {
+                    const cachedScheme = (pluginConn.lastPluginColorScheme && pluginConn.lastPluginColorScheme !== hostColorScheme)
+                        ? pluginConn.lastPluginColorScheme
+                        : '';
+                    schemeEntries.push([target.id, cachedScheme]);
+                    return;
+                }
+                try {
+                    if (!pluginConn) {
+                        pluginConn = new Connection(target.wsUrl);
+                        await pluginConn.open();
+                        if (this.stopped) {
+                            pluginConn.close();
+                            return;
+                        }
+                        this.pluginConnections.set(target.wsUrl, pluginConn);
+                    }
+                    const outcome = await this.evaluatePluginPanel(pluginConn, pluginPayload);
+                    if (this.stopped) return;
+                    if (outcome?.value === 'OK' || outcome?.value === 'NATIVE') {
+                        pluginConn.lastPluginPayloadSig = payloadSig;
+                        pluginConn.lastPluginSyncedAt = Date.now();
+                        pluginConn.lastPluginColorScheme = outcome?.value === 'OK' ? (outcome.colorScheme ?? null) : null;
+                        pluginConn.lastPluginDisabledAt = 0;
+                    } else {
+                        pluginConn.lastPluginPayloadSig = undefined;
+                        pluginConn.lastPluginSyncedAt = 0;
+                        pluginConn.lastPluginColorScheme = null;
+                    }
+                    const desiredScheme = (outcome?.value === 'OK' && outcome.colorScheme && outcome.colorScheme !== hostColorScheme)
+                        ? outcome.colorScheme
+                        : '';
+                    schemeEntries.push([target.id, desiredScheme]);
+                } catch {
+                    pluginConn?.close();
+                    this.pluginConnections.delete(target.wsUrl);
+                }
+            }));
+            if (!this.stopped) await this.syncHostIframeSchemes(hostConn, schemeEntries);
+        }));
+    }
+
+    async apply({ discover = false, activate = false } = {}) {
         try {
             const didDiscover = discover || this.connections.size === 0 || (Date.now() - this.lastDiscoveryAt >= 250);
             const initialKeys = didDiscover ? [...await this.discoverTargets()] : [...this.connections.keys()];
@@ -357,6 +824,7 @@ export class WallpaperRuntime {
             let desired = await this.readDesired();
             if (this.stopped) return;
             const succeeded = new Set();
+            const appliedHosts = new Set();
             const errors = new Map();
             let applied = 0;
             let ignored = 0;
@@ -388,6 +856,7 @@ export class WallpaperRuntime {
                         const outcome = await this.send(connection, desired);
                         if (outcome.applied) {
                             applied++;
+                            appliedHosts.add(key);
                             layouts[index] = outcome.layout;
                             succeeded.add(key);
                             errors.delete(key);
@@ -416,6 +885,10 @@ export class WallpaperRuntime {
                 if (desired.generation !== this.generation) desired = await this.readDesired();
                 if (this.stopped) return;
                 await applyKeys([...live], true);
+                if (this.stopped) return;
+            }
+            if (appliedHosts.size > 0) {
+                await this.syncPluginPanels(desired, appliedHosts, activate);
                 if (this.stopped) return;
             }
             if (!desired.enabled) this.lastLayout = null;
@@ -448,18 +921,31 @@ export class WallpaperRuntime {
                 new Promise(resolve => setTimeout(resolve, 1200)),
             ]);
         }
-        const expression = '(' + INSTALL_WALLPAPER_SOURCE + ')(' +
+        const expression = '(' + getInstallWallpaperSource() + ')(' +
             JSON.stringify({ enabled: false, owner: this.owner, generation: this.generation }) + ')';
-        await Promise.allSettled([...this.connections.values()].map(async connection => {
-            try {
-                if (!connection.nonHost) {
+        const pluginExpression = '(' + getInstallPluginPanelSource() + ')(' +
+            JSON.stringify({ enabled: false, owner: this.owner, generation: this.generation }) + ')';
+        await Promise.allSettled([
+            ...[...this.connections.values()].map(async connection => {
+                try {
+                    if (!connection.nonHost) {
+                        await Promise.race([
+                            connection.command('Runtime.evaluate', { expression, awaitPromise: true }),
+                            new Promise(resolve => setTimeout(resolve, 1500)),
+                        ]);
+                    }
+                } finally { connection.close(); }
+            }),
+            ...[...this.pluginConnections.values()].map(async connection => {
+                try {
                     await Promise.race([
-                        connection.command('Runtime.evaluate', { expression, awaitPromise: true }),
+                        connection.command('Runtime.evaluate', { expression: pluginExpression, awaitPromise: true }),
                         new Promise(resolve => setTimeout(resolve, 1500)),
                     ]);
-                }
-            } finally { connection.close(); }
-        }));
+                } finally { connection.close(); }
+            }),
+        ]);
         this.connections.clear();
+        this.pluginConnections.clear();
     }
 }

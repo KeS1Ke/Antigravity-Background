@@ -58,9 +58,15 @@ const enabled = async () => {
     }
 };
 const lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS?.trim() || '';
-const hostPort = lsAddress
-    ? (new URL(lsAddress.includes('://') ? lsAddress : 'https://' + lsAddress).port || undefined)
-    : undefined;
+function parseHostPort(raw) {
+    if (!raw) return undefined;
+    try {
+        return new URL(raw.includes('://') ? raw : 'https://' + raw).port || undefined;
+    } catch {
+        return undefined;
+    }
+}
+const hostPort = parseHostPort(lsAddress);
 const digestCache = new Map();
 function imageDigest(image) {
     if (!image) return '';
@@ -255,23 +261,14 @@ function getStaticAssets() {
     });
     return staticAssetsPromise;
 }
-if (await hasPendingUpdateTx(join(data, 'updates'))) {
-    await getUpdater();
-}
+const pendingTxPromise = hasPendingUpdateTx(join(data, 'updates'));
 const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 void sdkPromise.catch(() => {});
-await syncStore({ initial: true });
-let heartbeatPending = false;
-runtime.start(() => {
-    if (heartbeatPending) return;
-    heartbeatPending = true;
-    return enqueueRequest(async () => {
-        await syncStore();
-        await runtime.update(false, true);
-    }).catch(error => {
-        runtime.health = { ...runtime.health, error: error.message };
-    }).finally(() => { heartbeatPending = false; });
-});
+const initialStorePromise = enqueueRequest(() => syncStore({ initial: true }));
+void initialStorePromise.catch(() => {});
+if (await pendingTxPromise) {
+    await getUpdater();
+}
 try {
     const sdk = await sdkPromise;
     const { SidecarApp } = sdk;
@@ -289,7 +286,7 @@ try {
     }
     app.api('/api/settings', () => enqueueRequest(async () => {
         const reloaded = await syncStore();
-        if (reloaded || pendingActivate) await activateRuntime(true);
+        if (reloaded || pendingActivate || runtime.lastDiscoveryAt === 0) await activateRuntime(true);
         return stateResponse({ saved: store.settings });
     }), 'GET');
     app.api('/api/preview', input => enqueueRequest(async () => {
@@ -383,8 +380,21 @@ try {
         }
     }, 'POST');
     await app.run();
+    await initialStorePromise;
+    let heartbeatPending = false;
+    runtime.start(() => {
+        if (heartbeatPending) return;
+        heartbeatPending = true;
+        return enqueueRequest(async () => {
+            await syncStore();
+            await runtime.update(false, true);
+        }).catch(error => {
+            runtime.health = { ...runtime.health, error: error.message };
+        }).finally(() => { heartbeatPending = false; });
+    });
 } catch (error) {
     await runtime.stop().catch(() => {});
+    await app?.close().catch(() => {});
     console.error(error);
     process.exit(1);
 }

@@ -139,3 +139,66 @@
   - `runtime.mjs` 首次附加与周期复检非宿主 CDP 目标时先以轻量宿主指纹表达式（`HOST_PROBE_EXPRESSION`，77 字节）探测，彻底避免向非宿主页面序列化、传输与解析完整 `installWallpaper` 源码（~36 KB）及大图；`main.mjs` 将设置页静态资源改为首次请求时按需并行读取并缓存，不占用启动关键路径。
   - `renderer.mjs` 在 `update()` 内将 `measureLayout()` 节流至 250ms（首帧与 `onResize` 仍立即测量）、非表面变更路径避免同步扫描浮动滚动条，并在 `syncTitlebar()` 内于 `shellColors()` 之前短路 1000ms 有效缓存（保持主题 `MutationObserver` 强制刷新与 1500ms 心跳兜底语义），同时兼容省略 `imageHash` 的直接换图调用。
   - `main.mjs` 容错处理缺省或无端口 `ANTIGRAVITY_LS_ADDRESS`；`persistence.cjs` 为 `inspectAsarPersist` 补齐损坏/占用异常边界；`manage.cjs` 对齐目录锁 PID 合法区间并补全卸载失败时的快捷方式对称回滚与目录恢复异常隔离；`updater.mjs` 的 `hostMatchesRule` 支持剥离通配代理规则末尾端口，`sdk.mjs` 移除预载结尾长度魔数。
+
+## 19. 顶栏菜单、会话头、右侧标签条与新会话首页层级还原（`renderer` `version = 18` / `revision = 28`）
+
+- **问题成因**：`#antigravity-ui-background` 位于全窗 `z-index: 1000`。默认低不透明度与左侧渐隐下，位于 `z-index: auto` 的左上角顶栏菜单项（`[data-testid="title-menu-bar"] [data-testid="title-menu-bar-item"]`）、主区会话头内容（`[data-main-content-header] > *`）、停靠态右侧栏标签条内容（`[data-side-panel-strip] > *`）以及新会话首页（`.agy-home` 中位于底部输入框之上的 `[data-testid="home-greeting"]`、建议操作与公告提示区，此前仅底部 `.z-[1]` 输入框被抬升至 `1001`）可勉强透出；当用户切换高不透明度或低/零渐隐壁纸时，上述区域会被壁纸层完全遮盖，表现为左上角文字、右侧标签栏与新会话中间文字丢失。
+- **修复方案**：`revision = 28` 新增规则 `[data-testid="title-menu-bar"] [data-testid="title-menu-bar-item"], [data-main-content-header]:not([data-has-browser-hole="true"]) > *, [data-side-panel-strip]:not([data-has-browser-hole="true"]) > *, .agy-sheet .agy-home { position: relative; z-index: 1001 !important; }`：
+  - 仅抬升 `[data-testid="title-menu-bar-item"]` 本身，保持外层 `[data-testid="title-menu-bar"]`（`bg-sidebar` / `--shell-canvas`）与项包装 `.relative` 为 `z-index: auto`，确保顶栏壁纸无缝延伸至窗口顶部且打开的 `z-[8000]` 菜单不被限制在低层叠上下文内。
+  - 仅抬升非浏览器孔洞 `[data-main-content-header]` 与 `[data-side-panel-strip]` 的直接子容器，保留外层停靠态 `z-index: auto` 及在 `body[data-has-browser-hole="true"]` 下对 `--shell-canvas` 的底层承托语义（最大化/覆盖态标签条仍沿用既有 `z-index: 1002` 规则），同时恢复会话面包屑、顶部工具按钮与右侧栏标签/新建标签按钮在壁纸之上的清晰显示。
+  - 将 `.agy-sheet .agy-home` 整体抬升至 `z-index: 1001`，使新会话居中欢迎标志/标题、横幅、推荐操作与提示卡片均位于壁纸层之上，且不建立 Backdrop Root、不影响底部输入框层级与毛玻璃效果，并在 `enabled: false` 时随样式表移除自动还原。
+
+## 20. 左侧栏选中会话行同步输入框与对话框层级形态（`renderer` `version = 18` / `revision = 29`）
+
+- **问题成因**：左侧栏选中会话行（`.agy-sidebar-row[data-selected="true"]`）此前保留宿主原生不透明纯色高亮（`--onyx-selected` / `#1F1F24` + 顶部 `1px` 透明边框），与采用 `composer*` 双层玻璃/毛玻璃分层形态的用户气泡（`.agy-user-bubble-frame` / `.agy-user-bubble`）和输入框（`.surface-composer` / `.surface-composer-card`）割裂。
+- **实现方案**：`revision = 29` 在停靠侧栏、收起 Peek 与窄窗抽屉范围内，将 `.agy-sidebar-row[data-selected="true"]` 纳入 `composer` 表面配置：
+  - **零布局偏移的双层结构**：清除宿主 `border-top: 1px solid transparent` 并对 `.py-1.5`/`.py-2`/`.py-3` 做 `1px` 上内边距对称补偿（保持总行高与虚拟列表步距不变），以 `.agy-sidebar-row[data-selected="true"]`（`position: relative; z-index: 1` 建立层叠上下文而不产生额外 Backdrop Root）承载外圈底色、模糊与 `outerFrameShadow`，以 `::before`（`inset: 3px; z-index: -1; pointer-events: none`）承载内部浮起卡片底色与 `raisedShadow`，既保证 `> a`、文字、状态与 `.agy-row-actions` 交互正常，又在关闭「原版分层级感」（`composerLayered: false`）时同步回落为扁平单层（`::before { content: none }`）。
+  - **虚拟列表阴影层级与预览同步**：将含选中行的虚拟列表容器 `[data-sidebar-row-id]:has(.agy-sidebar-row[data-selected="true"])` 抬升至 `z-index: 2`（高于同级行 `z-index: 1` 以免底阴影被下一行裁遮，同时低于吸顶分组头 `z-index: 10`）；同步在设置页 16:9 预览 `.sample-side` 中加入 `.sample-side-selected` 联动示意。
+
+## 21. 右侧栏跨源插件面板底层表面兼容（`renderer` `version = 18` / `revision = 30`）
+
+- **问题成因**：Antigravity 将所有插件面板（`plugin://` Sidecar UI 插件与 `https://*.scf.usercontent.goog` / `blob:` MCP App 面板）以跨源 OOPIF 挂载于 `.agy-sheet > .pointer-events-none.overflow-clip`（`z-index: 1002`，覆盖在已应用 `sidebar*` 透明底色与模糊的 `z-index: 1001` `[data-side-panel-body]` 之上）。由于第三方插件各自使用不同主题机制（Sidecar CSS 变量、MCP App `--color-background-primary`、或 JS 复制的自定义变量及 `!important` 规则）并绘制不透明页面底色，导致其完全遮挡下方右侧栏壁纸与毛玻璃设置。
+- **实现方案**：`revision = 30` 在宿主、`WallpaperRuntime` 与插件 OOPIF 三层建立通用兼容机制：
+  - **宿主插槽透明化与精确归属判定**：宿主侧将 `.agy-sheet > .pointer-events-none.overflow-clip` 内所有插件插槽（含 `[data-testid="mcp-app-frame-slot"]` 与 `[data-testid="sidecar-iframe-slot"]`）及 `[data-side-panel-body]` 内 `iframe` 透明化；`runtime.mjs` 从 `/json/list` 收集归属已验证宿主窗口的 `type === 'iframe'` 子目标，结合 `DOM.describeNode` 校验 `frameId` 归属（按插槽签名缓存，稳态零额外查询），仅作用于右侧栏内插件面板，自动排除 `antigravity-ui/panel` 自身、显式声明 `data-ag-ui-panel-native="true"` 的自适配插件、位于 `[data-main-content-body]` 的可见全页视图及对话流内联 iframe。
+  - **框架无关的画布探测与分级适配（`installPluginPanelSurface`）**：零外部闭包注入插件 OOPIF 并复用同一租约协议与 6500ms 自动释放机制；通过临时停用注入样式表采样插件真实画布底色，将 `html`/`body` 与非吸顶画布容器透明化（使宿主 `[data-side-panel-body]` 的 `sidebarOpacity` 与 `sidebarBlur` 单层无重复叠加透出），对 `position: sticky` 吸顶条应用磨砂半透明并清除 `>= 100px` 扩散的不透明遮罩 `box-shadow`，对中性次级卡片按 `58% + alpha × 0.42` 柔化，同时跳过按钮/输入控件/弹窗与固定浮层子树，并通过 `MutationObserver` 增量响应新节点与主题切换；拖动滑块时通过 `FAST_PLUGIN_EVAL_PREFIX` 仅更新 CSS 变量免全量重扫。
+  - **Chromium `color-scheme` 透明对齐与无损还原**：当深色插件根元素为 `color-scheme: normal` 时自动对齐为推断主题，当插件与宿主存在显式深浅极性差异时同步在宿主 `<iframe>` 写入 `data-ag-ui-iframe-scheme` 以消除 Chromium 跨源 `color-scheme` 不匹配导致的不透明画布回退；当 `enabled === false` 或 `sidebarOpacity === 100` 时完整清理样式表、属性与监听，100% 恢复原生外观。
+
+## 22. Antigravity 冷启动影响深度优化（`renderer` `version = 18` / `revision = 31`）
+
+- **问题现象与实测根因**：
+  1. **宿主冷启动后台预加载隐藏面板 iframe 击穿懒加载**：Antigravity 冷启动时会在后台静默挂载多个 `display: none; width: 0; height: 0` 的 `plugin://antigravity-ui--panel-*` 隐藏 iframe（其 `document.hidden` 为 `false`，但 `innerWidth/innerHeight` 为 `0`）。原 `app.js` 无视可见性立刻执行 `GET /api/update`（击穿 `updater.mjs`/`archive.mjs` 懒加载）与 `GET /api/settings`（双份图片传输、JSON 解析、`new Image()` 解码与 4 份预览模板克隆）。
+  2. **Sidecar 启动顺序阻塞监听握手**：原 `main.mjs` 串行等待 `hasPendingUpdateTx` 与 `syncStore`，并在 `app.run()` 之前启动 `runtime.start()` 抢占 `requests` 队列；`runtime.mjs` 顶层同步执行两份共 85KB 函数的 `.toString()`。
+  3. **宿主首次注入写后读强制同步样式重算**：`installWallpaper` 在执行 `layout.replaceSync(...)` 与 `document.documentElement.append(layer)` 标脏全文档样式后，紧接着调用 `syncFloatingScrollbars()` 与 `syncTitlebar()`（`getComputedStyle(.agy-shell)`），实测在冷启动关键帧触发 ~9.1ms 同步全文档 Style Recalc。
+  4. **插件槽位重复 DOM 遍历与心跳高频 CDP 往返**：`resolveHostRightPanelFrames` 曾重复执行 3 次相同 DOM 遍历与 `getBoundingClientRect()`，`syncHostIframeScheme` 逐帧发独立 `Runtime.evaluate`，且每次 `1500ms` 心跳无差别对全部已连插件 iframe 发 `FAST_PLUGIN_EVAL_PREFIX`。
+- **优化方案**：
+  - **隐藏嵌入式面板延迟水合（`sidecars/panel/app.js`）**：对 `window.parent !== window && (document.hidden || innerWidth <= 0 || innerHeight <= 0)` 的预加载隐藏 iframe 跳过全部 API 请求、预览模板克隆与图片解码，仅保留极轻主题同步与一次性 `ResizeObserver`/`resize`/`visibilitychange`/`focus` 唤醒器，在真正展开面板时即时初始化；同时延后 `#drag-preview-stage` 模板克隆至点击打开拖拽预览弹窗时。
+  - **Sidecar 三路并行启动与懒序列化（`sidecars/panel/main.mjs`、`sidecars/panel/runtime.mjs`）**：并行发起 `hasPendingUpdateTx`、`loadSdk` 与入队的 `syncStore({ initial: true })`，在保持中断事务恢复先于 SDK 初始化不变量的前提下优先完成 `app.run()` 端口监听再启动 `runtime.start()`；`installWallpaper` 与 `installPluginPanelSurface` 改为按需懒 `.toString()`。
+  - **读写分离消除强制回流与异步探测（`sidecars/panel/renderer.mjs` `revision = 31`）**：在 `update()` 修改 DOM/`adoptedStyleSheets` 之前预读布局与 `shellColors()` 供 `syncTitlebar()` 复用；浮动滚动条同步统一走 `requestAnimationFrame`，壁纸自然比例探测延后至 `requestIdleCallback`（200ms 超时兜底），并将非 `resize` 路径的 `measureLayout()` 节流放宽至 `2000ms`。
+  - **插件槽位单次合并扫描、批量属性回写与稳态降频续租（`sidecars/panel/runtime.mjs`）**：单次 `PLUGIN_SLOT_SCAN_EXPRESSION` 返回签名、已标记 `data-ag-ui-frame-id` 列表与未标记标志位，仅对新增未标记 iframe 执行 `DOM.describeNode`；`syncHostIframeSchemes` 将同宿主下多个 iframe 的 `data-ag-ui-iframe-scheme` 变更合并为单次 `Runtime.evaluate`；稳态非激活心跳对配置未变且 `3000ms` 内已续租的插件 iframe 跳过冗余 `FAST_PLUGIN_EVAL_PREFIX`。
+
+## 23. 镂空外圈薄环与输入框 / 对话框 / 选中会话三表面独立及可选同步（`renderer` `version = 18` / `revision = 32`）
+
+- **问题成因**：
+  1. 原分层模式（`composerLayered: true`）直接将 `outerBg` 铺设在 `.surface-composer`、`.agy-user-bubble-frame` 与 `.agy-sidebar-row[data-selected="true"]` 整个外容器背景上，导致调节「外圈颜色」且处于半透明状态时，外圈颜色会透过内部卡片直接染色整个输入框/对话框/选中会话区域，而非仅停留在最外圈 `3–4px` 薄边。
+  2. 「输入框」「对话框」「左侧栏选中会话」长期共用单一 `composer*` 表面配置，用户无法分别调整三者的透明度、模糊、配色或分层状态。
+- **实现方案**：
+  - **镂空外圈薄环（`sidecars/panel/renderer.mjs`、`sidecars/panel/styles.css`）**：`revision = 32` 在开启分层模式时将外容器自身背景置为 `transparent`（保留外容器 `1px` `outerFrameShadow` 与可选 `backdrop-filter`），通过绝对定位伪元素（输入框/气泡 `::before`、选中会话 `::after`）配合 `padding: 4px/3px` 与 `mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude`（及 `-webkit-mask-composite: xor`）裁剪中心区域，使 `outerBg` 仅作用于最外层 `3–4px` 环带；设置页 16:9 预览 `.sample-composer`、`.sample-bubble`、`.sample-side-selected` 同步采用同等镂空薄环实现，关闭分层模式时移除伪元素并回落至 `1px inset` 外描边。
+  - **三表面独立配置与可选同步（`plugin/appearance.cjs`、`sidecars/panel/index.html`、`sidecars/panel/app.js`）**：拆分 `composer*`、`bubble*`、`selectedRow*` 三套完整表面字段并新增 `syncDialogSurfaces`（默认 `true` 保持既有设置无缝兼容）；设置页右列拆分为「左侧栏选中会话」「输入框」「对话框」三张独立折叠卡，每张卡片内置「同步三项设置」复选框——开启时任一卡片修改均实时联动三项，关闭后三者各自独立保存、预览与渲染，`[data-testid="autoscroll-viewport"]` 滚动渐隐遮罩解除逻辑亦准确改由 `bubbleCover && bubbleBlur > 0` 驱动。
+
+## 24. 全仓审查加固：OOPIF 槽位竞态、连接与缓存生命周期及边界容错（`renderer` `version = 18` / `revision = 33`）
+
+- **CDP 槽位扫描与连接生命周期（`sidecars/panel/runtime.mjs`）**：
+  - `resolveHostRightPanelFrames` 优先处理 `!allKnown && hasStaleKnownId`（先于 `unknownFlags.length > 0`），并在 `describePluginSlotElements` 发现下标与属性长度失配时放弃污染缓存，避免跨源 OOPIF 替换与新增槽位同帧并发时新 `frameId` 被永久误判为非右侧栏。
+  - `syncPluginPanels` 在 `sidebarOpacity === 100` 或目标离开右侧栏完成清理后立即关闭并移除 `pluginConnections`，在总开关停用（`!enabled`）时按 `PLUGIN_HEARTBEAT_SKIP_MS`（`3000ms`）对占位续租降频；`syncHostIframeSchemes` 改为按宿主实际更新返回值原子提交缓存并裁剪过期 `frameId`，同时在宿主全量重装路径（`resetHostPluginState`）重置相关缓存以应对 `dispose()` 重建。
+- **插件表面扫描读写分离与主题监听（`sidecars/panel/renderer.mjs` `revision = 33`）**：
+  - `installPluginPanelSurface` 合并 `isSkippedSubtree` 与只读 `collectElementWrite`，在全子树遍历完成后通过 `applySurfaceWrites` 批量写入属性与 `--ag-ui-orig-bg`，消除遍历期间重复 `getComputedStyle` 与读写交错；`observeBody()` 同步监听 `document.body` 的 `class` / `data-theme` / `data-agy-theme` / `data-pulse-theme` / `data-color-scheme` 变更。
+  - 补齐分层 `.surface-composer` / `.agy-user-bubble-frame` 的 `z-index: 0 !important` 权重保护与无 `imageHash` 换图后置空 `css` 时的 `--ag-ui-image` 清理。
+- **边界容错与一致性测试（`app.js`、`main.mjs`、`updater.mjs`、`persistence.cjs`、`tests/docs-sync.mjs`）**：
+  - `updateController.open()` 在 `reloading` 状态重新打开弹窗时恢复 `pollReloadRecovery` 轮询；`main.mjs` 对 `ANTIGRAVITY_LS_ADDRESS` 解析做异常兜底，并在 `GET /api/settings` 时于 `runtime.lastDiscoveryAt === 0` 兜底触发首轮发现；`updater.mjs` 的 `resolveSystemProxy` 兼容混合大小写环境变量键；`persistence.cjs` 的 `installAsarPersist` 补齐 `sha256` 格式校验；`tests/docs-sync.mjs` 强制校验 `installPluginPanelSurface` 与 `RENDERER_VERSION` / `RENDERER_REVISION` 一致。
+
+## 25. 左侧栏会话标题与悬停快捷按钮防重叠（`renderer` `version = 18` / `revision = 34`）
+
+- **问题成因**：宿主 `.agy-sidebar-row` 的快捷操作区 `.agy-row-actions` 默认采用 `position: absolute; -right-1; pl-6` 向左覆盖在标题文字之上，原生依赖 `.agy-row-actions::before` 的不透明实色渐变背景遮盖下方标题文字；插件为保证半透明壁纸透出将 `.agy-row-actions::before` 置透明（及选中行设置 `--row-bg: transparent`）后，悬停或聚焦时标题文字直接透出并与快捷按钮重叠。
+- **修复方案**：`revision = 34` 在 `leftSidebarScope`（停靠侧栏、收起 Peek 与窄窗抽屉）内，对处于 `:hover`、`:focus-visible`、`:has(:focus-visible)` 或菜单展开 `:has(.agy-row-actions [aria-expanded="true"])` 的 `.agy-sidebar-row`：
+  - 将非空 `.agy-row-actions:not(:empty)` 切为流内 `position: relative !important; inset: auto !important; padding-left: 0 !important; height: 16px !important; margin-right: -4px !important;`（保持 `z-10` 可点击层级、原有按钮像素坐标与整行高度零抖动）；
+  - 同时将对应行的 `.agy-row-status` 设为 `display: none !important` 释放原状态占宽，使左侧 `grow min-w-0` 的标题 `span.truncate` 按实际按钮数量自动在按钮左侧以 `...` 截断，兼顾零重叠与全透明壁纸透出；对空 `.agy-row-actions` 保持 `.agy-row-status` 原样可见。

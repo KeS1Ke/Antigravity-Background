@@ -19,6 +19,19 @@
             defaultInner: 'var(--ag-ui-surface)',
         },
         {
+            prefix: 'selectedRow',
+            slug: 'selected-row',
+            hasLayered: true,
+            hasColors: true,
+            attr: 'selectedRowLayered',
+            outerBgVar: '--preview-selected-row-outer-bg',
+            outerVar: '--preview-selected-row-outer',
+            innerVar: '--preview-selected-row-inner',
+            blurVar: '--preview-selected-row-blur',
+            defaultOuter: 'var(--ag-sample-frame)',
+            defaultInner: 'var(--ag-sample-raised)',
+        },
+        {
             prefix: 'sidebar',
             slug: 'sidebar',
             hasLayered: false,
@@ -41,6 +54,19 @@
             defaultInner: 'var(--ag-sample-raised)',
         },
         {
+            prefix: 'bubble',
+            slug: 'bubble',
+            hasLayered: true,
+            hasColors: true,
+            attr: 'bubbleLayered',
+            outerBgVar: '--preview-bubble-outer-bg',
+            outerVar: '--preview-bubble-outer',
+            innerVar: '--preview-bubble-inner',
+            blurVar: '--preview-bubble-blur',
+            defaultOuter: 'var(--ag-sample-frame)',
+            defaultInner: 'var(--ag-sample-raised)',
+        },
+        {
             prefix: 'overview',
             slug: 'overview',
             hasLayered: false,
@@ -52,6 +78,8 @@
             defaultInner: 'var(--ag-ui-card)',
         },
     ];
+    const SYNCED_SURFACES = ['composer', 'bubble', 'selectedRow'];
+    const SYNCED_SUFFIXES = ['Cover', 'Layered', 'Opacity', 'Blur', 'OuterColor', 'InnerColor'];
 
     // --- Shared Helpers ---
 
@@ -119,10 +147,8 @@
     const dragStage = find('#drag-preview-stage');
     const stages = [previewStage, dragStage];
     const sampleTemplate = find('#sample-window-template');
-    if (sampleTemplate) {
-        for (const stage of stages) stage.prepend(sampleTemplate.content.cloneNode(true));
-    }
-    const wallpaperEls = [...document.querySelectorAll('.wallpaper')];
+    const hydratedStages = new Set();
+    const wallpaperEls = [];
 
     const status = find('#status');
     const imageInput = find('#image');
@@ -146,6 +172,7 @@
     const dragPreviewReset = find('#drag-preview-reset');
     const dragPreviewMeta = find('#drag-preview-meta');
 
+    const syncDialogInputs = [...document.querySelectorAll('[data-sync-dialog-surfaces]')];
     const surfaceBindings = SURFACES.map(surface => ({
         ...surface,
         layeredEl: surface.hasLayered ? find('#' + surface.slug + '-layered') : null,
@@ -178,8 +205,10 @@
     // --- Wallpaper Settings & Sync State ---
 
     let settings = normalize();
+    let initialized = false;
     let ready = false;
     let initFailed = false;
+    let hiddenWakeObserver;
     let busy = false;
     let saving = false;
     let hasDraft = false;
@@ -586,6 +615,10 @@
         enabledInput.disabled = locked;
         themeSelect.value = settings.theme;
         themeSelect.disabled = locked;
+        for (const checkbox of syncDialogInputs) {
+            checkbox.checked = settings.syncDialogSurfaces;
+            checkbox.disabled = locked;
+        }
         for (const { prefix, layeredEl, coverEl } of surfaceBindings) {
             if (layeredEl) {
                 layeredEl.checked = settings[prefix + 'Layered'];
@@ -701,9 +734,10 @@
             'var(--image)'
         );
         for (let i = 0; i < stages.length; i++) {
+            const frame = stages[i];
+            if (!hydratedStages.has(frame)) continue;
             const width = stageWidths[i];
             if (!width) continue;
-            const frame = stages[i];
             const ratio = width / metrics.width;
             for (const item of SURFACES) setSurfacePreview(frame, ratio, item);
             if (css) rules.push('#' + frame.id + ' .wallpaper {' + css + '}');
@@ -724,8 +758,26 @@
         applyTheme();
     }
 
-    const stageObserver = new ResizeObserver(render);
-    for (const stage of stages) stageObserver.observe(stage);
+    const stageObserver = new ResizeObserver(() => {
+        if (initialized) render();
+    });
+    function ensureStageHydrated(stage) {
+        if (!stage || hydratedStages.has(stage)) return;
+        hydratedStages.add(stage);
+        if (sampleTemplate) {
+            stage.prepend(sampleTemplate.content.cloneNode(true));
+        }
+        const wp = stage.querySelector('.wallpaper');
+        if (wp) {
+            wallpaperEls.push(wp);
+            wp.style.setProperty('--image', previewImage && brokenPreviewImage !== previewImage ? 'url("' + previewImage + '")' : 'none');
+        }
+        if (naturalWidth > 0 && naturalHeight > 0) {
+            stage.style.setProperty('--ag-ui-image-aspect', String(Number((naturalWidth / naturalHeight).toFixed(6))));
+        }
+        lastMetricsKey = '';
+        stageObserver.observe(stage);
+    }
 
     function changed() {
         if (settings.mode === 'tile' && settings.image && !settings.imageColor) {
@@ -769,6 +821,22 @@
         sliders.push({ id, input, output, unit: option.unit, getValue, isDisabled });
     }
 
+    function applySurfaceField(prefix, suffix, value) {
+        if (settings.syncDialogSurfaces && SYNCED_SURFACES.includes(prefix)) {
+            for (const target of SYNCED_SURFACES) settings[target + suffix] = value;
+        } else {
+            settings[prefix + suffix] = value;
+        }
+    }
+
+    function syncAllFrom(sourcePrefix) {
+        const source = SYNCED_SURFACES.includes(sourcePrefix) ? sourcePrefix : 'composer';
+        for (const suffix of SYNCED_SUFFIXES) {
+            const value = settings[source + suffix];
+            for (const target of SYNCED_SURFACES) settings[target + suffix] = value;
+        }
+    }
+
     for (const [key, option] of Object.entries(controls)) {
         addSlider({
             id: key,
@@ -790,7 +858,7 @@
                 option: surfaceControls[key],
                 container: '#' + slug + '-controls',
                 getValue: () => settings[key],
-                onInput: value => { settings[key] = value; changed(); },
+                onInput: value => { applySurfaceField(prefix, suffix, value); changed(); },
                 isDisabled: () => !settings[prefix + 'Cover'],
             });
         }
@@ -806,29 +874,39 @@
     }
     enabledInput.addEventListener('change', event => { settings.enabled = event.target.checked; changed(); });
     themeSelect.addEventListener('change', event => { settings.theme = event.target.value; changed(); });
+    for (const checkbox of syncDialogInputs) {
+        checkbox.addEventListener('change', event => {
+            const enabled = event.target.checked;
+            settings.syncDialogSurfaces = enabled;
+            if (enabled) syncAllFrom(checkbox.dataset.syncDialogSurfaces);
+            changed();
+        });
+    }
     for (const { prefix, layeredEl, coverEl } of surfaceBindings) {
         if (layeredEl) {
             layeredEl.addEventListener('change', event => {
-                settings[prefix + 'Layered'] = event.target.checked;
+                applySurfaceField(prefix, 'Layered', event.target.checked);
                 changed();
             });
         }
         coverEl.addEventListener('change', event => {
-            settings[prefix + 'Cover'] = event.target.checked;
+            applySurfaceField(prefix, 'Cover', event.target.checked);
             changed();
         });
     }
     for (const binding of colorBindings) {
+        const prefix = binding.key.replace(/(?:Outer|Inner)Color$/, '');
+        const suffix = binding.key.slice(prefix.length);
         const updateColor = event => {
             const next = event.target.value.toLowerCase();
             if (settings[binding.key] === next) return;
-            settings[binding.key] = next;
+            applySurfaceField(prefix, suffix, next);
             changed();
         };
         binding.inputEl.addEventListener('input', updateColor);
         binding.inputEl.addEventListener('change', updateColor);
         binding.resetEl.addEventListener('click', () => {
-            settings[binding.key] = '';
+            applySurfaceField(prefix, suffix, '');
             changed();
         });
     }
@@ -960,6 +1038,7 @@
     openDragPreview.addEventListener('click', () => {
         if (!canOpenDragPreview() || !dragModal.hidden) return;
         updateController.close(false);
+        ensureStageHydrated(dragStage);
         dragModal.hidden = false;
         syncModalInert();
         render();
@@ -1311,7 +1390,12 @@
             onModalStateChange();
             renderUpdateState();
             closeUpdateModalBtn.focus();
-            if (['installed', 'reloading'].includes(updateState.state)) return;
+            if (updateState.state === 'installed') return;
+            if (updateState.state === 'reloading') {
+                clearTimeout(updatePollTimer);
+                pollReloadRecovery(++updateEpoch, 0);
+                return;
+            }
             if (['checking', 'installing'].includes(updateState.state)) {
                 void callUpdateApi('status');
                 return;
@@ -1404,6 +1488,8 @@
         clearTimeout(resizeSyncTimer);
         clearTimeout(resizeFollowUpTimer);
         if (dprMedia && onDprChange) dprMedia.removeEventListener('change', onDprChange);
+        hiddenWakeObserver?.disconnect();
+        stageObserver.disconnect();
         updateController.cleanup();
     });
 
@@ -1633,9 +1719,17 @@
         }
     }
 
+    function isHiddenEmbedded() {
+        return window.parent !== window && (document.hidden || window.innerWidth <= 0 || window.innerHeight <= 0);
+    }
+
     function handleActivation() {
         updateHostTheme();
         applyTheme();
+        if (!initialized) {
+            if (!isHiddenEmbedded()) void initialize();
+            return;
+        }
         if (!ready) {
             if (!syncInFlight) void syncFromServer({ initial: true });
             return;
@@ -1648,6 +1742,11 @@
     }
     function scheduleLayoutSync() {
         const nextSig = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
+        if (!initialized) {
+            lastViewportSig = nextSig;
+            if (!isHiddenEmbedded()) void initialize();
+            return;
+        }
         if (nextSig === lastViewportSig) return;
         lastViewportSig = nextSig;
         if (!ready || document.hidden) return;
@@ -1697,10 +1796,26 @@
     watchDevicePixelRatio();
 
     async function initialize() {
+        if (initialized) return;
+        initialized = true;
+        hiddenWakeObserver?.disconnect();
+        hiddenWakeObserver = undefined;
+        ensureStageHydrated(previewStage);
         updateHostTheme();
         render();
         updateController.init();
         await syncFromServer({ initial: true });
     }
-    void initialize();
+    if (!isHiddenEmbedded()) {
+        void initialize();
+    } else {
+        updateHostTheme();
+        applyTheme();
+        if (typeof ResizeObserver === 'function') {
+            hiddenWakeObserver = new ResizeObserver(() => {
+                if (!initialized && !isHiddenEmbedded()) void initialize();
+            });
+            hiddenWakeObserver.observe(document.documentElement);
+        }
+    }
 })();

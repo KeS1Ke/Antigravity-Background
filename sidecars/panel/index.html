@@ -71,6 +71,19 @@
                     <div id="left-sidebar-controls" class="surface-controls"></div>
                 </details>
                 <details class="card">
+                    <summary><h2>左侧栏选中会话</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="selected-row-layered" type="checkbox" disabled> 原版分层级感</label>
+                        <label class="switch"><input id="selected-row-cover" type="checkbox" disabled> 显示底色</label>
+                        <label class="switch"><input type="checkbox" data-sync-dialog-surfaces="selectedRow" disabled> 同步三项设置</label>
+                    </div>
+                    <div class="color-controls">
+                        <div class="color-row"><label for="selectedRowOuterColor">外圈颜色</label><input id="selectedRowOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="selectedRowOuterColor" class="text-button" disabled>默认</button></div>
+                        <div class="color-row"><label for="selectedRowInnerColor">内部颜色</label><input id="selectedRowInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="selectedRowInnerColor" class="text-button" disabled>默认</button></div>
+                    </div>
+                    <div id="selected-row-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
                     <summary><h2>右侧面板</h2></summary>
                     <div class="surface-toggles">
                         <label class="switch"><input id="sidebar-cover" type="checkbox" disabled> 显示底色</label>
@@ -78,16 +91,30 @@
                     <div id="sidebar-controls" class="surface-controls"></div>
                 </details>
                 <details class="card">
-                    <summary><h2>输入框与对话框</h2></summary>
+                    <summary><h2>输入框</h2></summary>
                     <div class="surface-toggles">
                         <label class="switch"><input id="composer-layered" type="checkbox" disabled> 原版分层级感</label>
                         <label class="switch"><input id="composer-cover" type="checkbox" disabled> 显示底色</label>
+                        <label class="switch"><input type="checkbox" data-sync-dialog-surfaces="composer" disabled> 同步三项设置</label>
                     </div>
                     <div class="color-controls">
                         <div class="color-row"><label for="composerOuterColor">外圈颜色</label><input id="composerOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerOuterColor" class="text-button" disabled>默认</button></div>
                         <div class="color-row"><label for="composerInnerColor">内部颜色</label><input id="composerInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="composerInnerColor" class="text-button" disabled>默认</button></div>
                     </div>
                     <div id="composer-controls" class="surface-controls"></div>
+                </details>
+                <details class="card">
+                    <summary><h2>对话框</h2></summary>
+                    <div class="surface-toggles">
+                        <label class="switch"><input id="bubble-layered" type="checkbox" disabled> 原版分层级感</label>
+                        <label class="switch"><input id="bubble-cover" type="checkbox" disabled> 显示底色</label>
+                        <label class="switch"><input type="checkbox" data-sync-dialog-surfaces="bubble" disabled> 同步三项设置</label>
+                    </div>
+                    <div class="color-controls">
+                        <div class="color-row"><label for="bubbleOuterColor">外圈颜色</label><input id="bubbleOuterColor" type="color" value="#131313" disabled><button type="button" data-reset-color="bubbleOuterColor" class="text-button" disabled>默认</button></div>
+                        <div class="color-row"><label for="bubbleInnerColor">内部颜色</label><input id="bubbleInnerColor" type="color" value="#131313" disabled><button type="button" data-reset-color="bubbleInnerColor" class="text-button" disabled>默认</button></div>
+                    </div>
+                    <div id="bubble-controls" class="surface-controls"></div>
                 </details>
                 <details class="card">
                     <summary><h2>Overview 面板</h2></summary>
@@ -116,7 +143,7 @@
         <div class="sample-window" aria-hidden="true">
             <div class="sample-titlebar"><span>Antigravity</span><span>─　□　×</span></div>
             <div class="sample-workspace">
-                <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><i></i><i></i></div>
+                <div class="sample-side"><b>Antigravity</b><span>＋ 新对话</span><i></i><i></i><i></i><span class="sample-project">项目</span><div class="sample-side-selected"><div class="sample-side-selected-inner"><span>当前会话</span></div></div><i></i></div>
                 <div class="sample-main">
                     <div class="sample-overview"><b>Overview</b><span>Review</span><span>Files</span></div>
                     <div class="sample-chat"><b>有什么可以帮你？</b><div class="sample-bubble"><div class="sample-bubble-inner"><span>调整对话框底色</span></div></div><i></i><i></i><i></i></div>

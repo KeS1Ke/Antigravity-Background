@@ -261,6 +261,7 @@ export class SidecarApp {
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { NO_PROXY: '*.github.com:443' }, winProxyReader), null);
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { HTTPS_PROXY: '' }, winProxyReader), null);
     assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { HTTPS_PROXY: 'http://127.0.0.1:8888' }, winProxyReader), 'http://127.0.0.1:8888');
+    assert.equal(await resolveSystemProxy('https://api.github.com/repos/a/b', { Https_Proxy: 'http://127.0.0.1:7890' }, winProxyReader), 'http://127.0.0.1:7890');
     assert.equal(await resolveSystemProxy('http://127.0.0.1:12345/api', { HTTPS_PROXY: 'http://127.0.0.1:8888' }, winProxyReader), null);
 
     // 3. releaseRuntimeDirectory on Windows
@@ -891,6 +892,28 @@ export class SidecarApp {
         await until(() => evalOn('document.querySelector("#update-status-text").textContent === "正在重新加载…"'), 'Reload button did not enter reloading state');
         await until(async () => sidecar.exitCode !== null, 'Sidecar did not exit on reload');
         assert.equal(sidecar.exitCode, 0);
+
+        // Regression (M4): closing and reopening modal during reloading resumes recovery polling
+        await evalOn(`(() => {
+            window.__reopenPollCount = 0;
+            const transport = window.sidecar || window;
+            transport.fetch = async (path) => {
+                if (path === '/api/update') {
+                    window.__reopenPollCount++;
+                    return new Response(JSON.stringify({ state: 'reloading', currentVersion: '0.3.9' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+            };
+            document.querySelector('#close-update-modal').click();
+            document.querySelector('#check-update').click();
+        })()`);
+        await until(
+            () => evalOn('window.__reopenPollCount >= 1 && !document.querySelector("#update-modal").hidden && document.querySelector("#update-status-text").textContent === "正在重新加载…"'),
+            'Reopened reloading modal did not resume /api/update recovery poll'
+        );
     } finally {
         pageClient?.close();
         try { await pageClient?.command('Browser.close'); } catch {}

@@ -195,6 +195,7 @@ function installAsarPersist(installation) {
     const existingMarker = readAsarEntry(current, PERSIST_ENTRY_PATH);
     if (existingMarker) {
         const { sha256 } = JSON.parse(existingMarker.toString('utf8'));
+        if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error('持久化恢复记录无效。');
         const backupPath = asarPath + '.antigravity-ui.persist.' + sha256 + '.bak';
         if (!fs.existsSync(backupPath)) throw new Error('持久化原始备份缺失，无法安全重修补：' + backupPath);
         const restored = fs.readFileSync(backupPath);

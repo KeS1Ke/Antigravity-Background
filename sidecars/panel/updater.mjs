@@ -175,7 +175,14 @@ export async function resolveSystemProxy(targetUrl, env = process.env, windowsPr
     if (isLoopbackHost(parsed.hostname)) return null;
     const scheme = parsed.protocol.replace(':', '').toLowerCase();
 
-    const readEnv = name => (env[name.toLowerCase()] ?? env[name.toUpperCase()]);
+    const findEnvKey = name => {
+        const target = name.toLowerCase();
+        return Object.keys(env).find(key => key.toLowerCase() === target);
+    };
+    const readEnv = name => {
+        const key = findEnvKey(name);
+        return key === undefined ? undefined : env[key];
+    };
     const noProxyRaw = readEnv('no_proxy');
     if (noProxyRaw) {
         for (const rule of noProxyRaw.split(',')) {
@@ -184,12 +191,10 @@ export async function resolveSystemProxy(targetUrl, env = process.env, windowsPr
     }
 
     const schemeKey = scheme === 'https' ? 'https_proxy' : 'http_proxy';
-    const hasEnvScheme = Object.keys(env).some(key => key.toLowerCase() === schemeKey);
-    if (hasEnvScheme) {
+    if (findEnvKey(schemeKey) !== undefined) {
         return normalizeProxyUrl(readEnv(schemeKey));
     }
-    const hasEnvAll = Object.keys(env).some(key => key.toLowerCase() === 'all_proxy');
-    if (hasEnvAll) {
+    if (findEnvKey('all_proxy') !== undefined) {
         return normalizeProxyUrl(readEnv('all_proxy'));
     }
 

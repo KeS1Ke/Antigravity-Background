@@ -9,19 +9,25 @@
         fade: { label: '左侧渐隐', min: 0, max: 95, value: 38, unit: '%' },
     };
 
-    const activeSurfaces = ['leftSidebar', 'sidebar', 'composer', 'overview'];
+    const activeSurfaces = ['leftSidebar', 'sidebar', 'composer', 'bubble', 'selectedRow', 'overview'];
+    const layeredSurfaces = ['composer', 'bubble', 'selectedRow'];
     const surfaceControls = Object.fromEntries(activeSurfaces.flatMap(prefix => [
         [prefix + 'Opacity', { label: '底色不透明度', min: 0, max: 100, value: 100, unit: '%' }],
         [prefix + 'Blur', { label: '背景模糊', min: 0, max: 30, value: 0, unit: ' px' }],
     ]));
     const maximumImageLength = 10 * 1024 * 1024;
     const maxDimension = 2560;
-    const colorKeys = ['composerOuterColor', 'composerInnerColor', 'overviewOuterColor', 'overviewInnerColor'];
+    const colorKeys = [
+        'composerOuterColor', 'composerInnerColor',
+        'bubbleOuterColor', 'bubbleInnerColor',
+        'selectedRowOuterColor', 'selectedRowInnerColor',
+        'overviewOuterColor', 'overviewInnerColor',
+    ];
     const boundSuffixes = ['Cover', 'Layered', 'Opacity', 'Blur', 'OuterColor', 'InnerColor'];
     const surfaceKeys = [
         'leftSidebarCover', 'leftSidebarOpacity', 'leftSidebarBlur',
         'sidebarCover', 'sidebarOpacity', 'sidebarBlur',
-        ...boundSuffixes.map(suffix => 'composer' + suffix),
+        ...layeredSurfaces.flatMap(prefix => boundSuffixes.map(suffix => prefix + suffix)),
         'overviewCover', 'overviewOpacity', 'overviewBlur', 'overviewOuterColor', 'overviewInnerColor',
     ];
     const DATA_IMAGE_RE = /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;
@@ -49,10 +55,12 @@
 
     function normalize(input = {}) {
         if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('背景设置无效。');
+        const syncDialogSurfaces = input.syncDialogSurfaces !== false;
+        const allowLegacyBubbleFallback = syncDialogSurfaces;
         const options = Object.fromEntries(Object.entries({ ...controls, ...surfaceControls }).map(([key, { min, max, value }]) => {
             const raw = input[key] !== undefined
                 ? input[key]
-                : (key.startsWith('composer') ? input['bubble' + key.slice('composer'.length)] : undefined);
+                : (allowLegacyBubbleFallback && key.startsWith('composer') ? input['bubble' + key.slice('composer'.length)] : undefined);
             return [key, Number.isFinite(raw) ? Math.min(max, Math.max(min, Math.round(raw))) : value];
         }));
         const image = input.image ?? '';
@@ -81,10 +89,14 @@
         const sidebarCover = typeof input.sidebarCover === 'boolean' ? input.sidebarCover : input.sidebarTransparent !== true;
         const composerCover = typeof input.composerCover === 'boolean'
             ? input.composerCover
-            : (typeof input.bubbleCover === 'boolean' ? input.bubbleCover : true);
+            : (allowLegacyBubbleFallback && typeof input.bubbleCover === 'boolean' ? input.bubbleCover : true);
         const composerLayered = typeof input.composerLayered === 'boolean'
             ? input.composerLayered
-            : (typeof input.bubbleLayered === 'boolean' ? input.bubbleLayered : true);
+            : (allowLegacyBubbleFallback && typeof input.bubbleLayered === 'boolean' ? input.bubbleLayered : true);
+        const bubbleCover = typeof input.bubbleCover === 'boolean' ? input.bubbleCover : true;
+        const bubbleLayered = typeof input.bubbleLayered === 'boolean' ? input.bubbleLayered : true;
+        const selectedRowCover = typeof input.selectedRowCover === 'boolean' ? input.selectedRowCover : true;
+        const selectedRowLayered = typeof input.selectedRowLayered === 'boolean' ? input.selectedRowLayered : true;
         const colors = {};
         for (const key of colorKeys) {
             if (input[key] !== undefined) {
@@ -95,20 +107,35 @@
                 colors[key] = color.toLowerCase();
                 continue;
             }
-            const legacy = key.startsWith('composer') ? input['bubble' + key.slice('composer'.length)] : undefined;
+            const legacy = allowLegacyBubbleFallback && key.startsWith('composer')
+                ? input['bubble' + key.slice('composer'.length)]
+                : undefined;
             colors[key] = typeof legacy === 'string' && HEX_COLOR_RE.test(legacy) ? legacy.toLowerCase() : '';
         }
         const { imageWidth, imageHeight } = clampDimensions(input.imageWidth, input.imageHeight, 512, 512);
-        return {
+        const normalized = {
             ...options, ...colors, image, imageColor, mode, theme, enabled: input.enabled !== false,
+            syncDialogSurfaces,
             leftSidebarCover: input.leftSidebarCover !== false,
             sidebarCover,
             composerCover,
             composerLayered,
+            bubbleCover,
+            bubbleLayered,
+            selectedRowCover,
+            selectedRowLayered,
             overviewCover: input.overviewCover !== false,
             imageWidth,
             imageHeight,
         };
+        if (syncDialogSurfaces) {
+            for (const suffix of boundSuffixes) {
+                const value = normalized['composer' + suffix];
+                normalized['bubble' + suffix] = value;
+                normalized['selectedRow' + suffix] = value;
+            }
+        }
+        return normalized;
     }
 
     const defaults = Object.freeze(normalize({}));
