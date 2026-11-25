@@ -537,23 +537,6 @@ function parseChecksumFile(text, filename) {
     return matches[0];
 }
 
-function parseAtomLatestCommit(xmlText, repo, webBase) {
-    const entryMatch = String(xmlText).match(/<entry>([\s\S]*?)<\/entry>/i);
-    if (!entryMatch) throw new UpdateError('verification');
-    const entry = entryMatch[1];
-    const idMatch = entry.match(/<id>[^<]*Commit\/([0-9a-f]{40})<\/id>/i);
-    if (!idMatch) throw new UpdateError('verification');
-    const sha = idMatch[1].toLowerCase();
-    if (!SHA_RE.test(sha)) throw new UpdateError('verification');
-    const titleMatch = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const title = titleMatch ? sanitizeText(decodeHtmlEntities(titleMatch[1]), 300) : '';
-    return {
-        sha,
-        message: title,
-        url: `${webBase}/${repo}/commit/${sha}`,
-    };
-}
-
 /** Windows locks a process's current working directory; move cwd to pluginDir so sidecars/ files can swap cleanly. */
 export function releaseRuntimeDirectory(pluginDir, {
     platform = process.platform,
@@ -1090,95 +1073,6 @@ export class PluginUpdater {
         return zips.length === 1 ? zips[0] : null;
     }
 
-    async fetchManifestAtUrls(urls, deadline, proxyResolver) {
-        let lastError = null;
-        for (let i = 0; i < urls.length; i++) {
-            try {
-                const res = await fetchTrusted(urls[i], this.fetchOptions(deadline, {
-                    proxyResolver,
-                    maxBytes: 65536,
-                }));
-                return res.body;
-            } catch (error) {
-                if (error?.detail === 'certificate') throw error;
-                if (error instanceof UpdateError && error.code === 'verification') throw error;
-                lastError = error;
-            }
-        }
-        throw lastError;
-    }
-
-    async fetchMainBranchInfo(deadline, proxyResolver = this.proxyResolver) {
-        const { apiBase, webBase, rawBase, codeloadBase } = this.endpoints;
-
-        // Fetch commit SHA first so plugin.json can be pinned to the exact commit (eliminates raw CDN race).
-        let commitInfo = null;
-        try {
-            const res = await fetchTrusted(`${apiBase}/repos/${this.repo}/commits/main`, this.fetchOptions(Math.min(deadline, Date.now() + 10000), {
-                proxyResolver,
-                headers: { Accept: 'application/vnd.github+json' },
-                maxBytes: MAX_METADATA_BYTES,
-            }));
-            const commit = parseJsonStrict(res.body.toString('utf8'));
-            if (typeof commit?.sha !== 'string' || !SHA_RE.test(commit.sha)) {
-                throw new UpdateError('verification');
-            }
-            commitInfo = {
-                sha: commit.sha.toLowerCase(),
-                message: sanitizeText(commit.commit?.message || ''),
-                url: `${webBase}/${this.repo}/commit/${commit.sha.toLowerCase()}`,
-            };
-        } catch (error) {
-            if (error?.detail === 'certificate') throw error;
-            if (error instanceof UpdateError && error.code === 'verification') throw error;
-            if (error?.statusCode !== undefined && ![403, 429].includes(error.statusCode)) throw error;
-        }
-
-        if (!commitInfo) {
-            const atomRes = await fetchTrusted(`${webBase}/${this.repo}/commits/main.atom`, this.fetchOptions(deadline, {
-                proxyResolver,
-                headers: { Accept: 'application/atom+xml, application/xml, text/xml' },
-                maxBytes: MAX_METADATA_BYTES,
-            }));
-            commitInfo = parseAtomLatestCommit(atomRes.body.toString('utf8'), this.repo, webBase);
-        }
-
-        let manifestBody;
-        try {
-            manifestBody = await this.fetchManifestAtUrls([
-                `${rawBase}/${this.repo}/${commitInfo.sha}/plugin.json`,
-                `${webBase}/${this.repo}/raw/${commitInfo.sha}/plugin.json`,
-            ], deadline, proxyResolver);
-        } catch (error) {
-            if (error?.statusCode !== 404) throw error;
-            manifestBody = await this.fetchManifestAtUrls([
-                `${rawBase}/${this.repo}/main/plugin.json`,
-                `${webBase}/${this.repo}/raw/refs/heads/main/plugin.json`,
-            ], deadline, proxyResolver);
-        }
-
-        const manifest = parseJsonStrict(manifestBody.toString('utf8'));
-        if (manifest?.name !== PLUGIN_NAME || !parseSemver(manifest?.version)) {
-            throw new UpdateError('verification');
-        }
-        const latestVersion = manifest.version;
-
-        return {
-            sourceKind: 'main',
-            tag: null,
-            latestVersion,
-            latestCommit: commitInfo.sha,
-            releaseUrl: null,
-            commitUrl: commitInfo.url,
-            notes: commitInfo.message,
-            packageKind: 'tarball',
-            archiveName: `${PLUGIN_NAME}-${commitInfo.sha.slice(0, 7)}.tar.gz`,
-            url: `${codeloadBase}/${this.repo}/tar.gz/${commitInfo.sha}`,
-            checksumUrl: null,
-            size: null,
-        };
-    }
-
     async check({ force = false } = {}) {
         if (this.job || this.applyPending || ['installing', 'installed', 'reloading'].includes(this.state.state)) {
             return this.publicState();
@@ -1204,51 +1098,62 @@ export class PluginUpdater {
             };
 
             try {
-                const { currentVersion, currentCommit } = await this.readLocalState();
+                const { currentVersion } = await this.readLocalState();
                 this.state.currentVersion = currentVersion;
-                this.state.currentCommit = currentCommit;
+                this.state.currentCommit = null;
 
                 const deadline = Date.now() + CHECK_BUDGET_MS;
                 const proxyResolver = this.createCycleProxyResolver();
-                let remote = await this.tryFetchLatestRelease(currentVersion, deadline, proxyResolver);
-                if (!remote) remote = await this.fetchMainBranchInfo(deadline, proxyResolver);
+                const remote = await this.tryFetchLatestRelease(currentVersion, deadline, proxyResolver);
 
-                const cmp = compareSemver(remote.latestVersion, currentVersion);
-                let hasUpdate = false;
-                let updateReason = null;
-                if (cmp > 0) {
-                    hasUpdate = true;
-                    updateReason = 'version';
-                } else if (cmp === 0 && remote.sourceKind === 'main' && currentCommit && remote.latestCommit && currentCommit !== remote.latestCommit) {
-                    // Published releases are authoritative over same-version main commits.
-                    hasUpdate = true;
-                    updateReason = 'commit';
+                if (!remote) {
+                    this.plan = null;
+                    this.state = {
+                        ...this.state,
+                        state: 'current',
+                        sourceKind: 'release',
+                        latestVersion: currentVersion,
+                        latestCommit: null,
+                        releaseUrl: null,
+                        commitUrl: null,
+                        hasUpdate: false,
+                        updateReason: null,
+                        notes: '',
+                        progress: undefined,
+                        error: undefined,
+                        errorDetail: undefined,
+                        checkedAt: new Date(this.now()).toISOString(),
+                    };
+                } else {
+                    const cmp = compareSemver(remote.latestVersion, currentVersion);
+                    const hasUpdate = cmp > 0;
+                    const updateReason = hasUpdate ? 'version' : null;
+
+                    this.plan = hasUpdate ? {
+                        ...remote,
+                        currentVersion,
+                        currentCommit: null,
+                        expectedVersion: remote.latestVersion,
+                        expires: this.now() + PLAN_TTL_MS,
+                    } : null;
+
+                    this.state = {
+                        ...this.state,
+                        state: hasUpdate ? 'available' : 'current',
+                        sourceKind: 'release',
+                        latestVersion: remote.latestVersion,
+                        latestCommit: null,
+                        releaseUrl: remote.releaseUrl,
+                        commitUrl: null,
+                        hasUpdate,
+                        updateReason,
+                        notes: remote.notes || '',
+                        progress: undefined,
+                        error: undefined,
+                        errorDetail: undefined,
+                        checkedAt: new Date(this.now()).toISOString(),
+                    };
                 }
-
-                this.plan = hasUpdate ? {
-                    ...remote,
-                    currentVersion,
-                    currentCommit,
-                    expectedVersion: remote.latestVersion,
-                    expires: this.now() + PLAN_TTL_MS,
-                } : null;
-
-                this.state = {
-                    ...this.state,
-                    state: hasUpdate ? 'available' : 'current',
-                    sourceKind: remote.sourceKind,
-                    latestVersion: remote.latestVersion,
-                    latestCommit: remote.latestCommit,
-                    releaseUrl: remote.releaseUrl,
-                    commitUrl: remote.commitUrl,
-                    hasUpdate,
-                    updateReason,
-                    notes: remote.notes || '',
-                    progress: undefined,
-                    error: undefined,
-                    errorDetail: undefined,
-                    checkedAt: new Date(this.now()).toISOString(),
-                };
             } catch (error) {
                 let classified;
                 if (error instanceof UpdateError) {
@@ -1295,7 +1200,6 @@ export class PluginUpdater {
         const plan = this.plan;
         if (!plan || this.state.state !== 'available') throw new UpdateError('verification');
         if (input.version !== plan.latestVersion) throw new UpdateError('verification');
-        if (plan.sourceKind === 'main' && input.commit !== plan.latestCommit) throw new UpdateError('verification');
 
         const target = this.inspectTargetEligibility();
         if (!target.canApply) {
@@ -1318,8 +1222,8 @@ export class PluginUpdater {
             }
             const local = await this.readLocalState();
             this.state.currentVersion = local.currentVersion;
-            this.state.currentCommit = local.currentCommit;
-            if (local.currentVersion !== plan.currentVersion || local.currentCommit !== plan.currentCommit) {
+            this.state.currentCommit = null;
+            if (local.currentVersion !== plan.currentVersion) {
                 throw new UpdateError('verification', 'plan-expired');
             }
         } catch (error) {
@@ -1433,7 +1337,7 @@ export class PluginUpdater {
         try {
             await this.recoverInterruptedTransactions();
             const local = await this.readLocalState();
-            if (local.currentVersion !== plan.currentVersion || local.currentCommit !== plan.currentCommit) {
+            if (local.currentVersion !== plan.currentVersion) {
                 throw new UpdateError('verification', 'plan-expired');
             }
             let expectedSha256 = null;

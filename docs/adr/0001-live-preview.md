@@ -210,3 +210,8 @@
   - **Sidecar 启动与首帧附加并行重叠（`sidecars/panel/main.mjs`、`store.mjs`、`runtime.mjs`）**：`SettingsStore.reloadIfChanged()` 首次加载直接进入 `_load()` 省去前置 `_inspect()` 磁盘 `stat`；`main.mjs` 在 `app.run()` 就绪后即启动 `runtime.start()`，由 `runtime.apply()` 并行执行 `discoverTargets()` 与 `readDesired()`（其内部按需等待 `initialStorePromise`），同时首轮心跳跳过冗余 `syncStore()`。
   - **精确宿主端口免多余探测 & 稳态评估二合一（`sidecars/panel/runtime.mjs`）**：对 URL 端口精确命中 `hostPort` 且非 `nonHost` 的目标跳过首次独立 `HOST_PROBE_EXPRESSION` 往返（由 `installWallpaper` 首行指纹守卫兜底）；在主窗口存在子插件槽位且适配激活时，将极轻量 `PLUGIN_SLOT_SCAN_BODY` 直接合并进 `FAST_EVAL_PREFIX` 与全量安装外层包装返回值，使每轮主窗口 `Runtime.evaluate` 从 **2 次减为 1 次**；并对 `installWallpaper` / `installPluginPanelSurface` 注入源码去除整行纯注释与行首冗余缩进以减小 CDP 传输与 V8 解析体积。
   - **换图正则前置短路与设置页首屏优先（`sidecars/panel/renderer.mjs`、`sidecars/panel/app.js`）**：`renderer.mjs`（`revision = 35`）在 `imageHash` 与 `--ag-ui-image` 均命中时跳过对大 Base64 字符串的 `safeImageRe` 全量正则扫描；`app.js` 展开设置页时先完成 `syncFromServer({ initial: true })` 首屏表单与预览渲染，再调用 `updateController.init()` 加载更新器状态，避免首屏竞争。
+
+## 27. 内置更新器收敛为纯 GitHub Release 语义化版本号推送
+
+- **背景**：此前仓库尚无 Release 或存在同版本新提交时，更新器会回退拉取 `main` 分支最新 git commit 并触发「发现最新提交」，导致纯文档或内部维护提交也被当作可用更新推送给用户。
+- **变更**：`sidecars/panel/updater.mjs` 仅以 GitHub Release 语义化版本号（`compareSemver(latestVersion, currentVersion) > 0`）作为唯一更新触发条件（保留 Release ZIP + SHA-256 强校验、无 ZIP 时回退 Release Tag 源码包及 API 403/429 时的 Release 公开 HTML 降级）；移除 `fetchMainBranchInfo`、`parseAtomLatestCommit` 与 `updateReason = 'commit'` 分支，仓库无 Release 或仅有同版本后续 git 提交时一律返回 `current`；`sidecars/panel/app.js` 同步精简为纯版本号展示（`vX.Y.Z`）。

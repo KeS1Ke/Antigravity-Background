@@ -68,7 +68,7 @@
 | **Selected Row / Composer / Bubble** | Three separate collapsible cards controlling native layered depth, fill toggle, outer/inner hex colors, opacity, and blur, plus an optional **Sync all three** toggle (enabled by default) | In layered mode, the outer color renders exclusively as a hollow `3–4px` outer ring + `1px` border (`mask-composite: exclude`) without tinting the inner card; tweak independently or keep all three in sync |
 | **Overview Panel** | Independent flat card with fill toggle, outer/inner hex colors, opacity, and backdrop blur | Targets all 4 Overview overlay/gutter/sibling/dropdown hosts independently without syncing to composer/bubble settings |
 | **Theme & Multi-Window Sync** | Supports Follow App / Dark / Light panel themes, multi-window auto-discovery, same-origin `BroadcastChannel` sync across open panels, and external `settings.json` reload | Live adjustments stay in Sidecar memory until **Save** writes atomically to disk; **Discard** reverts unsaved drafts |
-| **In-App GitHub Updater** | Header displays current version, GitHub link, and **Check for Updates**; resolves GitHub Releases (ZIP + SHA-256), tags / `main` branch, and Atom feed fallback | Transactional staging with automatic rollback on failure and one-click hot reload; never initiates network requests passively on panel load |
+| **In-App GitHub Updater** | Header displays current version, GitHub link, and **Check for Updates**; pushes updates strictly by GitHub Release SemVer version (ZIP + SHA-256 preferred, Tag tarball & public Release page fallback on API rate limits—never pushes ordinary `main` branch git commits) | Transactional staging with automatic rollback on failure and one-click hot reload; never initiates network requests passively on panel load |
 
 The updater reclaims stale directory locks left by exited processes. If a legacy lock file persists after all Antigravity processes have exited, remove `.gemini/config/plugins/.antigravity-ui-update.lock` and restart the plugin.
 
@@ -206,14 +206,14 @@ antigravity-UI/
 │   ├── runtime.mjs                 # CDP window discovery, connection reuse & health tracking
 │   ├── renderer.mjs                # Host wallpaper injection, layering & scrollbar clipping
 │   ├── store.mjs                   # Atomic persistence & external mtime reload store
-│   ├── updater.mjs                 # GitHub Release/Tag/main updater, SHA-256 & hot reload
+│   ├── updater.mjs                 # GitHub Release SemVer updater, SHA-256 & hot reload
 │   ├── archive.mjs                 # Safe ZIP / TAR.GZ extraction & runtime manifest check
 │   ├── sdk.mjs                     # Sidecar SDK loader
 │   ├── index.html                  # Settings panel, drag preview & update modal markup
 │   ├── styles.css                  # Light/dark theme & embedded panel styles
 │   └── app.js                      # Live preview, BroadcastChannel sync & UI controllers
 ├── docs/
-│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §26)
+│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §27)
 │   └── images/                     # README showcase screenshots
 └── tests/
     ├── background-rendering.mjs    # Isolated rendering, interaction & persistence E2E suite

@@ -276,9 +276,10 @@ export class SidecarApp {
     );
     assert.equal(chdirTarget, 'C:\\Users\\demo\\.gemini\\config\\plugins\\antigravity-ui');
 
-    // 4. Local mock GitHub HTTP Server exercising Release ZIP+SHA256, Tag Tarball + 429 HTML fallback, and main branch fallback
+    // 4. Local mock GitHub HTTP Server exercising Release ZIP+SHA256, Tag Tarball + 429 HTML fallback, and no-release / same-version isolation
     let scenario = { mode: 'main', commit: '1111111111111111111111111111111111111111', version: '0.3.8', notes: 'initial main commit', rateLimitApi: false, corruptSha: false };
     let githubHitCount = 0;
+    let commitEndpointHits = 0;
     const mockAssets = new Map();
 
     const ghServer = createServer((req, res) => {
@@ -341,6 +342,7 @@ export class SidecarApp {
             return;
         }
         if (url.pathname === '/repos/KeS1Ke/Antigravity-Background/commits/main') {
+            commitEndpointHits++;
             if (scenario.rateLimitApi) {
                 res.writeHead(403, { 'Content-Type': 'application/json' });
                 res.end('{"message":"API rate limit exceeded"}');
@@ -351,6 +353,7 @@ export class SidecarApp {
             return;
         }
         if (url.pathname === '/KeS1Ke/Antigravity-Background/commits/main.atom') {
+            commitEndpointHits++;
             res.writeHead(200, { 'Content-Type': 'application/atom+xml' });
             res.end(`<?xml version="1.0" encoding="UTF-8"?><feed><entry><id>tag:github.com,2008:Grit::Commit/${scenario.commit}</id><link href="/unrelated"/><title>${scenario.notes}</title></entry></feed>`);
             return;
@@ -557,7 +560,7 @@ export class SidecarApp {
     assert.equal(degradedInfo.applyDisabledReason, 'install-location');
     assert.equal(degradedInfo.currentVersion, '0.3.8');
 
-    // 4b. Dev workspace check -> canApply false
+    // 4b. Dev workspace check -> canApply false; no published release stays current without polling git commits
     const defaultUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'def-data'), home: installHome });
     assert.equal(defaultUpdater.publicState().repoUrl, 'https://github.com/KeS1Ke/Antigravity-Background');
     const devUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'dev-data'), home: installHome, endpoints });
@@ -565,7 +568,9 @@ export class SidecarApp {
     assert.equal(devCheck.state, 'current', JSON.stringify(devCheck));
     assert.equal(devCheck.canApply, false);
     assert.equal(devCheck.applyDisabledReason, 'dev-workspace');
-    assert.equal(devCheck.sourceKind, 'main');
+    assert.equal(devCheck.sourceKind, 'release');
+    assert.equal(devCheck.hasUpdate, false);
+    assert.equal(commitEndpointHits, 0, 'Updater must never poll git main-branch commits when checking for updates');
 
     // 4b. Installed plugin without .install-source.json, same version 0.3.8 on main -> no false positive ('current')
     let reloadFired = false;
@@ -688,26 +693,26 @@ export class SidecarApp {
     assert.equal(updater.publicState().state, 'installed');
     assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.4.0');
 
-    // 4f. Main branch commit-only update (0.4.0 -> 0.4.0 with new commit via Atom fallback)
+    // 4f. Version-only policy: same-version Release or new main-branch git commits must never push an update
     updater.state.state = 'idle';
     const oldCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const newCommit = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-    await writeFile(join(installedPlugin, '.install-source.json'), JSON.stringify({ repo: 'KeS1Ke/Antigravity-Background', channel: 'main', version: '0.4.0', commit: oldCommit }));
-    mockAssets.set('tar', buildTarBuffer(await collectPluginRuntimeEntries(project, { versionOverride: '0.4.0', prefix: `Antigravity-Background-${newCommit}` })));
-    scenario = { mode: 'main', version: '0.4.0', commit: newCommit, notes: 'fix: commit update via atom', rateLimitApi: true, corruptSha: false };
-    const availCommit = await updater.check({ force: true });
-    assert.equal(availCommit.state, 'available');
-    assert.equal(availCommit.updateReason, 'commit');
-    assert.equal(availCommit.latestCommit, newCommit);
-    assert.equal(availCommit.commitUrl, `${ghBase}/KeS1Ke/Antigravity-Background/commit/${newCommit}`);
-    await updater.apply({ version: '0.4.0', commit: newCommit });
-    while (updater.publicState().state === 'installing') await delay(30);
-    assert.equal(updater.publicState().state, 'installed');
-    assert.equal(updater.publicState().currentCommit, newCommit);
-    updater.state.state = 'idle';
-    const settledCheck = await updater.check({ force: true });
-    assert.equal(settledCheck.state, 'current');
-    assert.equal(settledCheck.hasUpdate, false);
+    await writeFile(join(installedPlugin, '.install-source.json'), JSON.stringify({ repo: 'KeS1Ke/Antigravity-Background', channel: 'release', version: '0.4.0', commit: oldCommit }));
+    scenario = { mode: 'main', version: '0.4.0', commit: newCommit, notes: 'docs: readme commit on main', rateLimitApi: true, corruptSha: false };
+    const noReleaseCheck = await updater.check({ force: true });
+    assert.equal(noReleaseCheck.state, 'current');
+    assert.equal(noReleaseCheck.hasUpdate, false);
+    assert.equal(noReleaseCheck.updateReason, null);
+    assert.equal(noReleaseCheck.latestCommit, null);
+    assert.equal(commitEndpointHits, 0, 'Updater must not fetch main commits or Atom feed when no release exists');
+
+    scenario = { mode: 'release-tar', version: '0.4.0', commit: newCommit, notes: 'Release 0.4.0', rateLimitApi: false, corruptSha: false };
+    const sameVersionRelease = await updater.check({ force: true });
+    assert.equal(sameVersionRelease.state, 'current');
+    assert.equal(sameVersionRelease.hasUpdate, false);
+    assert.equal(sameVersionRelease.updateReason, null);
+    assert.equal(sameVersionRelease.latestVersion, '0.4.0');
+    assert.equal(commitEndpointHits, 0, 'Same-version Release must never fall back to git commit comparisons');
 
     // 4g. Reload invocation & HTTP proxy error classification (407 -> proxy without credential leaks)
     updater.state.state = 'installed';
@@ -879,6 +884,8 @@ export class SidecarApp {
         await evalOn('document.querySelector("#check-update").click()');
         await until(() => evalOn('!document.querySelector("#update-modal").hidden && document.querySelector("#update-status-text").textContent === "发现新版本"'), 'Update modal did not show available release');
         assert.equal(await evalOn('document.querySelector("#update-source-badge").textContent'), 'Release');
+        assert.equal(await evalOn('document.querySelector("#update-current-version").textContent'), 'v0.3.8');
+        assert.equal(await evalOn('document.querySelector("#update-latest-version").textContent'), 'v0.3.9');
         assert.equal(await evalOn('document.querySelector("#update-notes img")'), null, 'Release notes must render strictly as plain text');
         assert.ok((await evalOn('document.querySelector("#update-notes").textContent')).includes('<img'));
         assert.match(await evalOn('document.querySelector("#update-github-link").href'), /\/releases\/tag\/v0\.3\.9$/);

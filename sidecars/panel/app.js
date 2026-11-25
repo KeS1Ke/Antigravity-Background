@@ -1139,9 +1139,8 @@
         let updateMeterPhase = null;
         let updateCopyTimer;
 
-        function formatVersionWithCommit(version, commitShort) {
-            if (!version) return '—';
-            return commitShort ? `v${version} (${commitShort})` : `v${version}`;
+        function formatVersion(version) {
+            return version ? `v${version}` : '—';
         }
 
         function mapUpdateRequestError(action, error) {
@@ -1256,15 +1255,11 @@
             githubLink.href = repoUrl;
             checkUpdateBtn.dataset.hasUpdate = String(s.state === 'available');
 
-            const isCommitUpdate = s.state === 'available' && s.updateReason === 'commit';
-            updateStatusText.textContent = isCommitUpdate ? '发现最新提交' : (UPDATE_STATUS_TEXT[s.state] || UPDATE_STATUS_TEXT.error);
+            updateStatusText.textContent = UPDATE_STATUS_TEXT[s.state] || UPDATE_STATUS_TEXT.error;
             updateModal.setAttribute('aria-busy', String(['checking', 'installing', 'reloading'].includes(s.state)));
 
             if (s.sourceKind === 'release') {
                 updateSourceBadge.textContent = 'Release';
-                updateSourceBadge.hidden = false;
-            } else if (s.sourceKind === 'main') {
-                updateSourceBadge.textContent = 'main 分支';
                 updateSourceBadge.hidden = false;
             } else {
                 updateSourceBadge.hidden = true;
@@ -1272,21 +1267,18 @@
 
             renderUpdateProgress();
 
-            updateCurrentVersion.textContent = formatVersionWithCommit(s.currentVersion, s.currentCommitShort);
-            updateLatestVersion.textContent = formatVersionWithCommit(s.latestVersion, s.latestCommitShort);
+            updateCurrentVersion.textContent = formatVersion(s.currentVersion);
+            updateLatestVersion.textContent = formatVersion(s.latestVersion);
 
             const releaseUrl = safeHttpUrl(s.releaseUrl, '');
-            const commitUrl = safeHttpUrl(s.commitUrl, '');
-            const targetUrl = releaseUrl || commitUrl || repoUrl;
+            const targetUrl = releaseUrl || repoUrl;
             updateGithubLink.href = targetUrl;
-            updateGithubLinkLabel.textContent = releaseUrl
-                ? '前往 GitHub Release 发布页'
-                : (commitUrl ? '在 GitHub 查看最新提交' : '在 GitHub 查看仓库');
+            updateGithubLinkLabel.textContent = releaseUrl ? '前往 GitHub Release 发布页' : '在 GitHub 查看仓库';
 
             const showNotes = Boolean(s.notes) && ['available', 'current'].includes(s.state);
             updateNotesWrap.hidden = !showNotes;
             if (showNotes) {
-                updateNotesLabel.textContent = s.sourceKind === 'main' ? '最新提交说明' : '更新内容';
+                updateNotesLabel.textContent = '更新内容';
                 updateNotes.textContent = String(s.notes).split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 6).join('\n');
             } else {
                 updateNotes.textContent = '';
@@ -1309,8 +1301,6 @@
                     : '请点击「重新加载插件」以启用新版本';
             } else if (s.state === 'reloading') {
                 feedback = 'Sidecar 正在重启；若未自动刷新，请关闭后重新打开本面板';
-            } else if (s.state === 'current' && s.sourceKind === 'main' && !s.currentCommit) {
-                feedback = '当前版本一致；未记录本地提交哈希，暂无法比对同版本后续提交';
             }
             updateFeedback.textContent = feedback;
             updateFeedback.classList.toggle('error', feedbackError);
@@ -1362,7 +1352,7 @@
                 } else if (action === 'check') {
                     next = await request('POST', {}, '/api/update/check');
                 } else if (action === 'apply') {
-                    next = await request('POST', { version: updateState.latestVersion, commit: updateState.latestCommit }, '/api/update/apply');
+                    next = await request('POST', { version: updateState.latestVersion }, '/api/update/apply');
                 } else if (action === 'reload') {
                     next = await request('POST', {}, '/api/update/reload');
                 }
