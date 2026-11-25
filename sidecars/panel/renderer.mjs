@@ -1,9 +1,9 @@
 // The wallpaper stays viewport-sized. Sidebar surfaces change stacking, so
 // opening a pane never changes the image's dimensions, crop or position.
-export async function installWallpaper(payload = {}) {
+export function installWallpaper(payload = {}) {
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 35;
+    const revision = 36;
 
     // -------------------------------------------------------------------------
     // Section 1: Pure helpers (kept inside installWallpaper so toString() CDP
@@ -161,13 +161,78 @@ export async function installWallpaper(payload = {}) {
             return '';
         };
 
-        return { normalizeColor, computeSurfaceState, computeLayoutMetrics, matchesTrackGeometry, computeClipInsets };
+        const computeBrowserHoleClipPath = (viewport, holeRects) => {
+            const vw = Math.round(viewport?.width);
+            const vh = Math.round(viewport?.height);
+            if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw <= 0 || vh <= 0 || !Array.isArray(holeRects) || holeRects.length === 0) {
+                return '';
+            }
+            const seen = new Set();
+            const holes = [];
+            for (const rect of holeRects) {
+                if (!rect) continue;
+                const l = Math.max(0, Math.min(vw, Math.round(rect.left)));
+                const t = Math.max(0, Math.min(vh, Math.round(rect.top)));
+                const r = Math.max(0, Math.min(vw, Math.round(rect.right)));
+                const b = Math.max(0, Math.min(vh, Math.round(rect.bottom)));
+                if (!Number.isFinite(l) || !Number.isFinite(t) || !Number.isFinite(r) || !Number.isFinite(b)) continue;
+                if (r - l < 2 || b - t < 2) continue;
+                const key = `${l},${t},${r},${b}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                holes.push([l, t, r, b]);
+            }
+            if (holes.length === 0) return '';
+            holes.sort((a, b) => a[1] - b[1] || a[0] - b[0] || a[3] - b[3] || a[2] - b[2]);
+            return `path(evenodd, "M0 0H${vw}V${vh}H0Z ${holes.map(([l, t, r, b]) => `M${l} ${t}V${b}H${r}V${t}Z`).join(' ')}")`;
+        };
+
+        const computeShadowOverlayRects = (viewport, overlays) => {
+            const vw = Math.round(viewport?.width);
+            const vh = Math.round(viewport?.height);
+            if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw <= 0 || vh <= 0 || !Array.isArray(overlays) || overlays.length === 0) {
+                return [];
+            }
+            for (const item of overlays) {
+                if (item?.modal) return [{ left: 0, top: 0, width: vw, height: vh }];
+            }
+            const seen = new Set();
+            const rects = [];
+            for (const item of overlays) {
+                if (!item) continue;
+                const l = Math.max(0, Math.min(vw, Math.round(item.left)));
+                const t = Math.max(0, Math.min(vh, Math.round(item.top)));
+                const r = Math.max(0, Math.min(vw, Math.round(item.right)));
+                const b = Math.max(0, Math.min(vh, Math.round(item.bottom)));
+                if (!Number.isFinite(l) || !Number.isFinite(t) || !Number.isFinite(r) || !Number.isFinite(b)) continue;
+                const w = r - l;
+                const h = b - t;
+                if (w < 2 || h < 2) continue;
+                const key = `${l},${t},${w},${h}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                rects.push({ left: l, top: t, width: w, height: h });
+            }
+            rects.sort((a, b) => a.top - b.top || a.left - b.left || a.height - b.height || a.width - b.width);
+            return rects;
+        };
+
+        return {
+            normalizeColor,
+            computeSurfaceState,
+            computeLayoutMetrics,
+            matchesTrackGeometry,
+            computeClipInsets,
+            computeBrowserHoleClipPath,
+            computeShadowOverlayRects,
+        };
     };
 
     if (typeof window === 'undefined' && payload?.__inspectHelpers === true) {
         return { version, revision, shouldIgnoreLease, ...createHelpers() };
     }
 
+    return (async () => {
     // -------------------------------------------------------------------------
     // Section 2: Host window fingerprint & lease negotiation
     // -------------------------------------------------------------------------
@@ -244,6 +309,8 @@ export async function installWallpaper(payload = {}) {
             computeLayoutMetrics,
             matchesTrackGeometry,
             computeClipInsets,
+            computeBrowserHoleClipPath,
+            computeShadowOverlayRects,
         } = createHelpers();
 
         const safeImageRe = /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;
@@ -300,6 +367,9 @@ export async function installWallpaper(payload = {}) {
         let disposed = false;
         let bodyObserved = false;
         let syncRafId = 0;
+        let browserSyncRafId = 0;
+        let appliedHoleClip = '';
+        let appliedOccluderSig = '';
         let lastFallbackScanAt = 0;
         let lastMeasureAt = 0;
         let aspectToken = 0;
@@ -557,8 +627,238 @@ export async function installWallpaper(payload = {}) {
             });
         };
 
+        // Browser-hole wallpaper cutout & Shadow DOM Top-Layer overlay bridge:
+        // 1. Punch out visible [data-browser-hole] rects from #antigravity-ui-background so
+        //    wallpaper never bleeds over native wcvBrowser tabs when wcvBrowser drops to zOrder=0.
+        // 2. Mirror open Shadow DOM popovers/dialogs (e.g. Antigrative Dashboard #usage-dashboard,
+        //    #plugin-update-dialog, .card) as inert, click-through Light-DOM occluders so host
+        //    Hpb/Ipb detects them and demotes native wcvBrowser WebContentsView below the Hub UI.
+        const supportsPopoverOpen = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('selector(:popover-open)');
+        const supportsModalSelector = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('selector(:modal)');
+        const shadowOverlaySelector = supportsPopoverOpen ? ':popover-open, dialog[open]' : 'dialog[open]';
+        const isShadowOccluderNode = node => node?.nodeType === 1 && node.getAttribute('data-ag-ui-shadow-occluder') === 'true';
+        const hasBrowserHole = () => document.body?.getAttribute('data-has-browser-hole') === 'true';
+        const observedHoleTargets = new Set();
+        const shadowHostMap = new Map();
+        const occluderMirrors = [];
+
+        const clearShadowOccluders = () => {
+            while (occluderMirrors.length > 0) occluderMirrors.pop().remove();
+            appliedOccluderSig = '';
+        };
+
+        const detachShadowHost = host => {
+            const entry = shadowHostMap.get(host);
+            if (!entry) return;
+            entry.mo.disconnect();
+            entry.sr.removeEventListener('toggle', onShadowToggle, true);
+            shadowHostMap.delete(host);
+        };
+
+        const syncBrowserHoleCompat = () => {
+            if (disposed || !document.body) return;
+            if (!hasBrowserHole()) {
+                if (appliedHoleClip || layer.style.clipPath) {
+                    layer.style.removeProperty('clip-path');
+                    appliedHoleClip = '';
+                }
+                if (holeResizeObserver && observedHoleTargets.size > 0) {
+                    holeResizeObserver.disconnect();
+                    observedHoleTargets.clear();
+                }
+                if (occluderMirrors.length > 0 || appliedOccluderSig) clearShadowOccluders();
+                return;
+            }
+
+            // Phase 1: discover open Shadow DOM hosts & measure holes/overlays (read-only)
+            discoverShadowHosts();
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const nextHoleTargets = new Set();
+            const holeRects = [];
+            if (layer.isConnected) {
+                for (const hole of document.querySelectorAll('[data-browser-hole]:not([data-browser-hole="false"])')) {
+                    if (!(hole instanceof HTMLElement)) continue;
+                    const splitRoot = hole.closest('[data-split-root="true"]');
+                    const isClosing = splitRoot
+                        ? splitRoot.getAttribute('data-split-transition') === 'closing'
+                        : hole.closest('[data-split-transition="closing"]') !== null;
+                    const r = hole.getBoundingClientRect();
+                    let left = r.left;
+                    let top = r.top;
+                    let right = r.right;
+                    let bottom = r.bottom;
+                    let visible = true;
+                    for (let p = hole; p && p !== document.documentElement; p = p.parentElement) {
+                        if (p.hidden || (!isClosing && (p.getAttribute('data-side-panel-open') === 'false' || p.getAttribute('data-aux-pane-open') === 'false'))) {
+                            visible = false;
+                            break;
+                        }
+                        const cs = getComputedStyle(p);
+                        if (cs.display === 'none' || cs.visibility === 'hidden') {
+                            visible = false;
+                            break;
+                        }
+                        if (p !== hole) {
+                            const clipX = cs.overflowX !== 'visible';
+                            const clipY = cs.overflowY !== 'visible';
+                            if (clipX || clipY) {
+                                const pr = p.getBoundingClientRect();
+                                if (clipX) {
+                                    left = Math.max(left, pr.left);
+                                    right = Math.min(right, pr.right);
+                                }
+                                if (clipY) {
+                                    top = Math.max(top, pr.top);
+                                    bottom = Math.min(bottom, pr.bottom);
+                                }
+                            }
+                        }
+                    }
+                    if (visible && right - left >= 2 && bottom - top >= 2) {
+                        holeRects.push({ left, top, right, bottom });
+                        nextHoleTargets.add(hole);
+                    }
+                }
+                const mainBody = document.querySelector('[data-main-content-body]');
+                if (mainBody instanceof HTMLElement && nextHoleTargets.size > 0) nextHoleTargets.add(mainBody);
+            }
+            const nextHoleClip = layer.isConnected ? computeBrowserHoleClipPath({ width: vw, height: vh }, holeRects) : '';
+
+            for (const [host, entry] of shadowHostMap) {
+                if (!host.isConnected || host.shadowRoot !== entry.sr) detachShadowHost(host);
+            }
+            const rawOverlays = [];
+            for (const { sr } of shadowHostMap.values()) {
+                let candidates;
+                try {
+                    candidates = sr.querySelectorAll(shadowOverlaySelector);
+                } catch {
+                    candidates = sr.querySelectorAll('dialog[open]');
+                }
+                for (const el of candidates) {
+                    if (!(el instanceof HTMLElement) || el.hidden) continue;
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) continue;
+                    const modal = el.getAttribute('aria-modal') === 'true' || (supportsModalSelector && el.matches(':modal'));
+                    rawOverlays.push({ modal, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+                }
+            }
+            const overlayRects = computeShadowOverlayRects({ width: vw, height: vh }, rawOverlays);
+
+            // Phase 2: apply minimal DOM/style mutations
+            if (holeResizeObserver) {
+                for (const prev of observedHoleTargets) {
+                    if (!nextHoleTargets.has(prev)) {
+                        holeResizeObserver.unobserve(prev);
+                        observedHoleTargets.delete(prev);
+                    }
+                }
+                for (const next of nextHoleTargets) {
+                    if (!observedHoleTargets.has(next)) {
+                        holeResizeObserver.observe(next);
+                        observedHoleTargets.add(next);
+                    }
+                }
+            }
+
+            if (nextHoleClip !== appliedHoleClip || Boolean(nextHoleClip) !== Boolean(layer.style.clipPath)) {
+                appliedHoleClip = nextHoleClip;
+                if (nextHoleClip) layer.style.clipPath = nextHoleClip;
+                else layer.style.removeProperty('clip-path');
+            }
+
+            const nextSig = overlayRects.map(r => `${r.left},${r.top},${r.width},${r.height}`).join(';');
+            const mirrorsConnected = occluderMirrors.length === overlayRects.length &&
+                occluderMirrors.every(m => m.parentElement === document.body);
+            if (nextSig !== appliedOccluderSig || !mirrorsConnected) {
+                appliedOccluderSig = nextSig;
+                for (let i = 0; i < overlayRects.length; i++) {
+                    let mirror = occluderMirrors[i];
+                    if (!mirror) {
+                        mirror = document.createElement('div');
+                        mirror.setAttribute('data-ag-ui-shadow-occluder', 'true');
+                        mirror.setAttribute('data-radix-popper-content-wrapper', '');
+                        mirror.inert = true;
+                        mirror.style.cssText = 'position:fixed;pointer-events:none;background:transparent;z-index:-1;margin:0;padding:0;border:0;';
+                        occluderMirrors.push(mirror);
+                    }
+                    const r = overlayRects[i];
+                    mirror.style.left = `${r.left}px`;
+                    mirror.style.top = `${r.top}px`;
+                    mirror.style.width = `${r.width}px`;
+                    mirror.style.height = `${r.height}px`;
+                    if (mirror.parentElement !== document.body) document.body.append(mirror);
+                }
+                while (occluderMirrors.length > overlayRects.length) {
+                    occluderMirrors.pop().remove();
+                }
+            }
+        };
+
+        const scheduleBrowserSync = () => {
+            if (disposed || browserSyncRafId) return;
+            browserSyncRafId = requestAnimationFrame(() => {
+                browserSyncRafId = 0;
+                if (!disposed) syncBrowserHoleCompat();
+            });
+        };
+
+        const onShadowToggle = () => {
+            if (hasBrowserHole()) scheduleBrowserSync();
+        };
+
+        const attachShadowHost = host => {
+            if (!(host instanceof HTMLElement) || !host.isConnected || !host.shadowRoot || host === layer) return;
+            const sr = host.shadowRoot;
+            const existing = shadowHostMap.get(host);
+            if (existing) {
+                if (existing.sr === sr) return;
+                detachShadowHost(host);
+            }
+            const mo = new MutationObserver(() => {
+                if (hasBrowserHole()) scheduleBrowserSync();
+            });
+            mo.observe(sr, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['open', 'hidden', 'style', 'aria-modal'],
+            });
+            sr.addEventListener('toggle', onShadowToggle, true);
+            shadowHostMap.set(host, { sr, mo });
+        };
+
+        const discoverShadowHosts = () => {
+            for (const el of document.querySelectorAll('[data-ag-pulse-bar], [id^="ag-pulse-status-bar"]')) {
+                if (el.shadowRoot) attachShadowHost(el);
+            }
+            for (let el = document.body?.firstElementChild; el; el = el.nextElementSibling) {
+                if (el.shadowRoot) attachShadowHost(el);
+            }
+        };
+
+        const holeResizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleBrowserSync) : null;
+
         const trackStyleObserver = new MutationObserver(scheduleFloatingSync);
-        const trackObserver = new MutationObserver(scheduleFloatingSync);
+        const trackObserver = new MutationObserver(records => {
+            let externalChange = false;
+            for (const rec of records) {
+                for (const node of rec.addedNodes) {
+                    if (!isShadowOccluderNode(node)) { externalChange = true; break; }
+                }
+                if (externalChange) break;
+                for (const node of rec.removedNodes) {
+                    if (!isShadowOccluderNode(node)) { externalChange = true; break; }
+                }
+                if (externalChange) break;
+            }
+            if (!externalChange) return;
+            if (hasFloatingTrack()) scheduleFloatingSync();
+            if (hasBrowserHole()) scheduleBrowserSync();
+        });
 
         const onScroll = event => {
             const target = event.target;
@@ -566,10 +866,15 @@ export async function installWallpaper(payload = {}) {
                 rememberScrollable(target);
             }
             if (hasFloatingTrack()) scheduleFloatingSync();
+            if (hasBrowserHole()) scheduleBrowserSync();
         };
         const onPointerOver = event => {
-            if (syncRafId || !hasFloatingTrack()) return;
             const target = event.target;
+            if (hasBrowserHole() && target instanceof HTMLElement && target.shadowRoot) {
+                attachShadowHost(target);
+                scheduleBrowserSync();
+            }
+            if (syncRafId || !hasFloatingTrack()) return;
             if (!(target instanceof HTMLElement) || target === document.body || target === document.documentElement) return;
             if (target.childElementCount === 0 || recentScrollableSet.has(target)) return;
             if (target.scrollHeight > target.clientHeight + 1 || target.scrollWidth > target.clientWidth + 1) {
@@ -577,13 +882,28 @@ export async function installWallpaper(payload = {}) {
                 scheduleFloatingSync();
             }
         };
+        const onShadowInteract = event => {
+            if (!hasBrowserHole()) return;
+            const target = event.target;
+            if (target instanceof HTMLElement && target.shadowRoot) {
+                attachShadowHost(target);
+                scheduleBrowserSync();
+            }
+        };
+        const onTransitionEnd = () => {
+            if (hasBrowserHole()) scheduleBrowserSync();
+        };
         const onResize = () => {
             state.measureLayout();
             if (hasFloatingTrack()) scheduleFloatingSync();
+            if (hasBrowserHole() || appliedHoleClip || occluderMirrors.length > 0) scheduleBrowserSync();
         };
 
         document.addEventListener('scroll', onScroll, { capture: true, passive: true });
         document.addEventListener('pointerover', onPointerOver, { capture: true, passive: true });
+        document.addEventListener('pointerdown', onShadowInteract, { capture: true, passive: true });
+        document.addEventListener('focusin', onShadowInteract, { capture: true, passive: true });
+        document.addEventListener('transitionend', onTransitionEnd, { capture: true, passive: true });
         window.addEventListener('resize', onResize, { passive: true });
 
         const refreshLease = () => {
@@ -813,6 +1133,7 @@ export async function installWallpaper(payload = {}) {
                     currentSurfaces = signature;
                 }
                 if (hasFloatingTrack()) scheduleFloatingSync();
+                if (hasBrowserHole() || appliedHoleClip || occluderMirrors.length > 0) scheduleBrowserSync();
                 refreshLease();
             },
             async syncTitlebar(force = false) {
@@ -849,12 +1170,28 @@ export async function installWallpaper(payload = {}) {
                     cancelAnimationFrame(syncRafId);
                     syncRafId = 0;
                 }
+                if (browserSyncRafId) {
+                    cancelAnimationFrame(browserSyncRafId);
+                    browserSyncRafId = 0;
+                }
                 observer.disconnect();
                 trackObserver.disconnect();
                 trackStyleObserver.disconnect();
                 trackStyleObserver.takeRecords();
+                holeResizeObserver?.disconnect();
+                observedHoleTargets.clear();
+                for (const host of [...shadowHostMap.keys()]) detachShadowHost(host);
+                clearShadowOccluders();
+                for (const stray of document.body?.querySelectorAll(':scope > [data-ag-ui-shadow-occluder]') || []) {
+                    stray.remove();
+                }
+                layer.style.removeProperty('clip-path');
+                appliedHoleClip = '';
                 document.removeEventListener('scroll', onScroll, { capture: true });
                 document.removeEventListener('pointerover', onPointerOver, { capture: true });
+                document.removeEventListener('pointerdown', onShadowInteract, { capture: true });
+                document.removeEventListener('focusin', onShadowInteract, { capture: true });
+                document.removeEventListener('transitionend', onTransitionEnd, { capture: true });
                 window.removeEventListener('resize', onResize);
                 recentScrollables.length = 0;
                 for (const track of document.body?.querySelectorAll(':scope > [data-overlay-scrollbar-track]') || []) {
@@ -873,8 +1210,11 @@ export async function installWallpaper(payload = {}) {
         };
 
         let currentTheme = themeSignature();
-        const observer = new MutationObserver(() => {
+        const observer = new MutationObserver(records => {
             observeBody();
+            if (records.some(r => r.target === document.body && r.attributeName === 'data-has-browser-hole')) {
+                scheduleBrowserSync();
+            }
             const nextTheme = themeSignature();
             if (nextTheme === currentTheme) return;
             currentTheme = nextTheme;
@@ -885,9 +1225,10 @@ export async function installWallpaper(payload = {}) {
         });
         const observeBody = () => {
             if (bodyObserved || !document.body) return;
-            observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme'] });
+            observer.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-theme', 'data-agy-theme', 'data-has-browser-hole'] });
             trackObserver.observe(document.body, { childList: true });
             if (hasFloatingTrack()) scheduleFloatingSync();
+            if (hasBrowserHole()) scheduleBrowserSync();
             bodyObserved = true;
         };
         observer.observe(document.documentElement, {
@@ -913,9 +1254,10 @@ export async function installWallpaper(payload = {}) {
     }
     await activeState.syncTitlebar();
     return window[key] === activeState ? 'OK' : 'IGNORED';
+    })();
 }
 
-const exportedHelpers = await installWallpaper({ __inspectHelpers: true });
+const exportedHelpers = installWallpaper({ __inspectHelpers: true });
 export const RENDERER_VERSION = exportedHelpers.version;
 export const RENDERER_REVISION = exportedHelpers.revision;
 export const shouldIgnoreLease = exportedHelpers.shouldIgnoreLease;
@@ -924,13 +1266,15 @@ export const computeSurfaceState = exportedHelpers.computeSurfaceState;
 export const computeLayoutMetrics = exportedHelpers.computeLayoutMetrics;
 export const matchesTrackGeometry = exportedHelpers.matchesTrackGeometry;
 export const computeClipInsets = exportedHelpers.computeClipInsets;
+export const computeBrowserHoleClipPath = exportedHelpers.computeBrowserHoleClipPath;
+export const computeShadowOverlayRects = exportedHelpers.computeShadowOverlayRects;
 
 // Self-contained surface adapter injected via CDP into right-sidebar plugin
 // iframes (Sidecar UI plugins and MCP Apps). Zero external closures so
 // installPluginPanelSurface.toString() can be evaluated directly inside OOPIFs.
-export async function installPluginPanelSurface(payload = {}) {
+export function installPluginPanelSurface(payload = {}) {
     const version = 18;
-    const revision = 35;
+    const revision = 36;
 
     const shouldIgnoreLease = (active, incoming) => {
         if (!active) return false;
@@ -1054,6 +1398,7 @@ export async function installPluginPanelSurface(payload = {}) {
         return { version, revision, shouldIgnoreLease, ...createColorHelpers() };
     }
 
+    return (async () => {
     if (window === window.top) return { value: false, colorScheme: null };
     if (document.documentElement?.dataset?.agUiPanelNative === 'true') {
         return { value: 'NATIVE', colorScheme: null };
@@ -1536,7 +1881,8 @@ export async function installPluginPanelSurface(payload = {}) {
     return window[key] === activeState
         ? { value: 'OK', colorScheme: activeState.colorScheme ?? null }
         : { value: 'IGNORED', colorScheme: null };
+    })();
 }
 
-const exportedPluginHelpers = await installPluginPanelSurface({ __inspectHelpers: true });
+const exportedPluginHelpers = installPluginPanelSurface({ __inspectHelpers: true });
 export const computePluginSurfaceMetrics = exportedPluginHelpers.computePluginSurfaceMetrics;

@@ -215,3 +215,20 @@
 
 - **背景**：此前仓库尚无 Release 或存在同版本新提交时，更新器会回退拉取 `main` 分支最新 git commit 并触发「发现最新提交」，导致纯文档或内部维护提交也被当作可用更新推送给用户。
 - **变更**：`sidecars/panel/updater.mjs` 仅以 GitHub Release 语义化版本号（`compareSemver(latestVersion, currentVersion) > 0`）作为唯一更新触发条件（保留 Release ZIP + SHA-256 强校验、无 ZIP 时回退 Release Tag 源码包及 API 403/429 时的 Release 公开 HTML 降级）；移除 `fetchMainBranchInfo`、`parseAtomLatestCommit` 与 `updateReason = 'commit'` 分支，仓库无 Release 或仅有同版本后续 git 提交时一律返回 `current`；`sidecars/panel/app.js` 同步精简为纯版本号展示（`vX.Y.Z`）。
+
+## 28. 原生浏览器孔洞壁纸挖空与 Shadow DOM 顶层浮层遮挡代理（`renderer` `version = 18` / `revision = 36`）
+
+- **问题成因**：
+  1. Antigravity 内置浏览器采用独立于主界面 DOM 的 Electron 原生 `WebContentsView`（`wcvBrowser`），默认以 `zOrder = 1` 物理堆叠在主界面 `hubView` 之上；宿主仅在 Light DOM 遮挡检测器（`Hpb`/`Ipb`）检测到与 `[data-browser-hole="true"]` 重叠的弹窗/浮层时，才调用 `wcvBrowser.setOverlayActive(tabKey, true)` 将浏览器降层至 `zOrder = 0`（主界面之下）。第三方插件（如 Antigrative Dashboard `antigravity-pulse`）将 `#usage-dashboard`、`#plugin-update-dialog`、`.card` 与 `#language-guide` 等 Top-Layer 弹窗挂载于开放 Shadow DOM（`#ag-pulse-status-bar.shadowRoot`）内，宿主 Light DOM 选择器与 `document.body` 的 `MutationObserver` 无法穿透 Shadow DOM，导致内置浏览器始终停留在 `zOrder = 1` 并沿 `[data-browser-hole="true"]` 边界裁切弹窗。
+  2. 当内置浏览器正常降层至 `zOrder = 0`（如弹窗生效、打开原生菜单或 Agent 接管浏览器）时，`hubView` 位于浏览器之上并依赖 `[data-browser-hole="true"]` 透明孔洞透出网页；此前全窗 `#antigravity-ui-background`（`z-index: 1000`）未排除浏览器孔洞区域，会导致壁纸覆盖或染暗浏览器网页内容。
+- **实现方案**：`revision = 36` 在 `installWallpaper` 内新增两项零外部闭包的浏览器孔洞协同机制（仅在 `body[data-has-browser-hole="true"]` 激活时工作，离开孔洞模式或 `dispose()` 时 100% 清理归零）：
+  - **浏览器孔洞壁纸挖空（`computeBrowserHoleClipPath`）**：按与宿主 `zM()` 一致的可见性与祖先 `overflow` 裁剪规则采集所有可见 `[data-browser-hole]:not([data-browser-hole="false"])` 矩形，通过 `clip-path: path(evenodd, ...)` 从 `#antigravity-ui-background` 精准挖空浏览器区域（无对角桥接缝隙，支持多分栏孔洞），并借助 `ResizeObserver` / `resize` / `scroll` / `transitionend` 实时同步。
+  - **Shadow DOM Top-Layer 遮挡代理桥接（`computeShadowOverlayRects`）**：通过定向发现（`[data-ag-pulse-bar]` 与 `body` 顶层 Shadow 宿主）及 O(1) 捕获阶段交互发现（`pointerover`/`pointerdown`/`focusin` 事件重定向至 Shadow 宿主）按需挂载单宿主 `MutationObserver` 与 `toggle` 监听，将开放 Shadow DOM 内处于打开态的 `:popover-open` / `dialog[open]` 同步为 `document.body` 上不可见、全透明、`inert` 且 `pointer-events: none` 的 Light-DOM 代理节点（`[data-ag-ui-shadow-occluder="true"][data-radix-popper-content-wrapper]`；模态窗按全视口、非模态浮层按精确外框矩形映射），既无缝触发宿主 `Ipb`/`Hpb` 降层原生浏览器、消除弹窗被裁切问题，又避免非重叠小浮层引发无谓降层且绝不截获任何指针或无障碍焦点。
+
+## 29. 插件内冷启动优化：零 `undici` 环回 CDP、并发启动与隐藏设置页短路
+
+- **优化边界**：严格仅作用于本插件自身（Sidecar 进程、本机 CDP 环回客户端与本插件设置页），不修改其他插件，不侵入 Antigravity 应用本身，不订阅额外浏览器级 CDP 事件，亦不改变宿主与第三方插件渲染协议（保持 `renderer` `version = 18` / `revision = 36`）。
+- **具体优化**：
+  - **消除模块顶层 `await`、懒加载 `sdk.mjs` 与并发重叠启动（`sidecars/panel/renderer.mjs`、`sidecars/panel/main.mjs`）**：将 `installWallpaper` 与 `installPluginPanelSurface` 改为同步外壳（`__inspectHelpers: true` 同步返回，运行路径返回异步 Promise），消除整条静态 ESM 模块图的 Top-Level Await 开销；`main.mjs` 优先直接导入 `sidecar_sdk`（仅 `ERR_MODULE_NOT_FOUND` 时按需动态加载 `sdk.mjs`），并在确认无待恢复更新事务后即并发启动 `WallpaperRuntime` 与 `sdkPromise` / `app.run()`，使首次壁纸发现与宿主 SDK 初始化重叠。
+  - **零 `undici` 环回 CDP 客户端与主窗口状态优先发布（`sidecars/panel/runtime.mjs`）**：将 `/json/list` 与环回 `ws://127.0.0.1` CDP 连接统一改由 `node:http`（`request` + `upgrade`）与轻量 RFC 6455 帧编解码实现（开启 `TCP_NODELAY`），冷启动完全跳过 Node 内置 `undici` 懒初始化（节省 ~33–35 ms）；将冷启动附加退避收紧为 `[80, 120, 200, 350, 600, 1000, 1500]ms`，并在 `apply()` 完成主窗口上屏后立即发布 `health`，不等待后续插件槽位同步。
+  - **隐藏设置页 iframe 入口级短路与去除 `GET /api/settings` 冗余复制（`sidecars/panel/app.js`、`sidecars/panel/index.html`、`sidecars/panel/main.mjs`）**：`index.html` 为 `/preload.js` 增加 `defer`；`app.js` 在入口顶部直接短路冷启动预加载的 `0×0` 隐藏面板，跳过全部滑块 DOM 构建、`CSSStyleSheet`、`BroadcastChannel`、`getComputedStyle` 样式探测与网络请求直至面板真正显示；`GET /api/settings` 移除未使用的重复 `saved` 字段，首屏负载减半。

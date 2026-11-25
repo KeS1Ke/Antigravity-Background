@@ -1,4 +1,45 @@
 (() => {
+    if (window.parent !== window) document.documentElement.dataset.embedded = 'true';
+    if (window.parent !== window && (document.hidden || window.innerWidth <= 0 || window.innerHeight <= 0)) {
+        let woken = false;
+        let deferredThemeVars;
+        let wakeObserver;
+        const cleanup = () => {
+            wakeObserver?.disconnect();
+            wakeObserver = undefined;
+            window.removeEventListener('message', onTheme);
+            window.removeEventListener('resize', wake);
+            window.removeEventListener('focus', wake);
+            document.removeEventListener('visibilitychange', onVisibility);
+            window.removeEventListener('pagehide', cleanup);
+        };
+        const wake = () => {
+            if (woken || document.hidden || window.innerWidth <= 0 || window.innerHeight <= 0) return;
+            woken = true;
+            cleanup();
+            boot(deferredThemeVars);
+        };
+        const onTheme = event => {
+            if (event.source === window.parent && event.data?.type === 'theme-change') {
+                deferredThemeVars = event.data.payload?.cssVariables;
+            }
+        };
+        const onVisibility = () => { if (!document.hidden) wake(); };
+        window.addEventListener('message', onTheme);
+        window.addEventListener('resize', wake, { passive: true });
+        window.addEventListener('focus', wake);
+        document.addEventListener('visibilitychange', onVisibility);
+        window.addEventListener('pagehide', cleanup, { once: true });
+        if (typeof ResizeObserver === 'function') {
+            wakeObserver = new ResizeObserver(wake);
+            wakeObserver.observe(document.documentElement);
+        }
+        return;
+    }
+
+    boot();
+
+    function boot(initialHostThemeVars) {
     const {
         controls,
         surfaceControls,
@@ -197,7 +238,6 @@
 
     const previewSheet = new CSSStyleSheet();
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, previewSheet];
-    if (window.parent !== window) document.documentElement.dataset.embedded = 'true';
     const systemTheme = matchMedia('(prefers-color-scheme: light)');
     const tabId = crypto.randomUUID();
     const channel = new BroadcastChannel('antigravity-ui-panel-sync');
@@ -205,10 +245,8 @@
     // --- Wallpaper Settings & Sync State ---
 
     let settings = normalize();
-    let initialized = false;
     let ready = false;
     let initFailed = false;
-    let hiddenWakeObserver;
     let busy = false;
     let saving = false;
     let hasDraft = false;
@@ -759,7 +797,7 @@
     }
 
     const stageObserver = new ResizeObserver(() => {
-        if (initialized) render();
+        render();
     });
     function ensureStageHydrated(stage) {
         if (!stage || hydratedStages.has(stage)) return;
@@ -1478,7 +1516,6 @@
         clearTimeout(resizeSyncTimer);
         clearTimeout(resizeFollowUpTimer);
         if (dprMedia && onDprChange) dprMedia.removeEventListener('change', onDprChange);
-        hiddenWakeObserver?.disconnect();
         stageObserver.disconnect();
         updateController.cleanup();
     });
@@ -1709,17 +1746,9 @@
         }
     }
 
-    function isHiddenEmbedded() {
-        return window.parent !== window && (document.hidden || window.innerWidth <= 0 || window.innerHeight <= 0);
-    }
-
     function handleActivation() {
         updateHostTheme();
         applyTheme();
-        if (!initialized) {
-            if (!isHiddenEmbedded()) void initialize();
-            return;
-        }
         if (!ready) {
             if (!syncInFlight) void syncFromServer({ initial: true });
             return;
@@ -1732,11 +1761,6 @@
     }
     function scheduleLayoutSync() {
         const nextSig = `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio}`;
-        if (!initialized) {
-            lastViewportSig = nextSig;
-            if (!isHiddenEmbedded()) void initialize();
-            return;
-        }
         if (nextSig === lastViewportSig) return;
         lastViewportSig = nextSig;
         if (!ready || document.hidden) return;
@@ -1785,27 +1809,9 @@
     window.addEventListener('resize', scheduleLayoutSync, { passive: true });
     watchDevicePixelRatio();
 
-    async function initialize() {
-        if (initialized) return;
-        initialized = true;
-        hiddenWakeObserver?.disconnect();
-        hiddenWakeObserver = undefined;
-        ensureStageHydrated(previewStage);
-        updateHostTheme();
-        render();
-        await syncFromServer({ initial: true });
-        updateController.init();
-    }
-    if (!isHiddenEmbedded()) {
-        void initialize();
-    } else {
-        updateHostTheme();
-        applyTheme();
-        if (typeof ResizeObserver === 'function') {
-            hiddenWakeObserver = new ResizeObserver(() => {
-                if (!initialized && !isHiddenEmbedded()) void initialize();
-            });
-            hiddenWakeObserver.observe(document.documentElement);
-        }
+    ensureStageHydrated(previewStage);
+    updateHostTheme(initialHostThemeVars);
+    render();
+    void syncFromServer({ initial: true }).then(() => updateController.init());
     }
 })();

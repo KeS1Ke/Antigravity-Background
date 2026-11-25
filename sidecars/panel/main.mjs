@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { loadSdk } from './sdk.mjs';
 import { WallpaperRuntime } from './runtime.mjs';
 import { InvalidSettingsError, SettingsStore } from './store.mjs';
 import appearance from '../../plugin/appearance.cjs';
@@ -266,15 +265,40 @@ function getStaticAssets() {
     });
     return staticAssetsPromise;
 }
+async function loadSidecarSdk() {
+    try {
+        return await import('sidecar_sdk');
+    } catch (error) {
+        if (error?.code !== 'ERR_MODULE_NOT_FOUND') throw error;
+    }
+    const { loadSdk } = await import('./sdk.mjs');
+    return loadSdk(join(resources, 'bin', 'language_server.exe'), data);
+}
 const pendingTxPromise = hasPendingUpdateTx(join(data, 'updates'));
-const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
+const sdkPromise = loadSidecarSdk();
 void sdkPromise.catch(() => {});
 initialStorePromise = syncStore({ initial: true });
 void initialStorePromise.catch(() => {});
 if (await pendingTxPromise) {
     await getUpdater();
 }
+let firstHeartbeat = true;
+let heartbeatPending = false;
 try {
+    runtime.start(() => {
+        if (heartbeatPending) return;
+        heartbeatPending = true;
+        return enqueueRequest(async () => {
+            if (firstHeartbeat) {
+                firstHeartbeat = false;
+            } else {
+                await syncStore();
+            }
+            await runtime.update(false, true);
+        }).catch(error => {
+            runtime.health = { ...runtime.health, error: error.message };
+        }).finally(() => { heartbeatPending = false; });
+    });
     const sdk = await sdkPromise;
     const { SidecarApp } = sdk;
     SdkResponse = sdk.Response;
@@ -292,7 +316,7 @@ try {
     app.api('/api/settings', () => enqueueRequest(async () => {
         const reloaded = await syncStore();
         if (reloaded || pendingActivate || runtime.lastDiscoveryAt === 0) await activateRuntime(true);
-        return stateResponse({ saved: store.settings });
+        return stateResponse();
     }), 'GET');
     app.api('/api/preview', input => enqueueRequest(async () => {
         const reloaded = await syncStore();
@@ -385,22 +409,6 @@ try {
         }
     }, 'POST');
     await app.run();
-    let firstHeartbeat = true;
-    let heartbeatPending = false;
-    runtime.start(() => {
-        if (heartbeatPending) return;
-        heartbeatPending = true;
-        return enqueueRequest(async () => {
-            if (firstHeartbeat) {
-                firstHeartbeat = false;
-            } else {
-                await syncStore();
-            }
-            await runtime.update(false, true);
-        }).catch(error => {
-            runtime.health = { ...runtime.health, error: error.message };
-        }).finally(() => { heartbeatPending = false; });
-    });
 } catch (error) {
     await runtime.stop().catch(() => {});
     await app?.close().catch(() => {});

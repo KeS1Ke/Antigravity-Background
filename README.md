@@ -6,7 +6,7 @@
 
 **Windows 版 Antigravity 全窗壁纸与磨砂表面定制插件**
 
-[![Version](https://img.shields.io/badge/version-0.3.8-5b8def?style=flat-square)](plugin.json)
+[![Version](https://img.shields.io/badge/version-0.3.9-5b8def?style=flat-square)](plugin.json)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square)](#安装与入口)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A5%2022-3c873a?style=flat-square)](#安装与入口)
 [![Runtime](https://img.shields.io/badge/runtime-Sidecar%20%2B%20CDP-7b61ff?style=flat-square)](docs/adr/0001-live-preview.md)
@@ -68,6 +68,7 @@
 | **输入框 / 对话框 / 左侧栏选中会话** | 拆分为三张独立折叠卡，各自控制「原版分层级感」「显示底色」、外圈/内部 hex 颜色、不透明度与模糊，并提供「同步三项设置」可选开关（默认开启） | 分层模式下外圈颜色通过镂空环带仅着色最外层 `3–4px` 薄边与 `1px` 描边（不穿透内部卡片），可独立微调或一键三项同步 |
 | **Overview 面板** | 独立扁平控制卡：支持「显示底色」、外圈/内部 hex 颜色、底色不透明度与背景模糊 | 独立覆盖 4 类 Overview 面板宿主，从不与输入框/对话框同步，保持轻量扁平与高交互层级 |
 | **主题与多窗口同步** | 设置页支持「跟随应用 / 深色 / 浅色」并随配置保存；多窗口实时发现、同源多标签页 `BroadcastChannel` 联动、磁盘 `settings.json` 外部变更重载 | 实时预览保留于内存草稿；点击「保存设置」落盘，点击「还原」放弃未保存草稿 |
+| **冷启动与轻量运行** | 零 `undici` 纯 `node:http` 环回 CDP 客户端、消除顶层 `await`、按需懒加载 SDK 回退器、并发启动与隐藏预加载面板入口短路 | 严格仅优化本插件自身，零宿主侵入、不干扰其他插件加载；冷启动预加载 `0×0` 面板零滑块构建与零网络请求 |
 | **在线检查与一键更新** | 顶部标题栏显示当前版本号、GitHub 仓库图标与 **「检查更新」** 按钮；仅按 GitHub Release 语义化版本号推送更新（优先 ZIP + SHA-256 校验，无 ZIP 时回退 Release Tag 源码包，API 限流自动走 Release 公开页面降级），不推送同版本 `main` 分支普通 git 提交 | 安装失败时尝试回滚，回滚失败时保留备份和事务日志以便启动时恢复。更新完成后可一键热重载插件，打开面板时不主动发起联网请求 |
 
 新版更新器可回收已退出进程留下的目录锁。若面板提示旧版更新锁仍存在，请先退出持有该锁的 Antigravity 客户端。若确认旧进程均已退出且锁文件仍在，可移除 `.gemini/config/plugins/.antigravity-ui-update.lock` 这个旧版锁文件，再启动插件恢复。
@@ -129,7 +130,9 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 
 ## 原生交互与兼容修复
 
-针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 35`）持续做了系统性适配：
+针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 36`）持续做了系统性适配：
+
+- **浏览器孔洞壁纸挖空与 Shadow DOM 顶层浮层兼容**：当内置浏览器（`[data-browser-hole="true"]`）处于激活态时，自动以 `clip-path: path(evenodd, ...)` 从 `#antigravity-ui-background` 挖空可见浏览器孔洞（防止浏览器降层至 `zOrder = 0` 时壁纸覆盖网页），同时将第三方插件开放 Shadow DOM 内的打开态 Top-Layer 弹窗/浮层（如 Antigrative Dashboard 的 `#usage-dashboard`、`#plugin-update-dialog` 与 `.card`）映射为不可见、点击穿透的 Light-DOM 代理节点，触发宿主原生浏览器自动降层，避免内置浏览器切掉弹窗内容。
 
 - **左侧栏会话标题与悬停快捷按钮防重叠**：透明化 `.agy-row-actions::before` 后，在左侧栏会话行悬停、键盘聚焦或菜单展开（`aria-expanded="true"`）且存在快捷按钮时，将 `.agy-row-actions` 切为流内定位并隐藏被取代的 `.agy-row-status`，使左侧 `truncate` 标题按按钮实际宽度自动省略截断（零重叠、零行高抖动且保持全透明壁纸透出）。
 
@@ -217,7 +220,7 @@ antigravity-UI/
 │   ├── styles.css                  # 设置页深浅主题与嵌入式样式
 │   └── app.js                      # 实时预览、BroadcastChannel 同步与更新/交互控制
 ├── docs/
-│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §27）
+│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §29）
 │   └── images/                     # README 展示截图
 └── tests/
     ├── background-rendering.mjs    # 隔离环境渲染、交互与持久化回归测试

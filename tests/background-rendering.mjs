@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Connection, WallpaperRuntime, validIframeTarget } from '../sidecars/panel/runtime.mjs';
-import { installWallpaper, RENDERER_REVISION, computePluginSurfaceMetrics } from '../sidecars/panel/renderer.mjs';
+import { installWallpaper, installPluginPanelSurface, RENDERER_REVISION, computePluginSurfaceMetrics, computeBrowserHoleClipPath, computeShadowOverlayRects } from '../sidecars/panel/renderer.mjs';
 import { SettingsStore } from '../sidecars/panel/store.mjs';
 import appearance from '../plugin/appearance.cjs';
 import persistence from '../plugin/persistence.cjs';
@@ -144,6 +144,55 @@ assert.throws(() => appearance.normalize({ syncDialogSurfaces: true, bubbleOuter
 assert.throws(() => appearance.normalize({ syncDialogSurfaces: true, selectedRowInnerColor: '#12' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewOuterColor: 'blue' }), /颜色/);
 assert.throws(() => appearance.normalize({ overviewInnerColor: '#123' }), /颜色/);
+
+// Verify renderer __inspectHelpers is synchronous (zero top-level await in renderer.mjs)
+{
+    const wallMeta = installWallpaper({ __inspectHelpers: true });
+    const plugMeta = installPluginPanelSurface({ __inspectHelpers: true });
+    assert.equal(typeof wallMeta?.then, 'undefined', 'installWallpaper(__inspectHelpers) must return synchronously');
+    assert.equal(typeof plugMeta?.then, 'undefined', 'installPluginPanelSurface(__inspectHelpers) must return synchronously');
+    assert.equal(wallMeta.revision, RENDERER_REVISION);
+    assert.equal(plugMeta.revision, RENDERER_REVISION);
+}
+
+// Pure helper checks for browser-hole wallpaper cutout and Shadow DOM Top-Layer overlay mirroring
+assert.equal(
+    computeBrowserHoleClipPath({ width: 1920, height: 1032 }, [{ left: 892.3, top: 110, right: 1912, bottom: 1024 }]),
+    'path(evenodd, "M0 0H1920V1032H0Z M892 110V1024H1912V110Z")',
+);
+assert.equal(computeBrowserHoleClipPath({ width: 1920, height: 1032 }, []), '');
+assert.equal(computeBrowserHoleClipPath({ width: 1920, height: 1032 }, [{ left: 10, top: 10, right: 11, bottom: 500 }]), '');
+assert.equal(
+    computeBrowserHoleClipPath(
+        { width: 1000, height: 800 },
+        [
+            { left: 600, top: 100, right: 1050, bottom: 700 },
+            { left: 600, top: 100, right: 1050, bottom: 700 },
+            { left: 200, top: 50, right: 400, bottom: 300 },
+        ],
+    ),
+    'path(evenodd, "M0 0H1000V800H0Z M200 50V300H400V50Z M600 100V700H1000V100Z")',
+);
+assert.deepEqual(
+    computeShadowOverlayRects(
+        { width: 1920, height: 1032 },
+        [
+            { modal: false, left: 200, top: 300, right: 500, bottom: 500 },
+            { modal: true, left: 440, top: 96, right: 1480, bottom: 936 },
+        ],
+    ),
+    [{ left: 0, top: 0, width: 1920, height: 1032 }],
+);
+assert.deepEqual(
+    computeShadowOverlayRects(
+        { width: 1000, height: 750 },
+        [
+            { modal: false, left: -10, top: 200.4, right: 310.2, bottom: 480.6 },
+            { modal: false, left: 10, top: 10, right: 11, bottom: 100 },
+        ],
+    ),
+    [{ left: 0, top: 200, width: 310, height: 281 }],
+);
 assert.equal(JSON.parse(await readFile(join(project, 'sidecars/panel/sidecar.json'), 'utf8')).ui_config.views[0].title, 'Antigravity Background');
 await writeFile(join(data, 'settings.json'), '\uFEFF' + JSON.stringify(settings));
 
@@ -984,6 +1033,7 @@ try {
             innerH: window.innerHeight,
             previewCloned: Boolean(document.querySelector('#preview .sample-window')),
             dragCloned: Boolean(document.querySelector('#drag-preview-stage .sample-window')),
+            sliderCount: document.querySelectorAll('.slider').length,
             saveDisabled: Boolean(document.querySelector('#save')?.disabled),
         })`, 'Hidden iframe deferred state');
         assert.equal(hiddenState.innerW, 0);
@@ -991,6 +1041,7 @@ try {
         assert.equal(hiddenState.fetches.length, 0, 'Hidden preloaded panel iframe must not call /api/settings or /api/update during cold start: ' + JSON.stringify(hiddenState.fetches));
         assert.equal(hiddenState.previewCloned, false, 'Hidden preloaded panel iframe must not clone #preview template before reveal');
         assert.equal(hiddenState.dragCloned, false, 'Hidden preloaded panel iframe must not clone #drag-preview-stage template before opening modal');
+        assert.equal(hiddenState.sliderCount, 0, 'Hidden preloaded panel iframe must not build slider DOM before reveal');
         assert.equal(hiddenState.saveDisabled, true);
 
         await evalOn(hiddenEmbedClient, "const s=document.querySelector('#panel-slot');s.style.display='block';s.style.width='320px';s.style.height='640px';", 'Reveal hidden panel slot');
@@ -999,9 +1050,11 @@ try {
             fetches: window.__deferredFetches,
             previewCloned: Boolean(document.querySelector('#preview .sample-window')),
             dragCloned: Boolean(document.querySelector('#drag-preview-stage .sample-window')),
+            sliderCount: document.querySelectorAll('.slider').length,
         })`, 'Revealed panel state');
         assert.equal(revealedState.previewCloned, true, 'Revealed panel must hydrate #preview template');
         assert.equal(revealedState.dragCloned, false, 'Drag preview modal template must remain lazy until modal opens');
+        assert.ok(revealedState.sliderCount >= 19, 'Revealed panel must build slider controls on demand');
         assert.ok(revealedState.fetches.some(u => u.includes('/api/settings')), 'Revealed panel must fetch /api/settings');
         assert.ok(revealedState.fetches.some(u => u.includes('/api/update')), 'Revealed panel must fetch /api/update');
         await evalOn(hiddenIframeClient, 'document.querySelector("#open-drag-preview").click()', 'Open lazy drag modal');
@@ -1014,7 +1067,7 @@ try {
     }
 
     await panelClient.command('Page.reload');
-    await waitReady('Panel reload before 0.3.8 suite failed');
+    await waitReady('Panel reload before 0.3.9 suite failed');
 
     const closeTarget = async (targetId, connection) => {
         connection?.close();
@@ -1693,6 +1746,13 @@ try {
     await panel2("window.dispatchEvent(new Event('focus'))");
     await until(() => panel2("document.querySelector('#wallpaper-opacity').value==='23'&&document.querySelector('#wallpaper-composerBlur').value==='11'&&document.querySelector('#composerOuterColor').value==='#abcdef'&&document.querySelector('#wallpaper-overviewOpacity').value==='88'"), 'Panel 2 focus resync did not reload external settings.json');
     assert((await panel2('window.__fetchLog')).some(entry => entry.path === '/api/settings' && entry.method === 'GET'));
+    // Verify GET /api/settings omits unused duplicate saved payload
+    {
+        const fullRes = await fetch('http://127.0.0.1:' + webPort + '/api/settings').then(r => r.json());
+        assert.equal('saved' in fullRes, false, 'GET /api/settings must not duplicate saved settings payload');
+        assert.equal(fullRes.settings.image, settings.image);
+        assert.equal(fullRes.imageHash, expectedImageHash);
+    }
     await until(async () => (await readHostSurfaces(client)).wallpaperOpacity === '0.23' && (await readHostSurfaces(host2Client)).wallpaperOpacity === '0.23', 'Both high-generation host windows did not sync external settings.json');
     for (const conn of [client, host2Client]) {
         const s = await readHostSurfaces(conn);
@@ -2060,6 +2120,297 @@ try {
         leftHoleRuntime.connections.clear();
         runtime.generation = leftHoleRuntime.generation + 100;
         await runtime.update(true, true);
+    }
+
+    // Regression: [data-browser-hole="true"] wallpaper cutout + Shadow DOM Top-Layer overlay occluder bridge
+    // (fixes Antigrative Dashboard #usage-dashboard / #plugin-update-dialog / .card being clipped by native wcvBrowser WebContentsView)
+    {
+        const redPixelPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+        const redSettings = appearance.normalize({ ...settings, image: redPixelPng, opacity: 100, fade: 0, brightness: 100, mode: 'stretch' });
+        const redHash = createHash('sha256').update(redSettings.image).digest('hex');
+        const holeCompatRuntime = new WallpaperRuntime(profile, () => ({
+            enabled: true,
+            css: appearance.wallpaperStyle(redSettings, 'var(--ag-ui-image)'),
+            image: redSettings.image,
+            imageHash: redHash,
+            surfaces: appearance.surfaceConfig(redSettings),
+        }), async () => true, String(server.address().port));
+        holeCompatRuntime.generation = runtime.generation + 100;
+        try {
+            await holeCompatRuntime.update(true, true);
+            await evaluate(`(() => {
+                const sideBody = document.querySelector('.pane [data-side-panel-body]');
+                const holeAncestor = sideBody.parentElement;
+                holeAncestor.style.height = '100%';
+                const hole = document.createElement('div');
+                hole.id = 'test-wcv-browser-hole';
+                hole.setAttribute('data-testid', 'builtin-browser-placeholder');
+                hole.setAttribute('data-browser-hole', 'true');
+                hole.style.cssText = 'width:100%;height:100%;min-height:420px;background:transparent;';
+                sideBody.appendChild(hole);
+                const sheet = document.querySelector('.agy-sheet');
+                const outline = document.querySelector('.outline-none');
+                const pane = document.querySelector('.pane');
+                for (const el of [document.documentElement, document.body, sheet, outline, pane, sideBody]) {
+                    el.dataset.hasBrowserHole = 'true';
+                }
+                // Mount Antigrative Dashboard-style Shadow DOM bar with #usage-dashboard, #plugin-update-dialog, and .card
+                const bar = document.createElement('div');
+                bar.id = 'ag-pulse-status-bar';
+                bar.setAttribute('data-ag-pulse-bar', 'true');
+                bar.style.cssText = 'position:relative;display:inline-flex;height:28px;';
+                const sr = bar.attachShadow({ mode: 'open' });
+                sr.innerHTML =
+                    '<style>' +
+                    '#usage-dashboard{position:fixed;inset:0;margin:auto;width:720px;height:460px;padding:0;border:0;background:#1c1d1f;color:#fff;}' +
+                    '#plugin-update-dialog{width:340px;height:200px;background:#2a2c2f;color:#fff;border:0;}' +
+                    '.card{position:fixed;inset:auto;margin:0;width:240px;height:140px;background:#2a2c2f;color:#fff;border:0;}' +
+                    '.card[hidden]{display:none}' +
+                    '</style>' +
+                    '<dialog id="usage-dashboard" popover="manual" aria-modal="true"><button id="usage-inside-btn" type="button" style="width:100%;height:100%">Usage</button></dialog>' +
+                    '<dialog id="plugin-update-dialog"></dialog>' +
+                    '<section id="cache-card" class="card" popover="manual" hidden></section>';
+                document.querySelector('[data-testid="agent-input-box"] .surface-composer-card').appendChild(bar);
+                // Replicate Antigravity host Ipb/Hpb Light-DOM overlay detector for wcvBrowser.setOverlayActive
+                window.__testHostHpb = () => {
+                    const holeEl = document.querySelector('#test-wcv-browser-hole');
+                    if (!holeEl) return false;
+                    const g = holeEl.getBoundingClientRect();
+                    if (g.width < 2 || g.height < 2) return false;
+                    const sel = '[data-overlay-container] > *, [data-base-ui-portal], [data-base-ui-portal] > *, [data-hover-card-popup], [data-select-popup], [data-browser-occluder], [data-slot$="-content"], [data-slot$="-backdrop"], [data-slot$="-overlay"], [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper], [data-testid="sash-drag-shield"], .sash-drag-shield';
+                    for (const m of document.querySelectorAll(sel)) {
+                        if (!(m instanceof HTMLElement)) continue;
+                        const n = m.getAttribute('data-browser-occluder') === 'true';
+                        const hiddenAnc = n
+                            ? (m.closest('[hidden], [data-state="closed"], [data-closed], [data-ending-style]') ?? m.parentElement?.closest('[aria-hidden="true"]'))
+                            : m.closest('[hidden], [data-state="closed"], [data-closed], [data-ending-style], [aria-hidden="true"]');
+                        if (hiddenAnc || m.contains(holeEl) || holeEl.contains(m)) continue;
+                        let invisible = false;
+                        for (let cur = m; cur && cur !== document.body; cur = cur.parentElement) {
+                            const cs = getComputedStyle(cur);
+                            if (cs.display === 'none' || cs.visibility === 'hidden' || (n && cur === m && cs.pointerEvents === 'none') || cs.opacity === '0') {
+                                invisible = true;
+                                break;
+                            }
+                        }
+                        if (invisible) continue;
+                        const r = m.getBoundingClientRect();
+                        if (Math.min(r.right, g.right) - Math.max(r.left, g.left) >= 2 && Math.min(r.bottom, g.bottom) - Math.max(r.top, g.top) >= 2) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+            })()`);
+
+            // 1. Browser-hole cutout on #antigravity-ui-background (style + real rendered pixel check)
+            await until(
+                () => evaluate("getComputedStyle(document.querySelector('#antigravity-ui-background')).clipPath.startsWith('path(')"),
+                'Wallpaper layer did not punch out [data-browser-hole="true"]',
+            );
+            const holeClipCheck = await evaluate(`(() => {
+                const layer = document.querySelector('#antigravity-ui-background');
+                const hole = document.querySelector('#test-wcv-browser-hole');
+                const r = hole.getBoundingClientRect();
+                return {
+                    clipPath: getComputedStyle(layer).clipPath,
+                    holeRect: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) },
+                    mirrors: document.querySelectorAll('[data-ag-ui-shadow-occluder="true"]').length,
+                    hpb: window.__testHostHpb(),
+                };
+            })()`);
+            assert.match(holeClipCheck.clipPath, /evenodd/);
+            assert.equal(holeClipCheck.mirrors, 0, 'No shadow occluder mirrors should exist while all Shadow DOM overlays are closed');
+            assert.equal(holeClipCheck.hpb, false, 'Host Hpb must remain false while no overlay overlaps the browser hole');
+
+            await client.command('Page.bringToFront');
+            await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+            const holeCutoutShot = await client.command('Page.captureScreenshot', { format: 'png' });
+            const cutoutPixels = await evalOn(client, `(async () => {
+                const img = await new Promise((resolve, reject) => {
+                    const el = new Image(); el.onload = () => resolve(el); el.onerror = reject;
+                    el.src = 'data:image/png;base64,' + ${JSON.stringify(holeCutoutShot.data)};
+                });
+                const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+                const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+                const sx = img.naturalWidth / window.innerWidth, sy = img.naturalHeight / window.innerHeight;
+                const sample = (x, y) => [...g.getImageData(Math.round(x * sx), Math.round(y * sy), 1, 1).data];
+                const hole = document.querySelector('#test-wcv-browser-hole').getBoundingClientRect();
+                return {
+                    insideHole: sample(hole.left + hole.width / 2, hole.top + hole.height / 2),
+                    outsideHole: sample(10, 10),
+                };
+            })()`, 'sample cutout pixels');
+            assert(cutoutPixels.outsideHole[0] > 200 && cutoutPixels.outsideHole[1] < 40, `Expected red wallpaper outside browser hole, got ${cutoutPixels.outsideHole}`);
+            assert(cutoutPixels.insideHole[0] < 60 && cutoutPixels.insideHole[1] < 60, `Wallpaper must not paint over [data-browser-hole="true"], got ${cutoutPixels.insideHole}`);
+
+            // 1b. Resizing the right browser pane dynamically updates the cutout path
+            const prevClipPath = holeClipCheck.clipPath;
+            await evaluate("document.querySelector('.pane').style.width = '420px'");
+            await until(
+                () => evaluate(`getComputedStyle(document.querySelector('#antigravity-ui-background')).clipPath !== ${JSON.stringify(prevClipPath)}`),
+                'Wallpaper browser-hole cutout did not update on pane resize',
+            );
+            await evaluate("document.querySelector('.pane').style.width = ''");
+
+            // 2. Dashboard #usage-dashboard (showPopover + open + aria-modal="true") -> Light-DOM mirror triggers host Hpb === true
+            await evaluate(`(() => {
+                const sr = document.querySelector('#ag-pulse-status-bar').shadowRoot;
+                const d = sr.getElementById('usage-dashboard');
+                d.showPopover();
+                d.setAttribute('open', '');
+            })()`);
+            await until(() => evaluate('window.__testHostHpb() === true'), 'Opening Shadow DOM #usage-dashboard did not trigger Light-DOM browser occluder');
+            const usageModalState = await evaluate(`(() => {
+                const mirrors = [...document.querySelectorAll('[data-ag-ui-shadow-occluder="true"]')];
+                const m = mirrors[0];
+                const cs = m ? getComputedStyle(m) : null;
+                const r = m ? m.getBoundingClientRect() : null;
+                const sr = document.querySelector('#ag-pulse-status-bar').shadowRoot;
+                const btn = sr.getElementById('usage-inside-btn');
+                const br = btn.getBoundingClientRect();
+                const hitRoot = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+                const hitShadow = sr.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+                return {
+                    count: mirrors.length,
+                    inert: m?.inert,
+                    pe: cs?.pointerEvents,
+                    bg: cs?.backgroundColor,
+                    w: r ? Math.round(r.width) : 0,
+                    h: r ? Math.round(r.height) : 0,
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    hitIsBar: hitRoot?.id === 'ag-pulse-status-bar',
+                    hitInsideDialog: hitShadow?.id === 'usage-inside-btn',
+                };
+            })()`);
+            assert.equal(usageModalState.count, 1);
+            assert.equal(usageModalState.inert, true);
+            assert.equal(usageModalState.pe, 'none');
+            assert.equal(usageModalState.bg, 'rgba(0, 0, 0, 0)');
+            assert.equal(usageModalState.w, usageModalState.vw);
+            assert.equal(usageModalState.h, usageModalState.vh);
+            assert.equal(usageModalState.hitIsBar, true);
+            assert.equal(usageModalState.hitInsideDialog, true, 'Light-DOM mirror must never intercept pointer hits inside #usage-dashboard');
+
+            // Closing #usage-dashboard clears the mirror and restores Hpb === false
+            await evaluate(`(() => {
+                const d = document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('usage-dashboard');
+                d.hidePopover();
+                d.removeAttribute('open');
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 0 && window.__testHostHpb() === false'), 'Closing #usage-dashboard did not clear Light-DOM occluder');
+
+            // 3. Dashboard #plugin-update-dialog (native showModal()) -> triggers Hpb === true, close clears
+            await evaluate(`(() => {
+                document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('plugin-update-dialog').showModal();
+            })()`);
+            await until(() => evaluate('window.__testHostHpb() === true'), 'Opening Shadow DOM #plugin-update-dialog via showModal() did not trigger Light-DOM occluder');
+            await evaluate(`(() => {
+                document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('plugin-update-dialog').close();
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 0 && window.__testHostHpb() === false'), 'Closing #plugin-update-dialog did not clear occluder');
+
+            // 4. Non-modal hover card .card: left of browser hole -> Hpb === false; overlapping hole -> Hpb === true; hide -> removed
+            await evaluate(`(() => {
+                const card = document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('cache-card');
+                card.style.left = '20px';
+                card.style.top = '120px';
+                card.hidden = false;
+                card.showPopover();
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 1'), 'Opening non-modal hover card did not create mirror');
+            assert.equal(await evaluate('window.__testHostHpb()'), false, 'Non-overlapping hover card must not unnecessarily demote browser');
+            await evaluate(`(() => {
+                const card = document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('cache-card');
+                const hole = document.querySelector('#test-wcv-browser-hole').getBoundingClientRect();
+                card.style.left = Math.round(hole.left - 80) + 'px';
+                card.style.top = Math.round(hole.top + 40) + 'px';
+            })()`);
+            await until(() => evaluate('window.__testHostHpb() === true'), 'Moving hover card over browser hole did not trigger Hpb === true');
+            await evaluate(`(() => {
+                const card = document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('cache-card');
+                card.hidePopover();
+                card.hidden = true;
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 0 && window.__testHostHpb() === false'), 'Hiding hover card did not clear occluder');
+
+            // 5. Generic open Shadow DOM widget discovered dynamically via pointerdown (not named ag-pulse-status-bar)
+            await evaluate(`(() => {
+                const custom = document.createElement('div');
+                custom.id = 'test-custom-shadow-widget';
+                const sr = custom.attachShadow({ mode: 'open' });
+                sr.innerHTML = '<button id="open-btn" type="button">Open</button><div id="custom-pop" popover="manual" style="position:fixed;right:20px;top:120px;width:200px;height:120px;margin:0;inset:auto 20px auto auto;top:120px">Popup</div>';
+                document.querySelector('[data-main-content-body]').appendChild(custom);
+                const btn = sr.getElementById('open-btn');
+                btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+                sr.getElementById('custom-pop').showPopover();
+            })()`);
+            await until(() => evaluate('window.__testHostHpb() === true'), 'Dynamically discovered open Shadow DOM popover did not trigger browser occluder');
+            await evaluate(`(() => {
+                const custom = document.querySelector('#test-custom-shadow-widget');
+                custom.shadowRoot.getElementById('custom-pop').hidePopover();
+                custom.remove();
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 0'), 'Removing custom shadow widget did not clear occluder');
+
+            // 6. Leaving browser-hole mode clears both wallpaper clip-path and shadow occluder mirrors
+            await evaluate(`(() => {
+                const d = document.querySelector('#ag-pulse-status-bar').shadowRoot.getElementById('usage-dashboard');
+                d.showPopover();
+                d.setAttribute('open', '');
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 1'), 'Mirror did not mount before browser-hole exit check');
+            await evaluate(`(() => {
+                const sheet = document.querySelector('.agy-sheet');
+                const outline = document.querySelector('.outline-none');
+                const pane = document.querySelector('.pane');
+                const sideBody = document.querySelector('.pane [data-side-panel-body]');
+                for (const el of [document.documentElement, document.body, sheet, outline, pane, sideBody]) {
+                    delete el.dataset.hasBrowserHole;
+                }
+            })()`);
+            await until(
+                () => evaluate("getComputedStyle(document.querySelector('#antigravity-ui-background')).clipPath === 'none' && document.querySelectorAll('[data-ag-ui-shadow-occluder=\"true\"]').length === 0"),
+                'Removing data-has-browser-hole did not clear wallpaper clip-path and occluder mirrors',
+            );
+
+            // 7. Re-enable browser hole + open dialog, then dispose() -> 100% lossless cleanup
+            await evaluate(`(() => {
+                const sheet = document.querySelector('.agy-sheet');
+                const outline = document.querySelector('.outline-none');
+                const pane = document.querySelector('.pane');
+                const sideBody = document.querySelector('.pane [data-side-panel-body]');
+                for (const el of [document.documentElement, document.body, sheet, outline, pane, sideBody]) {
+                    el.dataset.hasBrowserHole = 'true';
+                }
+            })()`);
+            await until(() => evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length === 1'), 'Mirror did not re-mount when browser hole returned');
+            await evaluate('window.__antigravityUiRenderer.dispose()');
+            assert.equal(await evaluate('document.querySelectorAll("[data-ag-ui-shadow-occluder=\\"true\\"]").length'), 0, 'dispose() must remove all shadow occluder mirrors');
+        } finally {
+            await evaluate(`(() => {
+                const sheet = document.querySelector('.agy-sheet');
+                const outline = document.querySelector('.outline-none');
+                const pane = document.querySelector('.pane');
+                const sideBody = document.querySelector('.pane [data-side-panel-body]');
+                for (const el of [document.documentElement, document.body, sheet, outline, pane, sideBody]) {
+                    if (el) delete el.dataset.hasBrowserHole;
+                }
+                document.querySelector('.pane').style.width = '';
+                const sideBodyEl = document.querySelector('.pane [data-side-panel-body]');
+                if (sideBodyEl?.parentElement) sideBodyEl.parentElement.style.height = '';
+                document.querySelector('#test-wcv-browser-hole')?.remove();
+                document.querySelector('#ag-pulse-status-bar')?.remove();
+                document.querySelector('#test-custom-shadow-widget')?.remove();
+                delete window.__testHostHpb;
+            })()`);
+            holeCompatRuntime.stopTimer();
+            for (const conn of holeCompatRuntime.connections.values()) conn.close();
+            holeCompatRuntime.connections.clear();
+            runtime.generation = holeCompatRuntime.generation + 100;
+            await runtime.update(true, true);
+        }
     }
 
     // Regression: interactive overlays, navigators, scrollbars, peek sidebar, drawer, split fork & terminal handle must remain clickable
@@ -3268,7 +3619,7 @@ try {
         pluginServer.close();
     }
 
-    console.log('Passed: 0.3.8 bound composer/dialog layered depth, flat leftSidebar/rightPanel (seam-free & aligned tab strip), independent flat Overview panel, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & unified top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), universal right-sidebar plugin panel OOPIF compatibility, plus all Q1-Q5 rendering/save interactions.');
+    console.log('Passed: 0.3.9 bound composer/dialog layered depth, flat leftSidebar/rightPanel (seam-free & aligned tab strip), independent flat Overview panel, autoscroll-viewport mask/blur, HOME_VIEW z-[1] & unified top-toolbar composer, multi-window discovery & BroadcastChannel/focus/reloadIfChanged sync, floating scrollbar clipping, dual persistence (ASAR + shortcuts), universal right-sidebar plugin panel OOPIF compatibility, plus all Q1-Q5 rendering/save interactions.');
     await Promise.race([client.command('Browser.close'), delay(300)]);
 } finally {
     client?.close();

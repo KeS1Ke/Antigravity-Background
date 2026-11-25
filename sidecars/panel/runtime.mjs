@@ -1,9 +1,12 @@
 import { readFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { installWallpaper, installPluginPanelSurface, RENDERER_VERSION, RENDERER_REVISION } from './renderer.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAX_WS_FRAME_BYTES = 64 * 1024 * 1024;
 let cachedInstallWallpaperSource;
 let cachedInstallPluginPanelSource;
 function compactFunctionSource(source) {
@@ -20,7 +23,7 @@ function getInstallPluginPanelSource() {
 }
 const RENDERER_KEY = `${RENDERER_VERSION}:${RENDERER_REVISION}`;
 const PLUGIN_HEARTBEAT_SKIP_MS = 3000;
-const ATTACH_RETRY_DELAYS = [150, 250, 400, 600, 1000, 1500];
+const ATTACH_RETRY_DELAYS = [80, 120, 200, 350, 600, 1000, 1500];
 const HOST_PROBE_EXPRESSION = 'window === window.top && Boolean(window.electronNative && window.nativeStorage)';
 const COLLECT_PLUGIN_SLOTS_BODY =
     'const rightBody = document.querySelector(\'[data-side-panel-body]:not([data-has-browser-hole="true"])\');' +
@@ -93,11 +96,87 @@ function missingPortError(message, cause) {
     return error;
 }
 
+function fetchLoopbackJson(port, pathname, timeoutMs = 2000) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolve(value);
+        };
+        const req = httpRequest({
+            host: '127.0.0.1',
+            port,
+            path: pathname,
+            method: 'GET',
+            agent: false,
+            headers: { Connection: 'close' },
+        }, res => {
+            const status = res.statusCode || 0;
+            if (status < 200 || status >= 300) {
+                res.resume();
+                finish(Object.assign(new Error('HTTP ' + status), { kind: 'http', status }));
+                return;
+            }
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => {
+                try {
+                    finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8')));
+                } catch (cause) {
+                    finish(Object.assign(new Error('Invalid JSON'), { kind: 'json', cause }));
+                }
+            });
+            res.on('error', cause => finish(Object.assign(new Error('Response error'), { kind: 'network', cause })));
+        });
+        const timer = setTimeout(() => {
+            const cause = new Error('Timeout');
+            req.destroy(cause);
+            finish(Object.assign(new Error('Timeout'), { kind: 'network', cause }));
+        }, timeoutMs);
+        req.on('error', cause => finish(Object.assign(new Error('Request error'), { kind: 'network', cause })));
+        req.end();
+    });
+}
+
+function encodeWsFrame(opcode, payload) {
+    const len = payload.length;
+    const headerLen = 6 + (len < 126 ? 0 : len <= 65535 ? 2 : 8);
+    const frame = Buffer.allocUnsafe(headerLen + len);
+    frame[0] = 0x80 | (opcode & 0x0f);
+    let offset = 2;
+    if (len < 126) {
+        frame[1] = 0x80 | len;
+    } else if (len <= 65535) {
+        frame[1] = 0x80 | 126;
+        frame.writeUInt16BE(len, 2);
+        offset = 4;
+    } else {
+        frame[1] = 0x80 | 127;
+        frame.writeBigUInt64BE(BigInt(len), 2);
+        offset = 10;
+    }
+    const mask = randomBytes(4);
+    mask.copy(frame, offset);
+    offset += 4;
+    for (let i = 0; i < len; i++) frame[offset + i] = payload[i] ^ mask[i & 3];
+    return frame;
+}
+
 export class Connection {
     constructor(url) {
         this.url = url;
         this.pending = new Map();
         this.nextId = 0;
+        this.socket = null;
+        this.openingReq = null;
+        this.readyState = 0;
+        this.chunks = [];
+        this.bufferedBytes = 0;
+        this.fragments = null;
+        this.fragmentBytes = 0;
         this.lastImageHash = undefined;
         this.lastLayout = null;
         this.hostColorScheme = 'dark';
@@ -115,58 +194,203 @@ export class Connection {
         this.lastPluginSlotScan = null;
     }
 
-    async open() {
-        this.socket = new WebSocket(this.url);
-        this.socket.addEventListener('message', ({ data }) => {
-            let reply;
-            try {
-                reply = JSON.parse(data);
-            } catch {
+    _resetBuffers() {
+        this.chunks = [];
+        this.bufferedBytes = 0;
+        this.fragments = null;
+        this.fragmentBytes = 0;
+    }
+
+    _rejectAllPending(message) {
+        if (this.pending.size === 0) return;
+        for (const operation of this.pending.values()) {
+            clearTimeout(operation.timer);
+            operation.reject(new Error(message));
+        }
+        this.pending.clear();
+    }
+
+    _handleMessage(text) {
+        let reply;
+        try {
+            reply = JSON.parse(text);
+        } catch {
+            return;
+        }
+        const operation = this.pending.get(reply?.id);
+        if (!operation) return;
+        this.pending.delete(reply.id);
+        clearTimeout(operation.timer);
+        if (reply.error) {
+            const detail = reply.error.message ? `${reply.error.code} (${reply.error.message})` : reply.error.code;
+            operation.reject(new Error('界面命令失败：' + detail));
+        } else {
+            operation.resolve(reply.result);
+        }
+    }
+
+    _onData(chunk) {
+        if (!chunk?.length || this.readyState !== 1) return;
+        this.chunks.push(chunk);
+        this.bufferedBytes += chunk.length;
+        while (this.readyState === 1 && this.bufferedBytes >= 2) {
+            if (this.chunks.length > 1 && this.chunks[0].length < 14) {
+                this.chunks = [Buffer.concat(this.chunks, this.bufferedBytes)];
+            }
+            const head = this.chunks[0];
+            const fin = (head[0] & 0x80) !== 0;
+            const opcode = head[0] & 0x0f;
+            const masked = (head[1] & 0x80) !== 0;
+            let payloadLen = head[1] & 0x7f;
+            let headerLen = 2;
+            if (payloadLen === 126) {
+                if (this.bufferedBytes < 4) return;
+                payloadLen = head.readUInt16BE(2);
+                headerLen = 4;
+            } else if (payloadLen === 127) {
+                if (this.bufferedBytes < 10) return;
+                const bigLen = head.readBigUInt64BE(2);
+                if (bigLen > BigInt(MAX_WS_FRAME_BYTES)) { this.close(); return; }
+                payloadLen = Number(bigLen);
+                headerLen = 10;
+            }
+            if (payloadLen > MAX_WS_FRAME_BYTES) { this.close(); return; }
+            if (masked) headerLen += 4;
+            const frameLen = headerLen + payloadLen;
+            if (this.bufferedBytes < frameLen) return;
+
+            const buf = this.chunks.length === 1 ? this.chunks[0] : Buffer.concat(this.chunks, this.bufferedBytes);
+            let payload = buf.subarray(headerLen, frameLen);
+            if (masked) {
+                const mask = buf.subarray(headerLen - 4, headerLen);
+                const unmasked = Buffer.allocUnsafe(payloadLen);
+                for (let i = 0; i < payloadLen; i++) unmasked[i] = payload[i] ^ mask[i & 3];
+                payload = unmasked;
+            }
+            if (frameLen === buf.length) {
+                this.chunks = [];
+                this.bufferedBytes = 0;
+            } else {
+                const rest = buf.subarray(frameLen);
+                this.chunks = [rest];
+                this.bufferedBytes = rest.length;
+            }
+
+            if (opcode === 0x8) {
+                if (this.socket && !this.socket.destroyed) {
+                    try { this.socket.write(encodeWsFrame(0x8, Buffer.alloc(0))); } catch {}
+                }
+                this.close();
                 return;
             }
-            const operation = this.pending.get(reply?.id);
-            if (!operation) return;
-            this.pending.delete(reply.id);
-            clearTimeout(operation.timer);
-            if (reply.error) {
-                const detail = reply.error.message ? `${reply.error.code} (${reply.error.message})` : reply.error.code;
-                operation.reject(new Error('界面命令失败：' + detail));
-            } else {
-                operation.resolve(reply.result);
+            if (opcode === 0x9) {
+                if (this.socket && !this.socket.destroyed) {
+                    try { this.socket.write(encodeWsFrame(0xa, payload.length <= 125 ? payload : payload.subarray(0, 125))); } catch {}
+                }
+                continue;
             }
-        });
-        this.socket.addEventListener('close', () => {
-            for (const operation of this.pending.values()) {
-                clearTimeout(operation.timer);
-                operation.reject(new Error('界面连接已断开。'));
+            if (opcode === 0xa) continue;
+
+            if (opcode === 0x1 || opcode === 0x2) {
+                if (fin) {
+                    this.fragments = null;
+                    this.fragmentBytes = 0;
+                    this._handleMessage(payload.toString('utf8'));
+                } else {
+                    this.fragments = [Buffer.from(payload)];
+                    this.fragmentBytes = payload.length;
+                }
+            } else if (opcode === 0x0 && this.fragments) {
+                if (this.fragmentBytes + payload.length > MAX_WS_FRAME_BYTES) { this.close(); return; }
+                this.fragments.push(Buffer.from(payload));
+                this.fragmentBytes += payload.length;
+                if (fin) {
+                    const merged = Buffer.concat(this.fragments, this.fragmentBytes);
+                    this.fragments = null;
+                    this.fragmentBytes = 0;
+                    this._handleMessage(merged.toString('utf8'));
+                }
             }
-            this.pending.clear();
-        });
+        }
+    }
+
+    async open() {
+        let parsed;
+        try {
+            parsed = new URL(this.url);
+        } catch {
+            throw new Error('界面连接失败。');
+        }
+        if (parsed.protocol !== 'ws:') throw new Error('界面连接失败。');
+        const key = randomBytes(16).toString('base64');
+        const expectedAccept = createHash('sha1').update(key + WS_GUID).digest('base64');
+
         await new Promise((resolve, reject) => {
-            const cleanup = () => {
+            let settled = false;
+            const req = httpRequest({
+                host: parsed.hostname.replace(/^\[|\]$/g, ''),
+                port: Number(parsed.port) || 80,
+                path: (parsed.pathname || '/') + (parsed.search || ''),
+                agent: false,
+                headers: {
+                    Host: parsed.host,
+                    Connection: 'Upgrade',
+                    Upgrade: 'websocket',
+                    'Sec-WebSocket-Key': key,
+                    'Sec-WebSocket-Version': '13',
+                },
+            });
+            this.openingReq = req;
+            const fail = message => {
+                if (settled) return;
+                settled = true;
                 clearTimeout(timer);
-                this.socket.removeEventListener('open', onOpen);
-                this.socket.removeEventListener('close', onClose);
-                this.socket.removeEventListener('error', onError);
+                if (this.openingReq === req) this.openingReq = null;
+                this.readyState = 2;
+                req.destroy();
+                reject(new Error(message));
             };
-            const onOpen = () => { cleanup(); resolve(); };
-            const onClose = () => { cleanup(); reject(new Error('界面连接已断开。')); };
-            const onError = () => { cleanup(); this.close(); reject(new Error('界面连接失败。')); };
-            const timer = setTimeout(() => { cleanup(); this.close(); reject(new Error('界面连接超时。')); }, 3000);
-            this.socket.addEventListener('open', onOpen, { once: true });
-            this.socket.addEventListener('close', onClose, { once: true });
-            this.socket.addEventListener('error', onError, { once: true });
+            const timer = setTimeout(() => fail('界面连接超时。'), 3000);
+            req.once('upgrade', (res, socket, head) => {
+                if (settled || this.readyState === 2) { socket.destroy(); return; }
+                if (res.headers['sec-websocket-accept'] !== expectedAccept) {
+                    socket.destroy();
+                    fail('界面连接失败。');
+                    return;
+                }
+                settled = true;
+                clearTimeout(timer);
+                if (this.openingReq === req) this.openingReq = null;
+                socket.setNoDelay(true);
+                this.socket = socket;
+                this.readyState = 1;
+                socket.on('data', data => this._onData(data));
+                socket.on('close', () => {
+                    this.readyState = 2;
+                    this._resetBuffers();
+                    this._rejectAllPending('界面连接已断开。');
+                });
+                socket.on('error', () => socket.destroy());
+                resolve();
+                if (head?.length) this._onData(head);
+            });
+            req.once('response', res => { res.resume(); fail('界面连接失败。'); });
+            req.once('error', () => fail('界面连接失败。'));
+            req.once('close', () => fail('界面连接已断开。'));
+            req.end();
         });
     }
 
     command(method, params = {}) {
         return new Promise((resolve, reject) => {
-            if (this.socket?.readyState !== WebSocket.OPEN) return reject(new Error('界面连接已断开。'));
+            if (this.readyState !== 1 || !this.socket || this.socket.destroyed) {
+                return reject(new Error('界面连接已断开。'));
+            }
             const id = ++this.nextId;
             const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('界面命令超时。')); }, 3000);
             this.pending.set(id, { resolve, reject, timer });
             try {
-                this.socket.send(JSON.stringify({ id, method, params }));
+                this.socket.write(encodeWsFrame(0x1, Buffer.from(JSON.stringify({ id, method, params }), 'utf8')));
             } catch (error) {
                 this.pending.delete(id);
                 clearTimeout(timer);
@@ -176,7 +400,15 @@ export class Connection {
     }
 
     close() {
-        this.socket?.close();
+        if (this.readyState === 2) return;
+        this.readyState = 2;
+        this._resetBuffers();
+        this._rejectAllPending('界面连接已断开。');
+        if (this.openingReq) {
+            this.openingReq.destroy();
+            this.openingReq = null;
+        }
+        if (this.socket && !this.socket.destroyed) this.socket.destroy();
     }
 }
 
@@ -333,20 +565,17 @@ export class WallpaperRuntime {
         if (!firstLine || !Number.isInteger(port) || port < 1 || port > 65535) {
             throw missingPortError('Antigravity 本地调试端口文件无效，背景暂未附加（请尝试修复快捷方式并重启客户端）。');
         }
-        let response;
-        try {
-            response = await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(2000) });
-        } catch (error) {
-            throw missingPortError('无法连接到 Antigravity 本地调试端口（可能存在残留端口文件或未使用快捷方式启动），请尝试修复快捷方式并重启客户端。', error);
-        }
-        if (!response.ok) {
-            throw missingPortError('Antigravity 本地调试端口响应异常（可能端口已失效或被占用），请尝试修复快捷方式并重启客户端。');
-        }
         let list;
         try {
-            list = await response.json();
+            list = await fetchLoopbackJson(port, '/json/list', 2000);
         } catch (error) {
-            throw missingPortError('Antigravity 本地调试端口返回格式无效，请尝试修复快捷方式并重启客户端。', error);
+            if (error?.kind === 'http') {
+                throw missingPortError('Antigravity 本地调试端口响应异常（可能端口已失效或被占用），请尝试修复快捷方式并重启客户端。');
+            }
+            if (error?.kind === 'json') {
+                throw missingPortError('Antigravity 本地调试端口返回格式无效，请尝试修复快捷方式并重启客户端。', error.cause || error);
+            }
+            throw missingPortError('无法连接到 Antigravity 本地调试端口（可能存在残留端口文件或未使用快捷方式启动），请尝试修复快捷方式并重启客户端。', error.cause || error);
         }
         if (!Array.isArray(list)) {
             throw missingPortError('Antigravity 本地调试端口返回列表无效，请尝试修复快捷方式并重启客户端。');
@@ -500,9 +729,15 @@ export class WallpaperRuntime {
         }
         const needImage = Boolean(payload.enabled && payload.css);
         const omitImage = !needImage || (payload.imageHash && connection.lastImageHash === payload.imageHash);
-        let value = await this.evaluate(connection, omitImage ? { ...payload, image: undefined } : payload, { scanSlots });
+        let value = await this.evaluate(
+            connection,
+            omitImage ? { ...payload, image: undefined } : payload,
+            { scanSlots }
+        );
         if (this.stopped) return {};
-        if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload, { scanSlots });
+        if (value === 'NEED_IMAGE') {
+            value = await this.evaluate(connection, payload, { scanSlots });
+        }
         if (this.stopped) return {};
         if (value === 'IGNORED') {
             connection.nonHost = false;
@@ -559,9 +794,8 @@ export class WallpaperRuntime {
                             arguments: [{ value: frameId }],
                         }).catch(() => {});
                     }
-                } catch {
-                } finally {
-                    hostConn.command('Runtime.releaseObject', { objectId: itemObjId }).catch(() => {});
+                } catch {} finally {
+                    await hostConn.command('Runtime.releaseObject', { objectId: itemObjId }).catch(() => {});
                 }
             }));
             return true;
@@ -931,10 +1165,6 @@ export class WallpaperRuntime {
                 await applyKeys([...live], true);
                 if (this.stopped) return;
             }
-            if (appliedHosts.size > 0) {
-                await this.syncPluginPanels(desired, appliedHosts, activate);
-                if (this.stopped) return;
-            }
             if (!desired.enabled) this.lastLayout = null;
             else if (nextLayout) this.lastLayout = nextLayout;
             const lastError = [...errors.values()].at(-1);
@@ -945,6 +1175,10 @@ export class WallpaperRuntime {
                 ...(!ok && lastError?.code ? { errorCode: lastError.code } : {}),
                 ...(this.lastLayout ? { layout: this.lastLayout } : {}),
             };
+            if (appliedHosts.size > 0) {
+                await this.syncPluginPanels(desired, appliedHosts, activate);
+                if (this.stopped) return;
+            }
         } catch (error) {
             if (this.stopped) return;
             this.health = {

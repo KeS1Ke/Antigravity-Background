@@ -6,7 +6,7 @@
 
 **Full-Window Wallpaper & Frosted Glass Surface Customization Plugin for Antigravity on Windows**
 
-[![Version](https://img.shields.io/badge/version-0.3.8-5b8def?style=flat-square)](plugin.json)
+[![Version](https://img.shields.io/badge/version-0.3.9-5b8def?style=flat-square)](plugin.json)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square)](#installation--entry-points)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A5%2022-3c873a?style=flat-square)](#installation--entry-points)
 [![Runtime](https://img.shields.io/badge/runtime-Sidecar%20%2B%20CDP-7b61ff?style=flat-square)](docs/adr/0001-live-preview.md)
@@ -68,6 +68,7 @@
 | **Selected Row / Composer / Bubble** | Three separate collapsible cards controlling native layered depth, fill toggle, outer/inner hex colors, opacity, and blur, plus an optional **Sync all three** toggle (enabled by default) | In layered mode, the outer color renders exclusively as a hollow `3–4px` outer ring + `1px` border (`mask-composite: exclude`) without tinting the inner card; tweak independently or keep all three in sync |
 | **Overview Panel** | Independent flat card with fill toggle, outer/inner hex colors, opacity, and backdrop blur | Targets all 4 Overview overlay/gutter/sibling/dropdown hosts independently without syncing to composer/bubble settings |
 | **Theme & Multi-Window Sync** | Supports Follow App / Dark / Light panel themes, multi-window auto-discovery, same-origin `BroadcastChannel` sync across open panels, and external `settings.json` reload | Live adjustments stay in Sidecar memory until **Save** writes atomically to disk; **Discard** reverts unsaved drafts |
+| **Fast Cold Start** | Zero-`undici` loopback CDP client via `node:http`, synchronous module graph (no top-level `await`), lazy SDK fallback, concurrent startup, and hidden preloaded panel short-circuit | Strictly plugin-local with zero host intrusion and zero interference with other plugins; hidden `0×0` preloaded panel builds zero sliders and sends zero requests until opened |
 | **In-App GitHub Updater** | Header displays current version, GitHub link, and **Check for Updates**; pushes updates strictly by GitHub Release SemVer version (ZIP + SHA-256 preferred, Tag tarball & public Release page fallback on API rate limits—never pushes ordinary `main` branch git commits) | Transactional staging with automatic rollback on failure and one-click hot reload; never initiates network requests passively on panel load |
 
 The updater reclaims stale directory locks left by exited processes. If a legacy lock file persists after all Antigravity processes have exited, remove `.gemini/config/plugins/.antigravity-ui-update.lock` and restart the plugin.
@@ -129,7 +130,9 @@ This plugin includes reversible dual-layer persistence ([`plugin/persistence.cjs
 
 ## Native UI & Compatibility Fixes
 
-To prevent the full-window wallpaper layer (`z-index: 1000`) and translucent surfaces from interfering with native UI controls, the renderer (`version = 18 / revision = 35`) includes targeted adaptations:
+To prevent the full-window wallpaper layer (`z-index: 1000`) and translucent surfaces from interfering with native UI controls, the renderer (`version = 18 / revision = 36`) includes targeted adaptations:
+
+- **Browser-Hole Wallpaper Cutout & Shadow DOM Top-Layer Overlay Bridge**: While built-in browser tabs (`[data-browser-hole="true"]`) are active, punches out visible browser holes from `#antigravity-ui-background` via `clip-path: path(evenodd, ...)` so wallpaper never bleeds over web pages when `wcvBrowser` drops to `zOrder = 0`, and mirrors open Top-Layer popovers/dialogs inside open Shadow DOMs (such as Antigrative Dashboard's `#usage-dashboard`, `#plugin-update-dialog`, and `.card`) to inert, click-through Light-DOM proxies so Antigravity demotes the native `WebContentsView` beneath them instead of clipping them.
 
 - **Zero-Overlap Sidebar Conversation Actions**: After making `.agy-row-actions::before` transparent for wallpaper pass-through, hovered, keyboard-focused, or menu-expanded (`aria-expanded="true"`) sidebar rows with non-empty action buttons switch `.agy-row-actions` to in-flow layout and hide `.agy-row-status`, allowing `.truncate` titles to ellipsis cleanly to the left of action buttons with zero overlap and zero row-height shift.
 - **Third-Party Right-Sidebar Plugin Panel Adaptation**: Automatically discovers and verifies cross-origin plugin OOPIFs mounted in the right sidebar (`plugin://` Sidecar UI plugins and `mcp-app-frame-slot` MCP App panels, excluding itself, opt-out `data-ag-ui-panel-native="true"` panels, full-page views, and inline conversation iframes), clearing opaque canvases, softening sticky bars and neutral cards, aligning cross-origin `color-scheme`, and restoring native appearance cleanly when disabled or at `100%` opacity.
@@ -213,7 +216,7 @@ antigravity-UI/
 │   ├── styles.css                  # Light/dark theme & embedded panel styles
 │   └── app.js                      # Live preview, BroadcastChannel sync & UI controllers
 ├── docs/
-│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §27)
+│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §29)
 │   └── images/                     # README showcase screenshots
 └── tests/
     ├── background-rendering.mjs    # Isolated rendering, interaction & persistence E2E suite

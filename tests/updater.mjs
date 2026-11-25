@@ -17,6 +17,10 @@ import { SettingsStore } from '../sidecars/panel/store.mjs';
 import { PluginUpdater, releaseRuntimeDirectory, resolveSystemProxy } from '../sidecars/panel/updater.mjs';
 
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
+const BASE_VERSION = JSON.parse(await readFile(join(project, 'plugin.json'), 'utf8')).version;
+const [baseMajor, baseMinor, basePatch] = BASE_VERSION.split('.').map(Number);
+const NEXT_PATCH = `${baseMajor}.${baseMinor}.${basePatch + 1}`;
+const NEXT_MINOR = `${baseMajor}.${baseMinor + 1}.0`;
 
 function buildTarBuffer(entries) {
     const blocks = [];
@@ -142,28 +146,28 @@ async function collectPluginRuntimeEntries(sourceDir, { versionOverride = null, 
 const tempRoot = await mkdtemp(join((await import('node:os')).tmpdir(), 'antigravity-ui-updater-'));
 try {
     // 1. Archive parsing & security validation
-    const validEntries = await collectPluginRuntimeEntries(project, { versionOverride: '0.3.9', prefix: 'Antigravity-Background-v0.3.9' });
+    const validEntries = await collectPluginRuntimeEntries(project, { versionOverride: NEXT_PATCH, prefix: `Antigravity-Background-v${NEXT_PATCH}` });
     const paxEntries = [
         { name: 'pax-global', type: 'g', content: '52 comment=51e427b541f635c62eab3c977ab4d2109dbd4a5d\n' },
         ...validEntries,
-        { name: 'Antigravity-Background-v0.3.9/sidecars/panel/very-long-directory-name-segment-that-exceeds-hundred-bytes-for-pax-testing/extra.txt', content: 'ok' },
+        { name: `Antigravity-Background-v${NEXT_PATCH}/sidecars/panel/very-long-directory-name-segment-that-exceeds-hundred-bytes-for-pax-testing/extra.txt`, content: 'ok' },
     ];
     const parsedTar = parseTarGz(buildTarBuffer(paxEntries));
-    assert.ok(parsedTar.some(e => e.parts.join('/') === 'Antigravity-Background-v0.3.9/plugin.json'));
+    assert.ok(parsedTar.some(e => e.parts.join('/') === `Antigravity-Background-v${NEXT_PATCH}/plugin.json`));
 
     const realGitTar = execFileSync('git', ['-C', project, 'archive', '--format=tar.gz', '--prefix=Antigravity-Background-HEAD/', 'HEAD'], { maxBuffer: 16 * 1024 * 1024 });
     const parsedRealGitTar = parseTarGz(realGitTar);
     assert.ok(parsedRealGitTar.some(e => e.parts.join('/') === 'Antigravity-Background-HEAD/plugin.json'));
 
     const stageOkDir = join(tempRoot, 'stage-ok');
-    const stagedList = await stageRuntimeArchive(buildTarBuffer(paxEntries), 'tar.gz', stageOkDir, '0.3.9');
+    const stagedList = await stageRuntimeArchive(buildTarBuffer(paxEntries), 'tar.gz', stageOkDir, NEXT_PATCH);
     assert.ok(stagedList.includes('plugin.json'));
     assert.equal(stagedList.includes('README.md'), false, 'Non-runtime files must not be staged');
 
     const zipBuf = buildZipBuffer(validEntries);
-    assert.ok(parseZip(zipBuf).some(e => e.parts.join('/') === 'Antigravity-Background-v0.3.9/plugin.json'));
+    assert.ok(parseZip(zipBuf).some(e => e.parts.join('/') === `Antigravity-Background-v${NEXT_PATCH}/plugin.json`));
     const stageZipDir = join(tempRoot, 'stage-zip-ok');
-    await stageRuntimeArchive(zipBuf, 'zip', stageZipDir, '0.3.9');
+    await stageRuntimeArchive(zipBuf, 'zip', stageZipDir, NEXT_PATCH);
 
     // Reject path traversal, symlinks, reserved names, duplicate case-insensitive entries, and version mismatch
     assert.throws(() => parseTarGz(buildTarBuffer([{ name: '../escape.txt', content: 'x' }])), /Unsafe archive path/);
@@ -181,7 +185,7 @@ try {
         await assert.rejects(
             stageRuntimeArchive(
                 buildZipBuffer(validEntries.filter(e => !e.name.endsWith('/' + missing))),
-                'zip', join(tempRoot, 'stage-missing-' + missing), '0.3.9'
+                'zip', join(tempRoot, 'stage-missing-' + missing), NEXT_PATCH
             ),
             /Incomplete runtime package/
         );
@@ -277,7 +281,7 @@ export class SidecarApp {
     assert.equal(chdirTarget, 'C:\\Users\\demo\\.gemini\\config\\plugins\\antigravity-ui');
 
     // 4. Local mock GitHub HTTP Server exercising Release ZIP+SHA256, Tag Tarball + 429 HTML fallback, and no-release / same-version isolation
-    let scenario = { mode: 'main', commit: '1111111111111111111111111111111111111111', version: '0.3.8', notes: 'initial main commit', rateLimitApi: false, corruptSha: false };
+    let scenario = { mode: 'main', commit: '1111111111111111111111111111111111111111', version: BASE_VERSION, notes: 'initial main commit', rateLimitApi: false, corruptSha: false };
     let githubHitCount = 0;
     let commitEndpointHits = 0;
     const mockAssets = new Map();
@@ -509,7 +513,7 @@ export class SidecarApp {
     // Recovery must finish before the fixture reaches SDK initialization.
     assert.equal(mixedStartup.status, 1, mixedStartup.stderr);
     assert.match(mixedStartup.stderr, /missing-sdk-fixture.*language_server\.exe/);
-    assert.equal(JSON.parse(await readFile(join(mixedPlugin, 'plugin.json'), 'utf8')).version, '0.3.8');
+    assert.equal(JSON.parse(await readFile(join(mixedPlugin, 'plugin.json'), 'utf8')).version, BASE_VERSION);
     await assert.rejects(readFile(mixedJournal), { code: 'ENOENT' });
 
     // 4a. Clean startup skips update lock creation when no interrupted transaction exists
@@ -525,7 +529,7 @@ export class SidecarApp {
     };
     const cleanInfo = await cleanUpdater.initializeLocalInfo();
     assert.equal(cleanLockCalls, 0);
-    assert.equal(cleanInfo.currentVersion, '0.3.8');
+    assert.equal(cleanInfo.currentVersion, BASE_VERSION);
     assert.equal(cleanInfo.canApply, true);
 
     // 4a-extra. Corrupted journal with path traversal is rejected and inspectTargetEligibility errors degrade gracefully
@@ -558,7 +562,7 @@ export class SidecarApp {
     const degradedInfo = await throwingEligibilityUpdater.initializeLocalInfo();
     assert.equal(degradedInfo.canApply, false);
     assert.equal(degradedInfo.applyDisabledReason, 'install-location');
-    assert.equal(degradedInfo.currentVersion, '0.3.8');
+    assert.equal(degradedInfo.currentVersion, BASE_VERSION);
 
     // 4b. Dev workspace check -> canApply false; no published release stays current without polling git commits
     const defaultUpdater = new PluginUpdater({ pluginDir: project, dataDir: join(tempRoot, 'def-data'), home: installHome });
@@ -572,7 +576,7 @@ export class SidecarApp {
     assert.equal(devCheck.hasUpdate, false);
     assert.equal(commitEndpointHits, 0, 'Updater must never poll git main-branch commits when checking for updates');
 
-    // 4b. Installed plugin without .install-source.json, same version 0.3.8 on main -> no false positive ('current')
+    // 4b. Installed plugin without .install-source.json, same base version on main -> no false positive ('current')
     let reloadFired = false;
     const updater = new PluginUpdater({
         pluginDir: installedPlugin,
@@ -595,8 +599,8 @@ export class SidecarApp {
     scenario = initialScenario;
 
     // 4c. Release ZIP + SHA-256 corrupt checksum -> verification error & intact original files
-    const zip039Entries = await collectPluginRuntimeEntries(project, {
-        versionOverride: '0.3.9',
+    const zipNextEntries = await collectPluginRuntimeEntries(project, {
+        versionOverride: NEXT_PATCH,
         persistenceSuffix: '// updated persistence marker',
         prefix: 'antigravity-ui',
     });
@@ -605,23 +609,23 @@ export class SidecarApp {
     await writeFile(oldAsset, 'Original file');
     await mkdir(join(oldAssetDir, 'nested'), { recursive: true });
     await writeFile(join(oldAssetDir, 'nested', 'original.txt'), 'Original directory content');
-    zip039Entries.push(
+    zipNextEntries.push(
         { name: 'antigravity-ui/assets/was-file/replacement.txt', content: 'Replacement directory content' },
         { name: 'antigravity-ui/assets/was-directory', content: 'Replacement file' }
     );
-    const zip039 = buildZipBuffer(zip039Entries);
-    const sha039 = Buffer.from(`${createHash('sha256').update(zip039).digest('hex')}  antigravity-background-0.3.9.zip\n`, 'utf8');
-    mockAssets.set('zip', zip039);
-    mockAssets.set('sha', sha039);
-    scenario = { mode: 'release-zip', version: '0.3.9', notes: 'Release 0.3.9\n<img src="x">', rateLimitApi: false, corruptSha: true };
+    const zipNext = buildZipBuffer(zipNextEntries);
+    const shaNext = Buffer.from(`${createHash('sha256').update(zipNext).digest('hex')}  antigravity-background-${NEXT_PATCH}.zip\n`, 'utf8');
+    mockAssets.set('zip', zipNext);
+    mockAssets.set('sha', shaNext);
+    scenario = { mode: 'release-zip', version: NEXT_PATCH, notes: `Release ${NEXT_PATCH}\n<img src="x">`, rateLimitApi: false, corruptSha: true };
     const availZip = await updater.check({ force: true });
     assert.equal(availZip.state, 'available');
     assert.equal(availZip.sourceKind, 'release');
-    await updater.apply({ version: '0.3.9' });
+    await updater.apply({ version: NEXT_PATCH });
     while (updater.publicState().state === 'installing') await delay(30);
     assert.equal(updater.publicState().state, 'error');
     assert.equal(updater.publicState().error, 'verification');
-    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.3.8');
+    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, BASE_VERSION);
 
     // Force an actual runtime file replacement to fail after the manifest was already installed.
     // In the second run also fail restoration of that manifest, then recover on startup.
@@ -644,7 +648,7 @@ export class SidecarApp {
         syncBuiltinESMExports();
         try {
             assert.equal((await updater.check({ force: true })).state, 'available');
-            await updater.apply({ version: '0.3.9' });
+            await updater.apply({ version: NEXT_PATCH });
             await updater.job;
             assert.equal(updater.publicState().error, failRollback ? 'rollback' : 'install');
         } finally {
@@ -657,48 +661,48 @@ export class SidecarApp {
         if (failRollback) {
             const retainedTx = join(updatesDir, transactions[0]);
             assert.equal(JSON.parse(await readFile(join(retainedTx, 'journal.json'), 'utf8')).phase, 'installing');
-            assert.equal(JSON.parse(await readFile(join(retainedTx, 'backup', 'plugin.json'), 'utf8')).version, '0.3.8');
+            assert.equal(JSON.parse(await readFile(join(retainedTx, 'backup', 'plugin.json'), 'utf8')).version, BASE_VERSION);
             leaveOrphanLock();
-            assert.equal((await updater.initializeLocalInfo()).currentVersion, '0.3.8');
+            assert.equal((await updater.initializeLocalInfo()).currentVersion, BASE_VERSION);
             assert.deepEqual(await readdir(updatesDir), []);
         }
-        assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).version, '0.3.8');
+        assert.equal(JSON.parse(await readFile(manifestPath, 'utf8')).version, BASE_VERSION);
         assert.equal(await readFile(oldAsset, 'utf8'), 'Original file');
         assert.equal(await readFile(join(oldAssetDir, 'nested', 'original.txt'), 'utf8'), 'Original directory content');
     }
 
-    // 4d. Release ZIP + valid SHA-256 -> installs 0.3.9, flags persistenceUpdated, retains user settings.json
+    // 4d. Release ZIP + valid SHA-256 -> installs NEXT_PATCH, flags persistenceUpdated, retains user settings.json
     scenario.corruptSha = false;
     await updater.check({ force: true });
-    await updater.apply({ version: '0.3.9' });
+    await updater.apply({ version: NEXT_PATCH });
     while (updater.publicState().state === 'installing') await delay(30);
     const afterZip = updater.publicState();
     assert.equal(afterZip.state, 'installed');
-    assert.equal(afterZip.currentVersion, '0.3.9');
+    assert.equal(afterZip.currentVersion, NEXT_PATCH);
     assert.equal(afterZip.persistenceUpdated, true);
-    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.3.9');
+    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, NEXT_PATCH);
     assert.equal(JSON.parse(await readFile(join(installDataDir, 'settings.json'), 'utf8')).opacity, 55);
     assert.equal(await readFile(join(oldAsset, 'replacement.txt'), 'utf8'), 'Replacement directory content');
     assert.equal(await readFile(oldAssetDir, 'utf8'), 'Replacement file');
 
-    // 4e. Tag-only Release (no zip asset) + API 429 rate limit -> HTML fallback + Tag .tar.gz install to 0.4.0
+    // 4e. Tag-only Release (no zip asset) + API 429 rate limit -> HTML fallback + Tag .tar.gz install to NEXT_MINOR
     updater.state.state = 'idle';
-    mockAssets.set('tar', buildTarBuffer(await collectPluginRuntimeEntries(project, { versionOverride: '0.4.0', prefix: 'Antigravity-Background-v0.4.0' })));
-    scenario = { mode: 'release-tar', version: '0.4.0', notes: '', rateLimitApi: true, corruptSha: false };
+    mockAssets.set('tar', buildTarBuffer(await collectPluginRuntimeEntries(project, { versionOverride: NEXT_MINOR, prefix: `Antigravity-Background-v${NEXT_MINOR}` })));
+    scenario = { mode: 'release-tar', version: NEXT_MINOR, notes: '', rateLimitApi: true, corruptSha: false };
     const availTar = await updater.check({ force: true });
     assert.equal(availTar.state, 'available');
-    assert.equal(availTar.latestVersion, '0.4.0');
-    await updater.apply({ version: '0.4.0' });
+    assert.equal(availTar.latestVersion, NEXT_MINOR);
+    await updater.apply({ version: NEXT_MINOR });
     while (updater.publicState().state === 'installing') await delay(30);
     assert.equal(updater.publicState().state, 'installed');
-    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.4.0');
+    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, NEXT_MINOR);
 
     // 4f. Version-only policy: same-version Release or new main-branch git commits must never push an update
     updater.state.state = 'idle';
     const oldCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const newCommit = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-    await writeFile(join(installedPlugin, '.install-source.json'), JSON.stringify({ repo: 'KeS1Ke/Antigravity-Background', channel: 'release', version: '0.4.0', commit: oldCommit }));
-    scenario = { mode: 'main', version: '0.4.0', commit: newCommit, notes: 'docs: readme commit on main', rateLimitApi: true, corruptSha: false };
+    await writeFile(join(installedPlugin, '.install-source.json'), JSON.stringify({ repo: 'KeS1Ke/Antigravity-Background', channel: 'release', version: NEXT_MINOR, commit: oldCommit }));
+    scenario = { mode: 'main', version: NEXT_MINOR, commit: newCommit, notes: 'docs: readme commit on main', rateLimitApi: true, corruptSha: false };
     const noReleaseCheck = await updater.check({ force: true });
     assert.equal(noReleaseCheck.state, 'current');
     assert.equal(noReleaseCheck.hasUpdate, false);
@@ -706,12 +710,12 @@ export class SidecarApp {
     assert.equal(noReleaseCheck.latestCommit, null);
     assert.equal(commitEndpointHits, 0, 'Updater must not fetch main commits or Atom feed when no release exists');
 
-    scenario = { mode: 'release-tar', version: '0.4.0', commit: newCommit, notes: 'Release 0.4.0', rateLimitApi: false, corruptSha: false };
+    scenario = { mode: 'release-tar', version: NEXT_MINOR, commit: newCommit, notes: `Release ${NEXT_MINOR}`, rateLimitApi: false, corruptSha: false };
     const sameVersionRelease = await updater.check({ force: true });
     assert.equal(sameVersionRelease.state, 'current');
     assert.equal(sameVersionRelease.hasUpdate, false);
     assert.equal(sameVersionRelease.updateReason, null);
-    assert.equal(sameVersionRelease.latestVersion, '0.4.0');
+    assert.equal(sameVersionRelease.latestVersion, NEXT_MINOR);
     assert.equal(commitEndpointHits, 0, 'Same-version Release must never fall back to git commit comparisons');
 
     // 4g. Reload invocation & HTTP proxy error classification (407 -> proxy without credential leaks)
@@ -741,7 +745,7 @@ export class SidecarApp {
         hadSourceMeta: true,
     }));
     await updater.recoverInterruptedTransactions();
-    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.4.0');
+    assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, NEXT_MINOR);
     await assert.rejects(readFile(join(installedPlugin, 'stale-orphan.txt')), { code: 'ENOENT' });
     await assert.rejects(readFile(join(crashedTx, 'journal.json')), { code: 'ENOENT' });
 
@@ -777,16 +781,16 @@ export class SidecarApp {
     }
 
     // 5. Real Sidecar HTTP + Headless Chrome browser UI integration (desktop + 320px narrow viewport)
-    // Reset installed plugin to 0.3.8 for end-to-end UI flow
+    // Reset installed plugin to BASE_VERSION for end-to-end UI flow
     await rm(installedPlugin, { recursive: true, force: true });
     await mkdir(installedPlugin, { recursive: true });
     for (const rootEntry of ['plugin.json', 'plugin', 'sidecars', 'assets']) {
         await cp(join(project, rootEntry), join(installedPlugin, rootEntry), { recursive: true });
     }
-    const zip039Ui = buildZipBuffer(await collectPluginRuntimeEntries(project, { versionOverride: '0.3.9', prefix: 'antigravity-ui' }));
-    mockAssets.set('zip', zip039Ui);
-    mockAssets.set('sha', Buffer.from(`${createHash('sha256').update(zip039Ui).digest('hex')}  antigravity-background-0.3.9.zip\n`, 'utf8'));
-    scenario = { mode: 'release-zip', version: '0.3.9', notes: 'UI release test\n<img src="https://evil.example/x.png">', rateLimitApi: false, corruptSha: false };
+    const zipNextUi = buildZipBuffer(await collectPluginRuntimeEntries(project, { versionOverride: NEXT_PATCH, prefix: 'antigravity-ui' }));
+    mockAssets.set('zip', zipNextUi);
+    mockAssets.set('sha', Buffer.from(`${createHash('sha256').update(zipNextUi).digest('hex')}  antigravity-background-${NEXT_PATCH}.zip\n`, 'utf8'));
+    scenario = { mode: 'release-zip', version: NEXT_PATCH, notes: 'UI release test\n<img src="https://evil.example/x.png">', rateLimitApi: false, corruptSha: false };
 
     const lsServer = createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<!doctype html><body>host</body>'); });
     await new Promise(resolve => lsServer.listen(0, '127.0.0.1', resolve));
@@ -847,7 +851,7 @@ export class SidecarApp {
         pageClient = new Connection(target.webSocketDebuggerUrl);
         await pageClient.open();
 
-        await until(() => evalOn('document.querySelector("#plugin-version")?.textContent === "v0.3.8"'), 'Initial version badge missing');
+        await until(() => evalOn(`document.querySelector("#plugin-version")?.textContent === "v${BASE_VERSION}"`), 'Initial version badge missing');
         await assert.rejects(readFile(coldJournal), { code: 'ENOENT' });
         assert.equal(githubHitCount, sidecarHitsBeforeClick, 'Opening panel must not trigger automatic GitHub network requests');
         assert.equal(await evalOn('document.querySelector("#github-link").getAttribute("href")'), `${ghBase}/KeS1Ke/Antigravity-Background`);
@@ -880,20 +884,20 @@ export class SidecarApp {
         assert.ok(narrowLayout.btnRect.right <= 320.5 && narrowLayout.btnRect.width > 40);
         await pageClient.command('Emulation.clearDeviceMetricsOverride');
 
-        // Click Check Update -> modal opens, shows Release 0.3.9, safe text notes, clickable GitHub release link
+        // Click Check Update -> modal opens, shows Release NEXT_PATCH, safe text notes, clickable GitHub release link
         await evalOn('document.querySelector("#check-update").click()');
         await until(() => evalOn('!document.querySelector("#update-modal").hidden && document.querySelector("#update-status-text").textContent === "发现新版本"'), 'Update modal did not show available release');
         assert.equal(await evalOn('document.querySelector("#update-source-badge").textContent'), 'Release');
-        assert.equal(await evalOn('document.querySelector("#update-current-version").textContent'), 'v0.3.8');
-        assert.equal(await evalOn('document.querySelector("#update-latest-version").textContent'), 'v0.3.9');
+        assert.equal(await evalOn('document.querySelector("#update-current-version").textContent'), `v${BASE_VERSION}`);
+        assert.equal(await evalOn('document.querySelector("#update-latest-version").textContent'), `v${NEXT_PATCH}`);
         assert.equal(await evalOn('document.querySelector("#update-notes img")'), null, 'Release notes must render strictly as plain text');
         assert.ok((await evalOn('document.querySelector("#update-notes").textContent')).includes('<img'));
-        assert.match(await evalOn('document.querySelector("#update-github-link").href'), /\/releases\/tag\/v0\.3\.9$/);
+        assert.equal((await evalOn('document.querySelector("#update-github-link").href')).endsWith(`/releases/tag/v${NEXT_PATCH}`), true);
 
         // Apply update -> wait for installed -> click Reload plugin -> sidecar exits cleanly
         await evalOn('document.querySelector("#update-action").click()');
         await until(() => evalOn('document.querySelector("#update-status-text").textContent === "更新已完成"'), 'In-app update did not finish installing');
-        assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, '0.3.9');
+        assert.equal(JSON.parse(await readFile(join(installedPlugin, 'plugin.json'), 'utf8')).version, NEXT_PATCH);
         assert.equal(await evalOn('document.querySelector("#update-action").textContent'), '重新加载插件');
         await evalOn('document.querySelector("#update-action").click()');
         await until(() => evalOn('document.querySelector("#update-status-text").textContent === "正在重新加载…"'), 'Reload button did not enter reloading state');
@@ -907,7 +911,7 @@ export class SidecarApp {
             transport.fetch = async (path) => {
                 if (path === '/api/update') {
                     window.__reopenPollCount++;
-                    return new Response(JSON.stringify({ state: 'reloading', currentVersion: '0.3.9' }), {
+                    return new Response(JSON.stringify({ state: 'reloading', currentVersion: ${JSON.stringify(NEXT_PATCH)} }), {
                         status: 200,
                         headers: { 'Content-Type': 'application/json' },
                     });
