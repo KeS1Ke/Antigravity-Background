@@ -127,7 +127,11 @@ function enqueueRequest(task) {
     requests = operation.catch(() => {});
     return operation;
 }
+let initialStorePromise;
 async function syncStore({ initial = false } = {}) {
+    if (!initial && initialStorePromise) {
+        await initialStorePromise.catch(() => {});
+    }
     let reloaded;
     try {
         reloaded = await store.reloadIfChanged();
@@ -158,7 +162,8 @@ function stateResponse(extra = {}) {
 }
 let cachedStyleKey;
 let cachedStyleValue;
-const runtime = new WallpaperRuntime(profile, () => {
+const runtime = new WallpaperRuntime(profile, async () => {
+    if (initialStorePromise) await initialStorePromise;
     const settings = draft || store.settings;
     if (settings === cachedStyleKey && cachedStyleValue) return cachedStyleValue;
     cachedStyleKey = settings;
@@ -264,7 +269,7 @@ function getStaticAssets() {
 const pendingTxPromise = hasPendingUpdateTx(join(data, 'updates'));
 const sdkPromise = loadSdk(join(resources, 'bin', 'language_server.exe'), data);
 void sdkPromise.catch(() => {});
-const initialStorePromise = enqueueRequest(() => syncStore({ initial: true }));
+initialStorePromise = syncStore({ initial: true });
 void initialStorePromise.catch(() => {});
 if (await pendingTxPromise) {
     await getUpdater();
@@ -380,13 +385,17 @@ try {
         }
     }, 'POST');
     await app.run();
-    await initialStorePromise;
+    let firstHeartbeat = true;
     let heartbeatPending = false;
     runtime.start(() => {
         if (heartbeatPending) return;
         heartbeatPending = true;
         return enqueueRequest(async () => {
-            await syncStore();
+            if (firstHeartbeat) {
+                firstHeartbeat = false;
+            } else {
+                await syncStore();
+            }
             await runtime.update(false, true);
         }).catch(error => {
             runtime.health = { ...runtime.health, error: error.message };

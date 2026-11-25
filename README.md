@@ -129,7 +129,7 @@ Antigravity 桌面端仅在开启本地环回调试端口（`--remote-debugging-
 
 ## 原生交互与兼容修复
 
-针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 34`）持续做了系统性适配：
+针对全窗壁纸层（`z-index: 1000`）与半透明内容区抬升后可能带来的原生界面兼容问题，渲染器（`version = 18 / revision = 35`）持续做了系统性适配：
 
 - **左侧栏会话标题与悬停快捷按钮防重叠**：透明化 `.agy-row-actions::before` 后，在左侧栏会话行悬停、键盘聚焦或菜单展开（`aria-expanded="true"`）且存在快捷按钮时，将 `.agy-row-actions` 切为流内定位并隐藏被取代的 `.agy-row-status`，使左侧 `truncate` 标题按按钮实际宽度自动省略截断（零重叠、零行高抖动且保持全透明壁纸透出）。
 
@@ -217,7 +217,7 @@ antigravity-UI/
 │   ├── styles.css                  # 设置页深浅主题与嵌入式样式
 │   └── app.js                      # 实时预览、BroadcastChannel 同步与更新/交互控制
 ├── docs/
-│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §25）
+│   ├── adr/0001-live-preview.md    # 架构决策与演进记录（§1 – §26）
 │   └── images/                     # README 展示截图
 └── tests/
     ├── background-rendering.mjs    # 隔离环境渲染、交互与持久化回归测试

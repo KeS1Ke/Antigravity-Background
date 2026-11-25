@@ -129,7 +129,7 @@ This plugin includes reversible dual-layer persistence ([`plugin/persistence.cjs
 
 ## Native UI & Compatibility Fixes
 
-To prevent the full-window wallpaper layer (`z-index: 1000`) and translucent surfaces from interfering with native UI controls, the renderer (`version = 18 / revision = 34`) includes targeted adaptations:
+To prevent the full-window wallpaper layer (`z-index: 1000`) and translucent surfaces from interfering with native UI controls, the renderer (`version = 18 / revision = 35`) includes targeted adaptations:
 
 - **Zero-Overlap Sidebar Conversation Actions**: After making `.agy-row-actions::before` transparent for wallpaper pass-through, hovered, keyboard-focused, or menu-expanded (`aria-expanded="true"`) sidebar rows with non-empty action buttons switch `.agy-row-actions` to in-flow layout and hide `.agy-row-status`, allowing `.truncate` titles to ellipsis cleanly to the left of action buttons with zero overlap and zero row-height shift.
 - **Third-Party Right-Sidebar Plugin Panel Adaptation**: Automatically discovers and verifies cross-origin plugin OOPIFs mounted in the right sidebar (`plugin://` Sidecar UI plugins and `mcp-app-frame-slot` MCP App panels, excluding itself, opt-out `data-ag-ui-panel-native="true"` panels, full-page views, and inline conversation iframes), clearing opaque canvases, softening sticky bars and neutral cards, aligning cross-origin `color-scheme`, and restoring native appearance cleanly when disabled or at `100%` opacity.
@@ -213,7 +213,7 @@ antigravity-UI/
 │   ├── styles.css                  # Light/dark theme & embedded panel styles
 │   └── app.js                      # Live preview, BroadcastChannel sync & UI controllers
 ├── docs/
-│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §25)
+│   ├── adr/0001-live-preview.md    # Architecture decision & evolution log (§1 – §26)
 │   └── images/                     # README showcase screenshots
 └── tests/
     ├── background-rendering.mjs    # Isolated rendering, interaction & persistence E2E suite

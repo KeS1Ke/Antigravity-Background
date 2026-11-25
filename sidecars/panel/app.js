@@ -1803,8 +1803,8 @@
         ensureStageHydrated(previewStage);
         updateHostTheme();
         render();
-        updateController.init();
         await syncFromServer({ initial: true });
+        updateController.init();
     }
     if (!isHiddenEmbedded()) {
         void initialize();

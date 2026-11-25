@@ -3,7 +3,7 @@
 export async function installWallpaper(payload = {}) {
     // v18 checks this protocol version before honoring another owner's lease.
     const version = 18;
-    const revision = 34;
+    const revision = 35;
 
     // -------------------------------------------------------------------------
     // Section 1: Pure helpers (kept inside installWallpaper so toString() CDP
@@ -650,21 +650,23 @@ export async function installWallpaper(payload = {}) {
                 state.hasCss = nextHasCss;
                 if (safeCss) {
                     if (nextImage !== undefined) {
-                        if (typeof nextImage === 'string' && safeImageRe.test(nextImage)) {
-                            const currentUrl = imageEl.style.getPropertyValue('--ag-ui-image');
-                            let nextUrl;
-                            const imageChanged = safeHash
-                                ? (safeHash !== state.imageHash || !currentUrl)
-                                : (currentUrl !== (nextUrl = 'url("' + nextImage + '")'));
-                            if (imageChanged) {
-                                imageEl.style.setProperty('--ag-ui-image', nextUrl ?? ('url("' + nextImage + '")'));
-                                state.imageHash = safeHash;
-                                syncImageAspect(nextImage);
-                            }
-                        } else if (nextImage === '') {
+                        if (nextImage === '') {
                             imageEl.style.removeProperty('--ag-ui-image');
                             state.imageHash = '';
                             syncImageAspect('');
+                        } else if (typeof nextImage === 'string') {
+                            const currentUrl = imageEl.style.getPropertyValue('--ag-ui-image');
+                            if (!(safeHash && safeHash === state.imageHash && currentUrl) && safeImageRe.test(nextImage)) {
+                                let nextUrl;
+                                const imageChanged = safeHash
+                                    ? (safeHash !== state.imageHash || !currentUrl)
+                                    : (currentUrl !== (nextUrl = 'url("' + nextImage + '")'));
+                                if (imageChanged) {
+                                    imageEl.style.setProperty('--ag-ui-image', nextUrl ?? ('url("' + nextImage + '")'));
+                                    state.imageHash = safeHash;
+                                    syncImageAspect(nextImage);
+                                }
+                            }
                         }
                     }
                     if (safeCss !== currentCss) {
@@ -928,7 +930,7 @@ export const computeClipInsets = exportedHelpers.computeClipInsets;
 // installPluginPanelSurface.toString() can be evaluated directly inside OOPIFs.
 export async function installPluginPanelSurface(payload = {}) {
     const version = 18;
-    const revision = 34;
+    const revision = 35;
 
     const shouldIgnoreLease = (active, incoming) => {
         if (!active) return false;

@@ -6,44 +6,22 @@ import { randomUUID } from 'node:crypto';
 const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
 let cachedInstallWallpaperSource;
 let cachedInstallPluginPanelSource;
+function compactFunctionSource(source) {
+    return source
+        .replace(/^[ \t]*\/\/[^\r\n]*\r?\n/gm, '')
+        .replace(/^[ \t]+/gm, '')
+        .replace(/\r?\n{2,}/g, '\n');
+}
 function getInstallWallpaperSource() {
-    return (cachedInstallWallpaperSource ??= installWallpaper.toString());
+    return (cachedInstallWallpaperSource ??= compactFunctionSource(installWallpaper.toString()));
 }
 function getInstallPluginPanelSource() {
-    return (cachedInstallPluginPanelSource ??= installPluginPanelSurface.toString());
+    return (cachedInstallPluginPanelSource ??= compactFunctionSource(installPluginPanelSurface.toString()));
 }
 const RENDERER_KEY = `${RENDERER_VERSION}:${RENDERER_REVISION}`;
 const PLUGIN_HEARTBEAT_SKIP_MS = 3000;
 const ATTACH_RETRY_DELAYS = [150, 250, 400, 600, 1000, 1500];
 const HOST_PROBE_EXPRESSION = 'window === window.top && Boolean(window.electronNative && window.nativeStorage)';
-const FAST_EVAL_PREFIX =
-    '(async (p) => {' +
-    'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null, hostColorScheme: null };' +
-    'const active = window.__antigravityUiRenderer;' +
-    'if (!active) return { value: (p.css && p.image === undefined && p.imageHash) ? "NEED_IMAGE" : "NEED_FULL", layout: null, hostColorScheme: null };' +
-    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", layout: null, hostColorScheme: null };` +
-    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
-    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
-    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", layout: null, hostColorScheme: null };' +
-    'if (p.css && p.image === undefined && p.imageHash && active.imageHash !== p.imageHash) return { value: "NEED_IMAGE", layout: null, hostColorScheme: null };' +
-    'active.owner = p.owner; active.generation = p.generation;' +
-    'active.update(p); await active.syncTitlebar();' +
-    'return { value: window.__antigravityUiRenderer === active ? "OK" : "IGNORED", layout: window.__antigravityUiRenderer === active ? (active.layout ?? null) : null, hostColorScheme: window.__antigravityUiRenderer === active ? (active.hostColorScheme ?? "dark") : null };' +
-    '})(';
-const FAST_PLUGIN_EVAL_PREFIX =
-    '(async (p) => {' +
-    'if (window === window.top) return { value: false, colorScheme: null };' +
-    'if (document.documentElement?.dataset?.agUiPanelNative === "true") return { value: "NATIVE", colorScheme: null };' +
-    'const active = window.__antigravityUiPluginSurface;' +
-    'if (!active) return { value: "NEED_FULL", colorScheme: null };' +
-    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", colorScheme: null };` +
-    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
-    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
-    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", colorScheme: null };' +
-    'active.owner = p.owner; active.generation = p.generation;' +
-    'active.update(p);' +
-    'return { value: window.__antigravityUiPluginSurface === active ? "OK" : "IGNORED", colorScheme: window.__antigravityUiPluginSurface === active ? (active.colorScheme ?? null) : null };' +
-    '})(';
 const COLLECT_PLUGIN_SLOTS_BODY =
     'const rightBody = document.querySelector(\'[data-side-panel-body]:not([data-has-browser-hole="true"])\');' +
     'const rightRect = rightBody ? rightBody.getBoundingClientRect() : null;' +
@@ -71,13 +49,43 @@ const COLLECT_PLUGIN_SLOTS_BODY =
     '};' +
     'for (const slot of document.querySelectorAll(\'.agy-sheet > .pointer-events-none.overflow-clip > :is([data-testid="sidecar-iframe-slot"],[data-testid="mcp-app-frame-slot"],div:has(iframe))\')) { for (const iframe of slot.querySelectorAll("iframe")) collect(iframe, slot); }' +
     'if (rightBody) { for (const iframe of rightBody.querySelectorAll("iframe")) collect(iframe, null); }';
-const PLUGIN_SLOT_SCAN_EXPRESSION =
-    '(() => {' + COLLECT_PLUGIN_SLOTS_BODY +
+const PLUGIN_SLOT_SCAN_BODY =
+    COLLECT_PLUGIN_SLOTS_BODY +
     'const known = []; const unknownFlags = []; const allFlags = [];' +
     'for (const e of entries) { allFlags.push(e.isRightPanel); if (e.frameId) known.push([e.frameId, e.isRightPanel]); else unknownFlags.push(e.isRightPanel); }' +
-    'return { sig: entries.map(e => e.sig).join("\\n"), known, unknownFlags, allFlags }; })()';
+    'return { sig: entries.map(e => e.sig).join("\\n"), known, unknownFlags, allFlags };';
+const PLUGIN_SLOT_SCAN_EXPRESSION = '(() => {' + PLUGIN_SLOT_SCAN_BODY + '})()';
 const PLUGIN_SLOT_UNKNOWN_ELEMENTS_EXPRESSION = '(() => {' + COLLECT_PLUGIN_SLOTS_BODY + 'return entries.filter(e => !e.frameId).map(e => e.iframe); })()';
 const PLUGIN_SLOT_ELEMENTS_EXPRESSION = '(() => {' + COLLECT_PLUGIN_SLOTS_BODY + 'return entries.map(e => e.iframe); })()';
+const FAST_EVAL_PREFIX =
+    '(async (p, scanSlots) => {' +
+    'if (window !== window.top || !window.electronNative || !window.nativeStorage) return { value: false, layout: null, hostColorScheme: null, pluginSlotScan: null };' +
+    'const active = window.__antigravityUiRenderer;' +
+    'if (!active) return { value: (p.css && p.image === undefined && p.imageHash) ? "NEED_IMAGE" : "NEED_FULL", layout: null, hostColorScheme: null, pluginSlotScan: null };' +
+    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", layout: null, hostColorScheme: null, pluginSlotScan: null };` +
+    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
+    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
+    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", layout: null, hostColorScheme: null, pluginSlotScan: null };' +
+    'if (p.css && p.image === undefined && p.imageHash && active.imageHash !== p.imageHash) return { value: "NEED_IMAGE", layout: null, hostColorScheme: null, pluginSlotScan: null };' +
+    'active.owner = p.owner; active.generation = p.generation;' +
+    'active.update(p); await active.syncTitlebar();' +
+    'const ok = window.__antigravityUiRenderer === active;' +
+    'return { value: ok ? "OK" : "IGNORED", layout: ok ? (active.layout ?? null) : null, hostColorScheme: ok ? (active.hostColorScheme ?? "dark") : null, pluginSlotScan: (ok && scanSlots) ? (() => {' + PLUGIN_SLOT_SCAN_BODY + '})() : null };' +
+    '})(';
+const FAST_PLUGIN_EVAL_PREFIX =
+    '(async (p) => {' +
+    'if (window === window.top) return { value: false, colorScheme: null };' +
+    'if (document.documentElement?.dataset?.agUiPanelNative === "true") return { value: "NATIVE", colorScheme: null };' +
+    'const active = window.__antigravityUiPluginSurface;' +
+    'if (!active) return { value: "NEED_FULL", colorScheme: null };' +
+    `if (active.version !== ${RENDERER_VERSION} || active.revision !== ${RENDERER_REVISION} || active.empty) return { value: "NEED_FULL", colorScheme: null };` +
+    'const ag = Number.isFinite(active.generation) ? active.generation : 0;' +
+    'const ig = Number.isFinite(p.generation) ? p.generation : 0;' +
+    'if (ag !== ig ? ag > ig : String(active.owner ?? "") > String(p.owner ?? "")) return { value: "IGNORED", colorScheme: null };' +
+    'active.owner = p.owner; active.generation = p.generation;' +
+    'active.update(p);' +
+    'return { value: window.__antigravityUiPluginSurface === active ? "OK" : "IGNORED", colorScheme: window.__antigravityUiPluginSurface === active ? (active.colorScheme ?? null) : null };' +
+    '})(';
 
 function missingPortError(message, cause) {
     const error = new Error(message, cause ? { cause } : undefined);
@@ -104,6 +112,7 @@ export class Connection {
         this.lastPluginSyncedAt = 0;
         this.lastPluginColorScheme = null;
         this.lastPluginDisabledAt = 0;
+        this.lastPluginSlotScan = null;
     }
 
     async open() {
@@ -228,6 +237,7 @@ export class WallpaperRuntime {
         this.connections = new Map();
         this.pluginConnections = new Map();
         this.hostTargetByUrl = new Map();
+        this.exactHostPortUrls = new Set();
         this.iframeTargetsByParent = new Map();
         this.lastLayout = null;
         this.health = { windows: 0, error: '等待 Antigravity 界面连接。' };
@@ -345,10 +355,18 @@ export class WallpaperRuntime {
         const live = new Set(targets.map(target => target.webSocketDebuggerUrl));
         const hostIds = new Set();
         this.hostTargetByUrl.clear();
+        this.exactHostPortUrls.clear();
         for (const target of targets) {
             if (target.id) {
                 hostIds.add(target.id);
                 this.hostTargetByUrl.set(target.webSocketDebuggerUrl, target.id);
+            }
+            if (this.hostPort) {
+                try {
+                    if (new URL(target.url).port === this.hostPort) {
+                        this.exactHostPortUrls.add(target.webSocketDebuggerUrl);
+                    }
+                } catch {}
             }
         }
         const iframeTargets = list.filter(target => validIframeTarget(target, port, hostIds));
@@ -395,13 +413,15 @@ export class WallpaperRuntime {
         connection.pluginSlotSignature = '';
         connection.rightPanelFrameIds.clear();
         connection.nonRightPanelFrameIds.clear();
+        connection.lastPluginSlotScan = null;
     }
 
-    async evaluate(connection, payload) {
+    async evaluate(connection, payload, { scanSlots = false } = {}) {
         const serializedPayload = JSON.stringify(payload);
+        connection.lastPluginSlotScan = null;
         if (connection.installedKey === RENDERER_KEY && payload.enabled) {
             const fastResult = await connection.command('Runtime.evaluate', {
-                expression: FAST_EVAL_PREFIX + serializedPayload + ')',
+                expression: FAST_EVAL_PREFIX + serializedPayload + ',' + (scanSlots ? 'true' : 'false') + ')',
                 returnByValue: true,
                 awaitPromise: true,
             });
@@ -421,6 +441,7 @@ export class WallpaperRuntime {
                     if (fastOutcome?.hostColorScheme === 'dark' || fastOutcome?.hostColorScheme === 'light') {
                         connection.hostColorScheme = fastOutcome.hostColorScheme;
                     }
+                    connection.lastPluginSlotScan = fastOutcome?.pluginSlotScan ?? null;
                 } else {
                     connection.installedKey = undefined;
                     connection.lastLayout = null;
@@ -430,8 +451,9 @@ export class WallpaperRuntime {
             }
             connection.installedKey = undefined;
         }
+        const scanExpr = scanSlots ? '(ok ? (() => {' + PLUGIN_SLOT_SCAN_BODY + '})() : null)' : 'null';
         const result = await connection.command('Runtime.evaluate', {
-            expression: '(async () => { const value = await (' + getInstallWallpaperSource() + ')(' + serializedPayload + '); return { value, layout: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.layout ?? null) : null, hostColorScheme: (value === true || value === "OK") ? (window.__antigravityUiRenderer?.hostColorScheme ?? "dark") : null }; })()',
+            expression: '(async () => { const value = await (' + getInstallWallpaperSource() + ')(' + serializedPayload + '); const ok = value === true || value === "OK"; return { value, layout: ok ? (window.__antigravityUiRenderer?.layout ?? null) : null, hostColorScheme: ok ? (window.__antigravityUiRenderer?.hostColorScheme ?? "dark") : null, pluginSlotScan: ' + scanExpr + ' }; })()',
             returnByValue: true,
             awaitPromise: true,
         });
@@ -448,6 +470,7 @@ export class WallpaperRuntime {
             if (outcome.hostColorScheme === 'dark' || outcome.hostColorScheme === 'light') {
                 connection.hostColorScheme = outcome.hostColorScheme;
             }
+            connection.lastPluginSlotScan = outcome.pluginSlotScan ?? null;
             connection.installedKey = (payload.enabled && (outcome.value === true || outcome.value === 'OK')) ? RENDERER_KEY : undefined;
             return outcome.value;
         }
@@ -456,8 +479,10 @@ export class WallpaperRuntime {
         return outcome;
     }
 
-    async send(connection, payload) {
-        if (!connection.hostVerified || connection.nonHost) {
+    async send(connection, payload, { scanSlots = false } = {}) {
+        const skipInitialProbe = !connection.hostVerified && !connection.nonHost &&
+            Boolean(this.hostPort) && this.exactHostPortUrls.has(connection.url);
+        if (!skipInitialProbe && (!connection.hostVerified || connection.nonHost)) {
             const probe = await connection.command('Runtime.evaluate', {
                 expression: HOST_PROBE_EXPRESSION,
                 returnByValue: true,
@@ -475,9 +500,9 @@ export class WallpaperRuntime {
         }
         const needImage = Boolean(payload.enabled && payload.css);
         const omitImage = !needImage || (payload.imageHash && connection.lastImageHash === payload.imageHash);
-        let value = await this.evaluate(connection, omitImage ? { ...payload, image: undefined } : payload);
+        let value = await this.evaluate(connection, omitImage ? { ...payload, image: undefined } : payload, { scanSlots });
         if (this.stopped) return {};
-        if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload);
+        if (value === 'NEED_IMAGE') value = await this.evaluate(connection, payload, { scanSlots });
         if (this.stopped) return {};
         if (value === 'IGNORED') {
             connection.nonHost = false;
@@ -494,6 +519,7 @@ export class WallpaperRuntime {
             return {};
         }
         connection.nonHost = false;
+        connection.hostVerified = true;
         connection.lastImageHash = needImage ? payload.imageHash : '';
         if (!payload.enabled) return { applied: true, layout: null };
         return { applied: true, layout: connection.lastLayout ?? null };
@@ -545,12 +571,16 @@ export class WallpaperRuntime {
     }
 
     async resolveHostRightPanelFrames(hostConn, childTargets) {
-        const scanRes = await hostConn.command('Runtime.evaluate', {
-            expression: PLUGIN_SLOT_SCAN_EXPRESSION,
-            returnByValue: true,
-        });
-        if (scanRes.exceptionDetails) return hostConn.rightPanelFrameIds;
-        const scan = scanRes.result?.value;
+        let scan = hostConn.lastPluginSlotScan;
+        hostConn.lastPluginSlotScan = null;
+        if (!scan) {
+            const scanRes = await hostConn.command('Runtime.evaluate', {
+                expression: PLUGIN_SLOT_SCAN_EXPRESSION,
+                returnByValue: true,
+            });
+            if (scanRes.exceptionDetails) return hostConn.rightPanelFrameIds;
+            scan = scanRes.result?.value;
+        }
         const nextSig = typeof scan?.sig === 'string' ? scan.sig : '';
         const knownEntries = Array.isArray(scan?.known) ? scan.known : [];
         const unknownFlags = Array.isArray(scan?.unknownFlags) ? scan.unknownFlags : [];
@@ -819,9 +849,20 @@ export class WallpaperRuntime {
     async apply({ discover = false, activate = false } = {}) {
         try {
             const didDiscover = discover || this.connections.size === 0 || (Date.now() - this.lastDiscoveryAt >= 250);
-            const initialKeys = didDiscover ? [...await this.discoverTargets()] : [...this.connections.keys()];
-            if (this.stopped) return;
-            let desired = await this.readDesired();
+            let initialKeys;
+            let desired;
+            if (didDiscover) {
+                const [live, initialDesired] = await Promise.all([
+                    this.discoverTargets(),
+                    this.readDesired(),
+                ]);
+                if (this.stopped) return;
+                initialKeys = [...live];
+                desired = initialDesired.generation === this.generation ? initialDesired : await this.readDesired();
+            } else {
+                initialKeys = [...this.connections.keys()];
+                desired = await this.readDesired();
+            }
             if (this.stopped) return;
             const succeeded = new Set();
             const appliedHosts = new Set();
@@ -831,6 +872,7 @@ export class WallpaperRuntime {
             let hadFailure = false;
             let nextLayout;
             const applyKeys = async (keys, probeNonHost) => {
+                const wantPluginActive = Boolean(desired.enabled && computeSidebarPayload(desired.surfaces).alpha < 100);
                 const pending = [];
                 for (const key of [...keys].sort()) {
                     if (succeeded.has(key)) continue;
@@ -853,7 +895,9 @@ export class WallpaperRuntime {
                             }
                             this.connections.set(key, connection);
                         }
-                        const outcome = await this.send(connection, desired);
+                        const parentId = this.hostTargetByUrl.get(key);
+                        const scanSlots = Boolean(wantPluginActive && parentId && (this.iframeTargetsByParent.get(parentId)?.size > 0));
+                        const outcome = await this.send(connection, desired, { scanSlots });
                         if (outcome.applied) {
                             applied++;
                             appliedHosts.add(key);

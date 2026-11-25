@@ -202,3 +202,11 @@
 - **修复方案**：`revision = 34` 在 `leftSidebarScope`（停靠侧栏、收起 Peek 与窄窗抽屉）内，对处于 `:hover`、`:focus-visible`、`:has(:focus-visible)` 或菜单展开 `:has(.agy-row-actions [aria-expanded="true"])` 的 `.agy-sidebar-row`：
   - 将非空 `.agy-row-actions:not(:empty)` 切为流内 `position: relative !important; inset: auto !important; padding-left: 0 !important; height: 16px !important; margin-right: -4px !important;`（保持 `z-10` 可点击层级、原有按钮像素坐标与整行高度零抖动）；
   - 同时将对应行的 `.agy-row-status` 设为 `display: none !important` 释放原状态占宽，使左侧 `grow min-w-0` 的标题 `span.truncate` 按实际按钮数量自动在按钮左侧以 `...` 截断，兼顾零重叠与全透明壁纸透出；对空 `.agy-row-actions` 保持 `.agy-row-status` 原样可见。
+
+## 26. 插件侧冷启动与稳态附加路径进一步精简（`renderer` `version = 18` / `revision = 35`）
+
+- **优化边界**：严格仅从本插件自身内部（Sidecar 启动、存储加载、CDP 调度、注入源码体积与设置页初始化顺序）进行优化，不新增任何对 Antigravity 宿主的侵入机制，也不改动对第三方右侧栏插件面板的既有适配行为。
+- **具体优化**：
+  - **Sidecar 启动与首帧附加并行重叠（`sidecars/panel/main.mjs`、`store.mjs`、`runtime.mjs`）**：`SettingsStore.reloadIfChanged()` 首次加载直接进入 `_load()` 省去前置 `_inspect()` 磁盘 `stat`；`main.mjs` 在 `app.run()` 就绪后即启动 `runtime.start()`，由 `runtime.apply()` 并行执行 `discoverTargets()` 与 `readDesired()`（其内部按需等待 `initialStorePromise`），同时首轮心跳跳过冗余 `syncStore()`。
+  - **精确宿主端口免多余探测 & 稳态评估二合一（`sidecars/panel/runtime.mjs`）**：对 URL 端口精确命中 `hostPort` 且非 `nonHost` 的目标跳过首次独立 `HOST_PROBE_EXPRESSION` 往返（由 `installWallpaper` 首行指纹守卫兜底）；在主窗口存在子插件槽位且适配激活时，将极轻量 `PLUGIN_SLOT_SCAN_BODY` 直接合并进 `FAST_EVAL_PREFIX` 与全量安装外层包装返回值，使每轮主窗口 `Runtime.evaluate` 从 **2 次减为 1 次**；并对 `installWallpaper` / `installPluginPanelSurface` 注入源码去除整行纯注释与行首冗余缩进以减小 CDP 传输与 V8 解析体积。
+  - **换图正则前置短路与设置页首屏优先（`sidecars/panel/renderer.mjs`、`sidecars/panel/app.js`）**：`renderer.mjs`（`revision = 35`）在 `imageHash` 与 `--ag-ui-image` 均命中时跳过对大 Base64 字符串的 `safeImageRe` 全量正则扫描；`app.js` 展开设置页时先完成 `syncFromServer({ initial: true })` 首屏表单与预览渲染，再调用 `updateController.init()` 加载更新器状态，避免首屏竞争。

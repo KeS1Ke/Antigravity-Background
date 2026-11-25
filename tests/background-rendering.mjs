@@ -3082,20 +3082,30 @@ try {
         })()`, 'append dynamic nodes');
         await until(() => evalOn(mcpClient, 'document.querySelector("#late-card")?.getAttribute("data-ag-ui-surface") === "card" && document.querySelector("#late-bar")?.getAttribute("data-ag-ui-surface") === "canvas"', 'dynamic node classification'), 'Dynamic plugin nodes were not classified');
 
-        // 4. Verify live preview slider update uses fast path (no extra full rescan) & passive heartbeat skips redundant plugin evals
+        // 4. Verify live preview slider update uses fast path (no extra full rescan) & passive heartbeat merges slot scan into 1 host eval while skipping redundant plugin evals
         const scansBefore = await evalOn(mcpClient, 'window.__antigravityUiPluginSurface?.diagnostics?.scans', 'scans before');
         let passivePluginEvals = 0;
+        let passiveHostEvals = 0;
         const origEvalPlugin = pluginRuntime.evaluatePluginPanel.bind(pluginRuntime);
+        const activeHostConn = [...pluginRuntime.connections.values()].find(c => !c.nonHost && c.hostVerified);
+        assert.ok(activeHostConn, 'Expected verified host connection for plugin runtime');
+        const origHostCommand = activeHostConn.command.bind(activeHostConn);
         pluginRuntime.evaluatePluginPanel = async (...args) => {
             passivePluginEvals++;
             return origEvalPlugin(...args);
+        };
+        activeHostConn.command = async (method, params) => {
+            if (method === 'Runtime.evaluate') passiveHostEvals++;
+            return origHostCommand(method, params);
         };
         try {
             await pluginRuntime.update(false, false);
         } finally {
             pluginRuntime.evaluatePluginPanel = origEvalPlugin;
+            activeHostConn.command = origHostCommand;
         }
         assert.equal(passivePluginEvals, 0, 'Steady-state passive heartbeat within lease window must skip redundant plugin iframe evals');
+        assert.equal(passiveHostEvals, 1, 'Steady-state passive heartbeat must merge plugin slot scan into the single FAST_EVAL host call');
         currentPluginState = {
             ...currentPluginState,
             surfaces: appearance.surfaceConfig(appearance.normalize({ sidebarCover: true, sidebarOpacity: 60, sidebarBlur: 16 })),

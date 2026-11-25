@@ -88,6 +88,10 @@ export class SettingsStore {
 
     reloadIfChanged() {
         const operation = this.queue.then(async () => {
+            if (this.signature === undefined && this.failedSignature === undefined) {
+                await this._load();
+                return true;
+            }
             const current = await this._inspect();
             if (current === this.signature) return false;
             if (current === this.failedSignature && this.failedError) throw this.failedError;
